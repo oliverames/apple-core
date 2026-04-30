@@ -16,9 +16,9 @@
             <BuildableReference
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "F8F44E6C2D59038D0075D79C"
-               BuildableName = "iMCP.app"
-               BlueprintName = "iMCP"
-               ReferencedContainer = "container:iMCP.xcodeproj">
+               BuildableName = "Apple Core.app"
+               BlueprintName = "Apple Core"
+               ReferencedContainer = "container:Apple Core.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
          <BuildActionEntry
@@ -30,9 +30,9 @@
             <BuildableReference
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "F8F44EB52D5908D00075D79C"
-               BuildableName = "imcp-server"
-               BlueprintName = "imcp-server"
-               ReferencedContainer = "container:iMCP.xcodeproj">
+               BuildableName = "apple-core"
+               BlueprintName = "apple-core"
+               ReferencedContainer = "container:Apple Core.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
       </BuildActionEntries>
@@ -59,9 +59,9 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "F8F44E6C2D59038D0075D79C"
-            BuildableName = "iMCP.app"
-            BlueprintName = "iMCP"
-            ReferencedContainer = "container:iMCP.xcodeproj">
+            BuildableName = "Apple Core.app"
+            BlueprintName = "Apple Core"
+            ReferencedContainer = "container:Apple Core.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
    </LaunchAction>
@@ -76,9 +76,9 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "F8F44E6C2D59038D0075D79C"
-            BuildableName = "iMCP.app"
-            BlueprintName = "iMCP"
-            ReferencedContainer = "container:iMCP.xcodeproj">
+            BuildableName = "Apple Core.app"
+            BlueprintName = "Apple Core"
+            ReferencedContainer = "container:Apple Core.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
    </ProfileAction>

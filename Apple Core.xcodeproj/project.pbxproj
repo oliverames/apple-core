@@ -52,12 +52,12 @@
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
-		F8F44EB12D5906E20075D79C /* Exceptions for "App" folder in "iMCP" target */ = {
+		F8F44EB12D5906E20075D79C /* Exceptions for "App" folder in "Apple Core" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Info.plist,
 			);
-			target = F8F44E6C2D59038D0075D79C /* iMCP */;
+			target = F8F44E6C2D59038D0075D79C /* Apple Core */;
 		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
@@ -65,13 +65,15 @@
 		F8F44E6F2D59038D0075D79C /* App */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
-				F8F44EB12D5906E20075D79C /* Exceptions for "App" folder in "iMCP" target */,
+				F8F44EB12D5906E20075D79C /* Exceptions for "App" folder in "Apple Core" target */,
 			);
 			path = App;
 			sourceTree = "<group>";
 		};
 		F8F44EB72D5908D00075D79C /* CLI */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+			);
 			path = CLI;
 			sourceTree = "<group>";
 		};
@@ -129,9 +131,9 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		F8F44E6C2D59038D0075D79C /* iMCP */ = {
+		F8F44E6C2D59038D0075D79C /* Apple Core */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = F8F44E922D59038E0075D79C /* Build configuration list for PBXNativeTarget "iMCP" */;
+			buildConfigurationList = F8F44E922D59038E0075D79C /* Build configuration list for PBXNativeTarget "Apple Core" */;
 			buildPhases = (
 				F8F44E692D59038D0075D79C /* Sources */,
 				F8F44E6A2D59038D0075D79C /* Frameworks */,
@@ -145,7 +147,7 @@
 			fileSystemSynchronizedGroups = (
 				F8F44E6F2D59038D0075D79C /* App */,
 			);
-			name = iMCP;
+			name = "Apple Core";
 			packageProductDependencies = (
 				F8F44E9C2D5903F70075D79C /* MCP */,
 				F873F48C2D712BCF0035CD0A /* Ontology */,
@@ -161,9 +163,9 @@
 			productReference = F8F44E6D2D59038D0075D79C /* iMCP.app */;
 			productType = "com.apple.product-type.application";
 		};
-		F8F44EB52D5908D00075D79C /* imcp-server */ = {
+		F8F44EB52D5908D00075D79C /* apple-core */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = F8F44EBA2D5908D00075D79C /* Build configuration list for PBXNativeTarget "imcp-server" */;
+			buildConfigurationList = F8F44EBA2D5908D00075D79C /* Build configuration list for PBXNativeTarget "apple-core" */;
 			buildPhases = (
 				F8F44EB22D5908D00075D79C /* Sources */,
 				F8F44EB32D5908D00075D79C /* Frameworks */,
@@ -176,7 +178,7 @@
 			fileSystemSynchronizedGroups = (
 				F8F44EB72D5908D00075D79C /* CLI */,
 			);
-			name = "imcp-server";
+			name = "apple-core";
 			packageProductDependencies = (
 				F8CE997A2D591CF200C61CA2 /* MCP */,
 				F88358362D64A085000317CD /* Logging */,
@@ -228,8 +230,8 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				F8F44E6C2D59038D0075D79C /* iMCP */,
-				F8F44EB52D5908D00075D79C /* imcp-server */,
+				F8F44E6C2D59038D0075D79C /* Apple Core */,
+				F8F44EB52D5908D00075D79C /* apple-core */,
 			);
 		};
 /* End PBXProject section */
@@ -412,18 +414,18 @@
 				ENABLE_USER_SELECTED_FILES = readwrite;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = App/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = iMCP;
+				INFOPLIST_KEY_CFBundleDisplayName = "Apple Core";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
 				INFOPLIST_KEY_LSUIElement = YES;
-				INFOPLIST_KEY_NSCalendarsFullAccessUsageDescription = "iMCP needs access to provide event information to the MCP server.";
-				INFOPLIST_KEY_NSCameraUsageDescription = "iMCP needs access to the camera to take pictures for the MCP server.";
-				INFOPLIST_KEY_NSContactsUsageDescription = "iMCP needs access to provide contact information to the MCP server.";
-				INFOPLIST_KEY_NSHumanReadableCopyright = "© 2026 dododo, LLC. All rights reserved.";
-				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "iMCP uses the local network to connect to the MCP server.";
-				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "iMCP needs access to provide location information to the MCP server.";
-				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "iMCP needs access to provide location information to the MCP server.";
-				INFOPLIST_KEY_NSMicrophoneUsageDescription = "iMCP needs access to the microphone to record audio for the MCP server.";
-				INFOPLIST_KEY_NSRemindersFullAccessUsageDescription = "iMCP needs access to provide reminders information to the MCP server.";
+				INFOPLIST_KEY_NSCalendarsFullAccessUsageDescription = "Apple Core needs access to provide event information to the MCP server.";
+				INFOPLIST_KEY_NSCameraUsageDescription = "Apple Core needs access to the camera to take pictures for the MCP server.";
+				INFOPLIST_KEY_NSContactsUsageDescription = "Apple Core needs access to provide contact information to the MCP server.";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "© 2026 Oliver Ames. Forked from iMCP by Mattt (MIT).";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Apple Core uses the local network to connect to the MCP server.";
+				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "Apple Core needs access to provide location information to the MCP server.";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Apple Core needs access to provide location information to the MCP server.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Apple Core needs access to the microphone to record audio for the MCP server.";
+				INFOPLIST_KEY_NSRemindersFullAccessUsageDescription = "Apple Core needs access to provide reminders information to the MCP server.";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
@@ -439,7 +441,7 @@
 				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 15.1;
 				MARKETING_VERSION = 1.4.0;
-				PRODUCT_BUNDLE_IDENTIFIER = co.dododo.iMCP;
+				PRODUCT_BUNDLE_IDENTIFIER = com.oliverames.applecore;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				SDKROOT = auto;
@@ -480,18 +482,18 @@
 				ENABLE_USER_SELECTED_FILES = readwrite;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = App/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = iMCP;
+				INFOPLIST_KEY_CFBundleDisplayName = "Apple Core";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
 				INFOPLIST_KEY_LSUIElement = YES;
-				INFOPLIST_KEY_NSCalendarsFullAccessUsageDescription = "iMCP needs access to provide event information to the MCP server.";
-				INFOPLIST_KEY_NSCameraUsageDescription = "iMCP needs access to the camera to take pictures for the MCP server.";
-				INFOPLIST_KEY_NSContactsUsageDescription = "iMCP needs access to provide contact information to the MCP server.";
-				INFOPLIST_KEY_NSHumanReadableCopyright = "© 2026 dododo, LLC. All rights reserved.";
-				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "iMCP uses the local network to connect to the MCP server.";
-				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "iMCP needs access to provide location information to the MCP server.";
-				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "iMCP needs access to provide location information to the MCP server.";
-				INFOPLIST_KEY_NSMicrophoneUsageDescription = "iMCP needs access to the microphone to record audio for the MCP server.";
-				INFOPLIST_KEY_NSRemindersFullAccessUsageDescription = "iMCP needs access to provide reminders information to the MCP server.";
+				INFOPLIST_KEY_NSCalendarsFullAccessUsageDescription = "Apple Core needs access to provide event information to the MCP server.";
+				INFOPLIST_KEY_NSCameraUsageDescription = "Apple Core needs access to the camera to take pictures for the MCP server.";
+				INFOPLIST_KEY_NSContactsUsageDescription = "Apple Core needs access to provide contact information to the MCP server.";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "© 2026 Oliver Ames. Forked from iMCP by Mattt (MIT).";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Apple Core uses the local network to connect to the MCP server.";
+				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "Apple Core needs access to provide location information to the MCP server.";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Apple Core needs access to provide location information to the MCP server.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Apple Core needs access to the microphone to record audio for the MCP server.";
+				INFOPLIST_KEY_NSRemindersFullAccessUsageDescription = "Apple Core needs access to provide reminders information to the MCP server.";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
@@ -507,7 +509,7 @@
 				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 15.1;
 				MARKETING_VERSION = 1.4.0;
-				PRODUCT_BUNDLE_IDENTIFIER = co.dododo.iMCP;
+				PRODUCT_BUNDLE_IDENTIFIER = com.oliverames.applecore;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				SDKROOT = auto;
@@ -528,7 +530,7 @@
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = R7AYS6Z734;
 				MACOSX_DEPLOYMENT_TARGET = 15.1;
-				PRODUCT_BUNDLE_IDENTIFIER = "com.loopwork.imcp-server";
+				PRODUCT_BUNDLE_IDENTIFIER = com.oliverames.applecore.cli;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = macosx;
 				SKIP_INSTALL = YES;
@@ -545,7 +547,7 @@
 				DEVELOPMENT_TEAM = "";
 				"DEVELOPMENT_TEAM[sdk=macosx*]" = R7AYS6Z734;
 				MACOSX_DEPLOYMENT_TARGET = 15.1;
-				PRODUCT_BUNDLE_IDENTIFIER = "com.loopwork.imcp-server";
+				PRODUCT_BUNDLE_IDENTIFIER = com.oliverames.applecore.cli;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				SDKROOT = macosx;
@@ -566,7 +568,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		F8F44E922D59038E0075D79C /* Build configuration list for PBXNativeTarget "iMCP" */ = {
+		F8F44E922D59038E0075D79C /* Build configuration list for PBXNativeTarget "Apple Core" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				F8F44E932D59038E0075D79C /* Debug */,
@@ -575,7 +577,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		F8F44EBA2D5908D00075D79C /* Build configuration list for PBXNativeTarget "imcp-server" */ = {
+		F8F44EBA2D5908D00075D79C /* Build configuration list for PBXNativeTarget "apple-core" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				F8F44EBB2D5908D00075D79C /* Debug */,
