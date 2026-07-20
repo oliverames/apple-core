@@ -1,0 +1,35 @@
+Apple Core
+Copyright (C) 2026 Oliver Ames
+
+This project is licensed under the GNU General Public License v3.0 or
+later (GPL-3.0-or-later). See LICENSE.md for the full license text.
+
+Apple Core is a hard-fork of mattt/iMCP (https://github.com/mattt/iMCP),
+licensed MIT, Copyright 2025 Mattt (https://mat.tt). iMCP's original
+source files are preserved with their MIT copyright headers intact under
+the one-way MIT-into-GPL compatibility described in
+docs/planning/BUILD_PLAN.md §4. The full text of iMCP's license is kept
+at THIRD_PARTY_LICENSES/iMCP.LICENSE.
+
+Serving infrastructure (HTTP/SSE server, OAuth support, Cloudflare
+tunnel management, LaunchAgent daemon registration) is ported from
+Bridgeport (https://github.com/oliverames/bridgeport), a separate
+personal project also authored by Oliver Ames. No third-party attribution
+applies to this code.
+
+Additional patterns and design research are drawn from a synthesis of
+six other Apple-related MCP server projects, documented in full in
+docs/planning/DONORS.md and docs/planning/SYNTHESIS.md. As of this
+writing, none of that donor code has been lifted into this repository —
+only the research and design decisions have been. When a future surface
+implementation (Mail, Notes, Reminders extensions, etc.) actually lifts
+code or a substantially-derived design from one of those projects, this
+file and THIRD_PARTY_LICENSES/ must be updated at that time to include:
+
+  - The donor project's name, URL, and license
+  - A copy of its license text in THIRD_PARTY_LICENSES/<project>.LICENSE
+  - A one-line note here naming which surface/pattern was lifted
+
+See docs/planning/BUILD_PLAN.md §4.2 for the full attribution discipline
+(per-file SPDX headers, commit-log conventions) to follow when that work
+happens.

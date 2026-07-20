@@ -33,3 +33,6 @@ playground.xcworkspace
 
 # Release artifacts
 dist/
+
+# macOS
+.DS_Store

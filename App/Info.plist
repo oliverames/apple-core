@@ -4,10 +4,6 @@
 <dict>
 	<key>LSMultipleInstancesProhibited</key>
 	<true/>
-	<key>NSBonjourServices</key>
-	<array>
-		<string>_mcp._tcp</string>
-	</array>
 	<key>SUEnableInstallerLauncherService</key>
 	<true/>
 	<key>SUFeedURL</key>

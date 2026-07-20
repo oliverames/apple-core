@@ -30,6 +30,24 @@ These are immutable inputs to the build, decided 2026-04-30. Future contributors
 
 ---
 
+## 0a. Addendum — architecture decision superseded (2026-07-20)
+
+**§0 decision #6 is overridden.** The `.app` + CLI proxy over `NSXPCConnection` architecture never shipped — the build stalled before the Calendar tracer bullet ran, blocked on a Swift 6 strict-concurrency bug in the pinned `swift-sdk` dependency's `NetworkTransport.swift` (the same file the XPC swap was meant to delete). §7 previously listed the architecture question as "resolved by §0"; this addendum reopens it, the same way this document itself opened by superseding `SYNTHESIS.md §5`.
+
+**New decision: single-process architecture, serving shell ported from `bridgeport`** (a separate, more mature personal project — `~/Developer/Projects/bridgeport`, menu-bar app + LaunchAgent daemon + HTTP/SSE MCP server + OAuth + Cloudflare Tunnel for remote access). Rationale: Bridgeport already solves local *and* remote MCP serving robustly; apple-core's XPC/CLI-proxy design never got that far and was solving a problem (cross-process IPC) this project doesn't need — there is no second process to bridge to anymore.
+
+**What this changes, concretely:**
+
+- **Dropped entirely**: Bonjour discovery (`NetworkDiscoveryManager`), raw `NWListener`/`NWConnection` transport, the `CLI/` target's stdio↔Bonjour `StdioProxy`, and everything in §1.2's `NSXPCConnection`/Mach-service design (including its sandbox-entitlement material, now moot).
+- **Ported in from `bridgeport`**: `SSEServer.swift` (FlyingFox-based HTTP/SSE MCP endpoint), `CloudflareManager.swift` (tunnel for remote clients), `OAuthSupport.swift` (auth for cloud-connector clients), `LaunchAgentManager.swift`/`LaunchAgentPlist.swift` (background daemon registration). All rebranded from `com.oliverames.bridgeport.*` to `com.oliverames.applecore.*`.
+- **Unchanged and load-bearing**: the transport-agnostic MCP dispatch logic already in `App/Controllers/ServerController.swift` (`ServerNetworkManager.registerHandlers(for:connectionID:)` — `ListTools`/`CallTool` handlers against `ServiceRegistry.services`) is reused as-is against the new SSE-backed `MCP.Server` instances. This is the seam the whole swap pivots on.
+- **Per-connector `exposePublicly` (Bridgeport's model, designed for spawned external processes) becomes per-*service*** — keyed by the same service identifiers `ServiceRegistry`/`ServiceConfig` already use, since apple-core has no external processes to toggle, only in-process `Service` implementations.
+- **§5.1's tracer bullet still picks Calendar** for the same reasons (EventKit is already ported from iMCP, exercises TCC, proves the tool-dispatch wiring end to end) — just pointed at the new transport instead of validating the Bonjour→XPC swap. "If Calendar round-trips, every other surface plugs into the same wire unchanged" still holds.
+
+Everything else in §0 (project name, bundle ID, unsandboxed v1, GPL-3.0-or-later license, personal-use distribution) is unchanged. §4's licensing mechanics apply unchanged — ported `bridgeport` files are Oliver's own unpublished code (no LICENSE file, all rights his), so they fold in as newly-authored GPL-3.0-or-later files with SPDX headers, no third-party attribution needed.
+
+---
+
 ## 1. Architecture in Swift-native terms
 
 ### 1.1 What we keep from iMCP
@@ -810,7 +828,7 @@ Memory: negligible. EventKit caches in-process; we don't materialize anything.
 
 **What's not testable without a real account**: iCloud's actual sync latency (we test the tool layer assuming local store is authoritative; the iCloud round-trip is treated as opaque).
 
-**Calendar is the tracer-bullet surface** (per §5.1) — its tests are also our first end-to-end smoke check that the new XPC IPC, Sparkle update, and notarization pipelines all work.
+**Calendar is the tracer-bullet surface** (per §5.1) — its tests are also our first end-to-end smoke check that the ported SSE serving shell and build pipeline all work (Sparkle/notarization remain deferred per §0 decision #5).
 
 ### 3.3 Reminders
 
@@ -2568,26 +2586,28 @@ If we ever consider an LGPL or Apache-2.0-with-patent-grant dep, both are GPL-3-
 
 ### 5.1 Tracer bullet — Calendar
 
-**Pick: Calendar.**
+**Pick: Calendar.** (Reframed 2026-07-20 per §0a — same surface, different wire.)
 
 Calendar exercises every layer of the architecture without requiring any new code paths beyond what iMCP already proves works:
 
-- **TCC.** Calendar prompts on first use (`EKEventStore.requestFullAccessToEvents()`). Forces us to validate that the .app's signed bundle identity (`com.oliverames.applecore`) is what macOS attributes the prompt to — not Claude Desktop or whichever client launched the CLI.
-- **MCP wiring.** Three tools (`calendar_list_calendars`, `calendar_list_events`, `calendar_create_event`) round-trip through stdio → CLI → XPC → app → EventKit → app → XPC → CLI → stdio.
-- **IPC overhaul.** First surface to exercise the Bonjour → NSXPCConnection swap. If Calendar round-trips, every other surface plugs into the same wire unchanged.
-- **JSON-LD output.** Reuses iMCP's `Ontology` `Event` type — sanity-checks our typed-result discipline through the XPC `NSDictionary` round-trip.
-- **Build pipeline.** First end-to-end pass through `xcodebuild` for the .app target + bundled CLI + ad-hoc codesign with `--options runtime`. Notarization deferred (optional per §0).
+- **TCC.** Calendar prompts on first use (`EKEventStore.requestFullAccessToEvents()`). Forces us to validate that the .app's signed bundle identity (`com.oliverames.applecore`) is what macOS attributes the prompt to.
+- **MCP wiring.** Tools (`calendar_list_calendars`, `calendar_list_events`, `calendar_create_event`, etc.) round-trip through the ported SSE server → `registerHandlers` dispatch → EventKit → back out over SSE.
+- **Serving-shell swap.** First surface to exercise the ported Bridgeport HTTP/SSE transport in place of Bonjour/`NWConnection`. If Calendar round-trips, every other surface plugs into the same wire unchanged — the existing `ListTools`/`CallTool` dispatch in `ServerNetworkManager.registerHandlers` doesn't care which surface it's calling.
+- **JSON-LD output.** Reuses iMCP's `Ontology` `Event` type — sanity-checks typed-result discipline through the SSE JSON round-trip.
+- **Build pipeline.** First end-to-end pass through `xcodebuild` for the .app target with the ported serving shell + ad-hoc codesign with `--options runtime`. Notarization deferred (optional per §0).
 - **Doctor command shape.** Calendar's doctor entry (does `EKAuthorizationStatus.fullAccess` return true?) becomes the template every other surface follows.
 
-We deliberately don't pick Mail as the tracer. Mail is the highest-effort surface and depends on layers we want already debugged when we get to it (FTS5 indexer, IMAP client, state-reconciliation sync). Calendar is already 80% in iMCP; the tracer-bullet effort is wiring the EventKit service through the new XPC bridge and validating the build pipeline.
+We deliberately don't pick Mail as the tracer. Mail is the highest-effort surface and depends on layers we want already debugged when we get to it (FTS5 indexer, IMAP client, state-reconciliation sync). Calendar is already ported from iMCP; the tracer-bullet effort is wiring the existing EventKit service through the new SSE-backed transport and validating the build pipeline.
 
-**Smallest possible smoke test before the tracer.** Port iMCP's `Utilities` service (single tool: `utilities_beep`) to the forked repo over the new XPC wire. If Claude Desktop calls `utilities_beep` and we hear a beep, the entire CLI ↔ XPC ↔ app ↔ tool-dispatcher loop works. Half a day of work. Do this before Calendar.
+**Smallest possible smoke test before the tracer.** Call `UtilitiesService`'s existing `utilities_beep` tool over the ported SSE server from a real MCP client. If the client calls it and we hear a beep, the entire client ↔ SSE ↔ `registerHandlers` ↔ tool-dispatcher loop works, before EventKit is in the picture. A few hours of work at most since both the tool and the dispatch logic already exist — this is purely a transport-wiring check. Do this before Calendar.
 
 ### 5.2 Version targets
 
-**v1.0 — "iMCP+ on the new IPC"**
+> **Note (2026-07-20):** per §0a, "IPC overhaul" below now means the Bridgeport-derived SSE serving-shell swap, not Bonjour→XPC. Per §7 item 4, Mail is confirmed in v1 scope (not deferred to v2.0) — sequence it last within v1.x, after Notes/Messages/Reminders-extensions land, since it's the largest single line item. The version numbers/phase groupings below otherwise still apply as a rough sequencing guide, not a hard v1.0/v1.1/v2.0 release-numbering commitment.
+
+**v1.0 — "iMCP+ on the new serving shell"**
 - All iMCP-existing surfaces (Calendar, Reminders, Contacts, Location, Maps, Messages-read, Weather, Capture, Shortcuts).
-- Bonjour → XPC IPC overhaul.
+- Bonjour → Bridgeport-derived HTTP/SSE serving-shell swap.
 - Per-client approval gate, hardened.
 - Doctor command.
 - Sparkle in-app updates configured.
@@ -2803,7 +2823,7 @@ Documented for completeness. None of these are in scope for v1.
 
 ## 7. Open questions for Oliver
 
-Four questions previously listed here have been resolved by §0 (project name + bundle ID, sandboxing, license, architecture/repo-strategy). The remaining open items:
+Four questions previously listed here have been resolved by §0 (project name + bundle ID, sandboxing, license, architecture/repo-strategy — architecture itself later revised by §0a). The remaining open items:
 
 1. **Apple Developer Program membership.** Do you have one? Determines whether we can ship WeatherKit (entitlement-gated) and whether notarization is even available. Recommendation: skip for v0/v1 personal use; revisit only if we want WeatherKit or broad publishing.
 
@@ -2811,7 +2831,7 @@ Four questions previously listed here have been resolved by §0 (project name + 
 
 3. **Telemetry.** Any opt-in usage analytics? Recommendation: ship none. Personal use means you ARE the telemetry. Add opt-in MetricKit-style only if we ever publish broadly.
 
-4. **Mail v1 strategy.** Mail is still scheduled for v2.0 (after the AppleScript long tail in v1.1 and the saved-rules engine in v1.2). The clean-room overhead is gone (§4) but the translation work — Python `email`, MIME, FTS5 schema, state-reconciliation — is still ~2-3 weeks of focused effort. Recommendation: keep Mail at v2.0. Want confirmation.
+4. **Mail v1 strategy — resolved 2026-07-20.** Originally recommended deferring Mail to v2.0. Oliver confirmed Mail is in v1 scope, alongside Calendar/Reminders/Contacts/Notes/Messages-read. The translation work — Python `email`, MIME, FTS5 schema, state-reconciliation — is still ~2-3 weeks of focused effort and remains the single largest v1 line item; sequence it last within v1 (after the other surfaces are wired through the new serving shell) rather than gating everything else on it.
 
 ---
 
@@ -2820,15 +2840,15 @@ Four questions previously listed here have been resolved by §0 (project name + 
 - **Reviews:** complete (`reviews/*.md`).
 - **Synthesis:** complete (`SYNTHESIS.md`).
 - **Build plan:** this document, including 17 contributor-grade per-surface deep dives in §3 plus six locked decisions in §0.
-- **Next deliverable:** hard-fork `mattt/iMCP` to `oliverames/apple-core`, rename to "Apple Core", change bundle ID to `com.oliverames.applecore`, swap the Bonjour `NetService` discovery for `NSXPCConnection` over Mach service `com.oliverames.applecore.xpc`, drop iMCP's `MessageService` security-scoped-bookmark code (no longer needed unsandboxed), preserve iMCP's `LICENSE` + add a top-level `NOTICE` attributing Mattt's original work, change the project license to GPL-3.0-or-later (MIT files keep their original headers; combined work is GPL). Then verify the `utilities_beep` smoke test round-trips end-to-end before touching Calendar.
+- **Next deliverable** (revised 2026-07-20 per §0a): port Bridgeport's HTTP/SSE serving shell into apple-core in place of Bonjour discovery, keep the existing `ServerNetworkManager.registerHandlers` dispatch, drop iMCP's `MessageService` security-scoped-bookmark code (no longer needed unsandboxed), preserve iMCP's `LICENSE` + add a top-level `NOTICE` attributing Mattt's original work, change the project license to GPL-3.0-or-later (MIT files keep their original headers; combined work is GPL). Then verify the `utilities_beep` smoke test round-trips end-to-end before touching Calendar.
 
 ---
 
 ## 9. At-a-glance summary
 
-**Tracer bullet:** Calendar ([§3.2](#32-calendar)) — already 80% in iMCP, exercises EventKit + TCC + JSON-LD output + the build/install loop. The path is: hard-fork iMCP, rename to Apple Core, change bundle ID to `com.oliverames.applecore`, swap Bonjour for NSXPCConnection over `com.oliverames.applecore.xpc`, drop the chat.db security-scoped-bookmark code, change project license to GPL-3.0-or-later (preserving iMCP's MIT headers on lifted files), `xcodebuild` with `CODE_SIGN_IDENTITY="-"`, drag `Apple Core.app` to `/Applications`, register `Apple Core.app/Contents/MacOS/apple-core` with Claude Desktop, observe TCC prompt attribute to "Apple Core", see calendars list.
+**Tracer bullet:** Calendar ([§3.2](#32-calendar)) — already ported from iMCP, exercises EventKit + TCC + JSON-LD output + the build/install loop. Per [§0a](#0a-addendum--architecture-decision-superseded-2026-07-20), the path is now: port Bridgeport's HTTP/SSE serving shell (`SSEServer`, `CloudflareManager`, `OAuthSupport`, `LaunchAgentManager`) into apple-core in place of Bonjour/`NWConnection`, rebrand to `com.oliverames.applecore.*`, keep the existing `ServerNetworkManager.registerHandlers` dispatch unchanged, drop the chat.db security-scoped-bookmark code (unsandboxed, unchanged from original plan), change project license to GPL-3.0-or-later (preserving iMCP's MIT headers on lifted files), `xcodebuild` with `CODE_SIGN_IDENTITY="-"`, drag `Apple Core.app` to `/Applications`, register the local SSE endpoint with an MCP client, observe TCC prompt attribute to "Apple Core", see calendars list.
 
-**Pre-tracer smoke test:** port iMCP's `Utilities` service (single tool: `utilities_beep`) over the new XPC wire. Half a day. Validates the entire CLI ↔ XPC ↔ app ↔ tool-dispatcher loop end-to-end before EventKit is in the picture.
+**Pre-tracer smoke test:** call the existing `UtilitiesService`'s `utilities_beep` tool over the newly-ported SSE server. Validates the entire client ↔ SSE ↔ dispatch loop end-to-end before EventKit is in the picture.
 
-**Decisions locked, work unblocked:** the six §0 decisions (name, bundle ID, sandboxing, license, distribution, architecture) close every previously-blocking question. Remaining items in §7 are either advisory recommendations (repo strategy is settled to hard-fork by §0 #6, telemetry stays off) or wait-and-see (Apple Developer membership, WeatherKit gating, Mail timing). None of them block the start of v0.
-- **First code:** v1.0 tracer-bullet branch starts with the Utilities-beep port to validate the new XPC IPC, then the Calendar surface as the real tracer. After Calendar is green end-to-end (build, sign, notarize, install, run, see beep, see calendar list in Claude Desktop), the rest of v1.0 ports proceed in parallel.
+**Decisions locked, work unblocked:** the §0 decisions (name, bundle ID, sandboxing, license, distribution) plus the §0a-revised architecture close every previously-blocking question. Remaining items in §7 are either advisory recommendations (telemetry stays off) or wait-and-see (Apple Developer membership, WeatherKit gating, Mail timing). None of them block the start of v0.
+- **First code:** v1.0 tracer-bullet branch starts with the Utilities-beep smoke test to validate the new SSE serving shell, then the Calendar surface as the real tracer. After Calendar is green end-to-end (build, sign, run, see beep, see calendar list in a real MCP client), the rest of v1.0 ports proceed in parallel.

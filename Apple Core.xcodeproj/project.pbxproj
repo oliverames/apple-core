@@ -21,6 +21,9 @@
 		F8D7C31A2DCBD32100A4775F /* MCP in Frameworks */ = {isa = PBXBuildFile; productRef = F8D7C3192DCBD32100A4775F /* MCP */; };
 		F8D8C48E2DCE0E6800369E5C /* JSONSchema in Frameworks */ = {isa = PBXBuildFile; productRef = F8D8C48D2DCE0E6800369E5C /* JSONSchema */; };
 		F8F1D2F82D6F9E0C00F6323D /* MCP in Frameworks */ = {isa = PBXBuildFile; productRef = F8F44E9C2D5903F70075D79C /* MCP */; };
+		FFAC00000000000000000005 /* FlyingFox in Frameworks */ = {isa = PBXBuildFile; productRef = FFAC00000000000000000002 /* FlyingFox */; };
+		FFAC00000000000000000006 /* FlyingSocks in Frameworks */ = {isa = PBXBuildFile; productRef = FFAC00000000000000000003 /* FlyingSocks */; };
+		FFAC00000000000000000007 /* Logging in Frameworks */ = {isa = PBXBuildFile; productRef = FFAC00000000000000000004 /* Logging */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -93,6 +96,9 @@
 				F8D7C3172DCBD30500A4775F /* MCP in Frameworks */,
 				F80955702D7888920055B911 /* iMessage in Frameworks */,
 				F8D8C48E2DCE0E6800369E5C /* JSONSchema in Frameworks */,
+				FFAC00000000000000000005 /* FlyingFox in Frameworks */,
+				FFAC00000000000000000006 /* FlyingSocks in Frameworks */,
+				FFAC00000000000000000007 /* Logging in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -158,6 +164,9 @@
 				F8D7C3192DCBD32100A4775F /* MCP */,
 				F8D8C48D2DCE0E6800369E5C /* JSONSchema */,
 				F87796FB2E0764AE00328CC6 /* MenuBarExtraAccess */,
+				FFAC00000000000000000002 /* FlyingFox */,
+				FFAC00000000000000000003 /* FlyingSocks */,
+				FFAC00000000000000000004 /* Logging */,
 			);
 			productName = iMCP;
 			productReference = F8F44E6D2D59038D0075D79C /* iMCP.app */;
@@ -224,6 +233,7 @@
 				F8D7C3182DCBD32100A4775F /* XCRemoteSwiftPackageReference "swift-sdk" */,
 				F8D8C48C2DCE0E6800369E5C /* XCRemoteSwiftPackageReference "JSONSchema" */,
 				F87796FA2E0764AE00328CC6 /* XCRemoteSwiftPackageReference "MenuBarExtraAccess" */,
+				FFAC00000000000000000001 /* XCRemoteSwiftPackageReference "FlyingFox" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = F8F44E6E2D59038D0075D79C /* Products */;
@@ -634,7 +644,7 @@
 			repositoryURL = "https://github.com/modelcontextprotocol/swift-sdk";
 			requirement = {
 				kind = revision;
-				revision = 106167bad12cd8d004b0cbfcec8211c5408794d8;
+				revision = a0ae212ebf6eab5f754c3129608bc5557637e605;
 			};
 		};
 		F8D8C48C2DCE0E6800369E5C /* XCRemoteSwiftPackageReference "JSONSchema" */ = {
@@ -643,6 +653,14 @@
 			requirement = {
 				kind = upToNextMajorVersion;
 				minimumVersion = 1.3.0;
+			};
+		};
+		FFAC00000000000000000001 /* XCRemoteSwiftPackageReference "FlyingFox" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/swhitty/FlyingFox.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 0.26.0;
 			};
 		};
 /* End XCRemoteSwiftPackageReference section */
@@ -708,6 +726,21 @@
 		F8F44E9C2D5903F70075D79C /* MCP */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = MCP;
+		};
+		FFAC00000000000000000002 /* FlyingFox */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = FFAC00000000000000000001 /* XCRemoteSwiftPackageReference "FlyingFox" */;
+			productName = FlyingFox;
+		};
+		FFAC00000000000000000003 /* FlyingSocks */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = FFAC00000000000000000001 /* XCRemoteSwiftPackageReference "FlyingFox" */;
+			productName = FlyingSocks;
+		};
+		FFAC00000000000000000004 /* Logging */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = F88358352D64A085000317CD /* XCRemoteSwiftPackageReference "swift-log" */;
+			productName = Logging;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

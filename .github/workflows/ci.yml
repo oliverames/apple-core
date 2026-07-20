@@ -1,6 +1,8 @@
 name: CI
 
 on:
+    workflow_call:
+    workflow_dispatch:
     push:
         branches: ["main"]
     pull_request:
@@ -12,7 +14,7 @@ permissions:
 
 jobs:
     build:
-        name: Build on macOS ${{ matrix.macos }} with Xcode ${{ matrix.xcode }}
+        name: Build and test on macOS ${{ matrix.macos }} with Xcode ${{ matrix.xcode }}
         runs-on: macos-${{ matrix.macos }}
         env:
             DEVELOPER_DIR: "/Applications/Xcode_${{ matrix.xcode }}.app/Contents/Developer"
@@ -22,7 +24,7 @@ jobs:
                 include:
                     - macos: "26"
                       xcode: "26.0"
-        timeout-minutes: 10
+        timeout-minutes: 15
         steps:
             - name: Checkout code
               uses: actions/checkout@v6
@@ -41,4 +43,24 @@ jobs:
               run: swift format lint --strict --recursive .
 
             - name: Build
-              run: xcodebuild -quiet -scheme iMCP -configuration Debug -destination "platform=macOS" build
+              run: xcodebuild -quiet -project "Apple Core.xcodeproj" -scheme "Apple Core" -configuration Debug -destination "platform=macOS" build
+
+            - name: Unit tests
+              run: xcodebuild -quiet -project "Apple Core.xcodeproj" -scheme "Apple Core" -configuration Debug -destination "platform=macOS" test
+              # Integration tests gated behind RUN_INTEGRATION_TESTS=1 (per docs/planning/BUILD_PLAN.md §3.2)
+              # are intentionally not run here — they require a real iCloud test account and are run manually.
+
+    secrets:
+        name: Scan full history for secrets
+        runs-on: ubuntu-latest
+        timeout-minutes: 10
+        steps:
+            - name: Checkout full history
+              uses: actions/checkout@v6
+              with:
+                  fetch-depth: 0
+
+            - name: Run Gitleaks
+              uses: gitleaks/gitleaks-action@v3
+              env:
+                  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

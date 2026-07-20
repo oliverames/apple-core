@@ -1,19 +1,14 @@
 import AppKit
 import MCP
-import Network
 import OSLog
 import Ontology
 import SwiftUI
-import SystemPackage
 import UserNotifications
 
 import struct Foundation.Data
 import struct Foundation.Date
 import class Foundation.JSONDecoder
 import class Foundation.JSONEncoder
-
-private let serviceType = "_mcp._tcp"
-private let serviceDomain = "local."
 
 private let log = Logger.server
 
@@ -415,25 +410,33 @@ final class ServerController: ObservableObject {
 }
 
 // MARK: - Connection Management Components
+//
+// Bonjour discovery + raw NWConnection have been replaced by an HTTP/SSE
+// transport ported from Bridgeport (see App/Services/Serving/). The MCP
+// dispatch logic below (`registerHandlers(for:connectionID:)`) is
+// unchanged: it still takes any `MCP.Server` and works regardless of the
+// transport wired to it. Only the transport construction and the
+// discovery/connection-acceptance plumbing around it changed.
 
-// Manages a single MCP connection.
+// Manages a single MCP connection/session.
 actor MCPConnectionManager {
     private let connectionID: UUID
-    private let connection: NWConnection
+    private let transport: SSETransport
     private let server: MCP.Server
-    private var transport: NetworkTransport
     private let parentManager: ServerNetworkManager
 
-    init(connectionID: UUID, connection: NWConnection, parentManager: ServerNetworkManager) {
+    /// The HTTP/SSE-facing half of this connection. AppleCoreHTTPServer
+    /// plumbs request/response bytes through this; MCPConnectionManager
+    /// only ever talks to `transport`.
+    nonisolated let sseSession: MCPSSESession
+
+    init(connectionID: UUID, parentManager: ServerNetworkManager) {
         self.connectionID = connectionID
-        self.connection = connection
         self.parentManager = parentManager
 
-        self.transport = NetworkTransport(
-            connection: connection,
-            logger: nil,
-            bufferConfig: .unlimited
-        )
+        let transport = SSETransport()
+        self.transport = transport
+        self.sseSession = MCPSSESession(id: connectionID.uuidString.lowercased(), transport: transport)
 
         // MCP server instance for this connection.
         self.server = MCP.Server(
@@ -447,6 +450,10 @@ actor MCPConnectionManager {
 
     func start(approvalHandler: @escaping (MCP.Client.Info) async -> Bool) async throws {
         do {
+            await sseSession.start(onClose: { [parentManager, connectionID] in
+                Task { await parentManager.removeConnection(connectionID) }
+            })
+
             log.notice("Starting MCP server for connection: \(self.connectionID)")
             try await server.start(transport: transport) { [weak self] clientInfo, capabilities in
                 guard let self = self else { throw MCPError.connectionClosed }
@@ -469,9 +476,6 @@ actor MCPConnectionManager {
 
             // Register handlers after successful approval.
             await registerHandlers()
-
-            // Monitor connection health for early disconnects.
-            await startHealthMonitoring()
         } catch {
             log.error("Failed to start MCP server: \(error.localizedDescription)")
             throw error
@@ -482,168 +486,36 @@ actor MCPConnectionManager {
         await parentManager.registerHandlers(for: server, connectionID: connectionID)
     }
 
-    private func startHealthMonitoring() async {
-        // Monitor until the manager stops or the connection fails.
-        Task {
-            outer: while await parentManager.isRunning() {
-                switch connection.state {
-                case .ready, .setup, .preparing, .waiting:
-                    break
-                case .cancelled:
-                    log.error("Connection \(self.connectionID) was cancelled, removing")
-                    await parentManager.removeConnection(connectionID)
-                    break outer
-                case .failed(let error):
-                    log.error(
-                        "Connection \(self.connectionID) failed with error \(error), removing"
-                    )
-                    await parentManager.removeConnection(connectionID)
-                    break outer
-                @unknown default:
-                    log.debug("Connection \(self.connectionID) in unknown state, skipping")
-                }
-
-                try? await Task.sleep(nanoseconds: 30_000_000_000)  // 30 seconds
-            }
-        }
-    }
-
     func notifyToolListChanged() async {
         do {
             log.info("Notifying client that tool list changed")
             try await server.notify(ToolListChangedNotification.message())
         } catch {
             log.error("Failed to notify client of tool list change: \(error)")
-
-            // Clean up if the underlying NWConnection is closed.
-            if let nwError = error as? NWError,
-                nwError.errorCode == 57 || nwError.errorCode == 54
-            {
-                log.debug("Connection appears to be closed")
-                await parentManager.removeConnection(connectionID)
-            }
+            // The SSE stream underneath is gone; let the idle reaper (or the
+            // session's onClose callback) clean up the connection entry.
         }
     }
 
     func stop() async {
         await server.stop()
-        connection.cancel()
-    }
-}
-
-// Manages Bonjour service discovery and advertisement.
-actor NetworkDiscoveryManager {
-    private let serviceType: String
-    private let serviceDomain: String
-    var listener: NWListener
-    private let browser: NWBrowser
-
-    init(serviceType: String, serviceDomain: String) throws {
-        self.serviceType = serviceType
-        self.serviceDomain = serviceDomain
-
-        // Local-only Bonjour advertisement.
-        let parameters = NWParameters.tcp
-        parameters.acceptLocalOnly = true
-        parameters.includePeerToPeer = false
-
-        if let tcpOptions = parameters.defaultProtocolStack.internetProtocol
-            as? NWProtocolIP.Options
-        {
-            tcpOptions.version = .v4
-        }
-
-        // Listen and advertise via Bonjour.
-        self.listener = try NWListener(using: parameters)
-        self.listener.service = NWListener.Service(type: serviceType, domain: serviceDomain)
-
-        // Browser is used for monitoring and diagnostics.
-        self.browser = NWBrowser(
-            for: .bonjour(type: serviceType, domain: serviceDomain),
-            using: parameters
-        )
-
-        log.info("Network discovery manager initialized with Bonjour service type: \(serviceType)")
-    }
-
-    func start(
-        stateHandler: @escaping @Sendable (NWListener.State) -> Void,
-        connectionHandler: @escaping @Sendable (NWConnection) -> Void
-    ) {
-        listener.stateUpdateHandler = stateHandler
-
-        listener.newConnectionHandler = connectionHandler
-
-        listener.start(queue: .main)
-        browser.start(queue: .main)
-
-        log.info("Started network discovery and advertisement")
-    }
-
-    func stop() {
-        listener.cancel()
-        browser.cancel()
-        log.info("Stopped network discovery and advertisement")
-    }
-
-    func restartWithRandomPort() async throws {
-        listener.cancel()
-
-        // Recreate listener on an ephemeral port.
-        let parameters: NWParameters = NWParameters.tcp  // Explicit type
-        parameters.acceptLocalOnly = true
-        parameters.includePeerToPeer = false
-
-        if let tcpOptions = parameters.defaultProtocolStack.internetProtocol
-            as? NWProtocolIP.Options
-        {
-            tcpOptions.version = .v4
-        }
-
-        let newListener: NWListener = try NWListener(using: parameters)
-        let service = NWListener.Service(type: self.serviceType, domain: self.serviceDomain)
-        newListener.service = service
-
-        if let currentStateHandler = listener.stateUpdateHandler {
-            newListener.stateUpdateHandler = currentStateHandler
-        }
-
-        if let currentConnectionHandler = listener.newConnectionHandler {
-            newListener.newConnectionHandler = currentConnectionHandler
-        }
-
-        newListener.start(queue: .main)
-
-        self.listener = newListener
-
-        log.notice("Restarted listener with a dynamic port")
+        await sseSession.close()
     }
 }
 
 actor ServerNetworkManager {
     private var isRunningState: Bool = false
     private var isEnabledState: Bool = true
-    private var discoveryManager: NetworkDiscoveryManager?
+    private var httpServer: AppleCoreHTTPServer?
+    private var serverTask: Task<Void, Never>?
     private var connections: [UUID: MCPConnectionManager] = [:]
     private var connectionTasks: [UUID: Task<Void, Never>] = [:]
-    private var pendingConnections: [UUID: String] = [:]
 
     typealias ConnectionApprovalHandler = @Sendable (UUID, MCP.Client.Info) async -> Bool
     private var connectionApprovalHandler: ConnectionApprovalHandler?
 
     private let services = ServiceRegistry.services
     private var serviceBindings: [String: Binding<Bool>] = [:]
-
-    init() {
-        do {
-            self.discoveryManager = try NetworkDiscoveryManager(
-                serviceType: serviceType,
-                serviceDomain: serviceDomain
-            )
-        } catch {
-            log.error("Failed to initialize network discovery manager: \(error)")
-        }
-    }
 
     func isRunning() -> Bool {
         isRunningState
@@ -658,97 +530,67 @@ actor ServerNetworkManager {
         log.info("Starting network manager")
         isRunningState = true
 
-        guard let discoveryManager = discoveryManager else {
-            log.error("Cannot start network manager: discovery manager not initialized")
-            return
+        let servingConfig = Self.bootstrappedServingConfig()
+        let httpServer = AppleCoreHTTPServer(config: servingConfig)
+        self.httpServer = httpServer
+
+        await httpServer.setSessionFactory { [weak self] sessionID in
+            guard let self else {
+                // Should not happen: the HTTP server is owned by (and only
+                // ever started from) this actor. Fabricate a disconnected
+                // session rather than crash.
+                let orphanTransport = SSETransport()
+                return MCPSSESession(id: sessionID, transport: orphanTransport)
+            }
+            return await self.handleNewConnection(sessionID: sessionID)
         }
 
-        await discoveryManager.start(
-            stateHandler: { [weak self] (state: NWListener.State) -> Void in
-                guard let strongSelf = self else { return }
+        await httpServer.setSessionCloseHandler { [weak self] sessionID in
+            guard let self, let connectionID = UUID(uuidString: sessionID) else { return }
+            Task { await self.removeConnection(connectionID) }
+        }
 
-                Task {
-                    await strongSelf.handleListenerStateChange(state)
-                }
-            },
-            connectionHandler: { [weak self] (connection: NWConnection) -> Void in
-                guard let strongSelf = self else { return }
-
-                Task {
-                    await strongSelf.handleNewConnection(connection)
-                }
-            }
-        )
-
-        // Monitor listener health and auto-restart if it stops advertising.
-        Task {
-            while self.isRunningState {
-                if let currentDM = self.discoveryManager,
-                    self.isRunningState
-                {
-                    let listenerState: NWListener.State = await currentDM.listener.state
-
-                    if listenerState != .ready {
-                        log.warning(
-                            "Listener not in ready state, current state: \\(listenerState)"
-                        )
-
-                        let shouldAttemptRestart: Bool
-                        switch listenerState {
-                        case .failed, .cancelled:
-                            shouldAttemptRestart = true
-                        default:
-                            shouldAttemptRestart = false
-                        }
-
-                        if shouldAttemptRestart {
-                            log.info(
-                                "Attempting to restart listener (state: \\(listenerState)) because it was failed or cancelled."
-                            )
-                            try? await currentDM.restartWithRandomPort()
-                        }
-                    }
-                }
-
-                try? await Task.sleep(nanoseconds: 10_000_000_000)  // 10s
+        serverTask = Task {
+            do {
+                try await httpServer.start()
+            } catch {
+                log.error("HTTP/SSE server failed: \(error.localizedDescription)")
             }
         }
     }
 
-    private func handleListenerStateChange(_ state: NWListener.State) async {
-        switch state {
-        case .ready:
-            log.info("Server ready and advertising via Bonjour as \(serviceType)")
-        case .setup:
-            log.debug("Server setting up...")
-        case .waiting(let error):
-            log.warning("Server waiting: \(error)")
+    /// Loads the persisted serving config, generating and persisting a
+    /// bearer token on first run if one isn't set yet. A token is only
+    /// strictly required once the user opts into public (Cloudflare tunnel)
+    /// exposure; see `AppleCoreHTTPServer.isAuthorized`.
+    private static func bootstrappedServingConfig() -> AppleCoreServingConfig {
+        var config = ServingConfigManager.load()
+        var changed = false
 
-            // If the port is already in use, try a new one.
-            if error.errorCode == 48 {
-                log.error("Port already in use, will try to restart service")
-
-                try? await Task.sleep(nanoseconds: 2_000_000_000)  // 2 seconds
-
-                if isRunningState {
-                    try? await discoveryManager?.restartWithRandomPort()
-                }
-            }
-        case .failed(let error):
-            log.error("Server failed: \(error)")
-
-            // Attempt recovery after a brief delay.
-            if isRunningState {
-                log.info("Attempting to recover from server failure")
-                try? await Task.sleep(nanoseconds: 1_000_000_000)  // 1 second
-
-                try? await discoveryManager?.restartWithRandomPort()
-            }
-        case .cancelled:
-            log.info("Server cancelled")
-        @unknown default:
-            log.warning("Unknown server state")
+        if config.token?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true {
+            config.token = ServingConfigManager.generateSecureToken()
+            changed = true
         }
+        if config.port == nil {
+            config.port = 8756
+            changed = true
+        }
+        if config.bindHost == nil {
+            config.bindHost = "127.0.0.1"
+            changed = true
+        }
+        if config.allowedOrigins == nil {
+            config.allowedOrigins = ServingConfigManager.defaultAllowedOrigins(
+                port: config.port ?? 8756,
+                publicBaseURL: config.publicBaseURL
+            )
+            changed = true
+        }
+
+        if changed {
+            ServingConfigManager.save(config)
+        }
+        return config
     }
 
     func stop() async {
@@ -763,9 +605,10 @@ actor ServerNetworkManager {
 
         connections.removeAll()
         connectionTasks.removeAll()
-        pendingConnections.removeAll()
 
-        await discoveryManager?.stop()
+        await httpServer?.stop()
+        serverTask?.cancel()
+        serverTask = nil
     }
 
     func removeConnection(_ id: UUID) async {
@@ -781,17 +624,18 @@ actor ServerNetworkManager {
 
         connections.removeValue(forKey: id)
         connectionTasks.removeValue(forKey: id)
-        pendingConnections.removeValue(forKey: id)
     }
 
-    // Handle new incoming connections.
-    private func handleNewConnection(_ connection: NWConnection) async {
-        let connectionID = UUID()
+    // Handle a newly opened HTTP/SSE session: build its MCP.Server +
+    // transport, kick off the approval/registration flow in the
+    // background, and hand the session's HTTP-facing half back to
+    // AppleCoreHTTPServer so it can plumb request/response bytes.
+    private func handleNewConnection(sessionID: String) async -> MCPSSESession {
+        let connectionID = UUID(uuidString: sessionID) ?? UUID()
         log.info("Handling new connection: \(connectionID)")
 
         let connectionManager = MCPConnectionManager(
             connectionID: connectionID,
-            connection: connection,
             parentManager: self
         )
 
@@ -838,6 +682,8 @@ actor ServerNetworkManager {
                 await removeConnection(connectionID)
             }
         }
+
+        return connectionManager.sseSession
     }
 
     func registerHandlers(for server: MCP.Server, connectionID: UUID) async {

@@ -1,0 +1,61 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release (e.g. 1.0.0). Creates tag v<version> at the dispatched ref if it does not exist."
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    uses: ./.github/workflows/ci.yml
+
+  release:
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            TAG="v${INPUT_VERSION#v}"
+          else
+            TAG="$GITHUB_REF_NAME"
+          fi
+
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; leaving it unchanged."
+            exit 0
+          fi
+
+          ARGS=(--repo "$GITHUB_REPOSITORY" --title "Apple Core ${TAG#v}")
+
+          NOTES_FILE="docs/release-notes/$TAG.md"
+          if [ -f "$NOTES_FILE" ]; then
+            ARGS+=(--notes-file "$NOTES_FILE")
+          elif [ "$GITHUB_EVENT_NAME" = "push" ]; then
+            ARGS+=(--notes-from-tag)
+          else
+            ARGS+=(--generate-notes)
+          fi
+
+          # On dispatch the tag may not exist yet; releasing against the
+          # dispatched commit creates it.
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            ARGS+=(--target "$GITHUB_SHA")
+          fi
+
+          gh release create "$TAG" "${ARGS[@]}"
