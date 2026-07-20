@@ -1,3 +1,12 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// Client connection approval window. Rebuilt around Bridgeport's design
+// language (bridgeport/Sources/bridgeport/Views/SettingsView.swift: the
+// ProductHeader/SettingsGroup card treatment and callout/secondary text
+// hierarchy), replacing the iMCP-inherited dialog. The window controller
+// keeps the same showApprovalWindow(clientName:onApprove:onDeny:) API that
+// ServerController already calls.
+
 import AppKit
 import SwiftUI
 
@@ -9,43 +18,59 @@ struct ConnectionApprovalView: View {
     @State private var alwaysTrust = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            // Icon
-            Image(.menuIconOn)
-                .resizable()
-                .foregroundColor(.accentColor)
-                .aspectRatio(contentMode: .fit)
-                .frame(width: 64, height: 64)
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(spacing: 14) {
+                Image(nsImage: NSApp.applicationIconImage)
+                    .resizable()
+                    .frame(width: 52, height: 52)
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
 
-            // Title
-            Text("Client Connection Request")
-                .font(.title2)
-                .fontWeight(.semibold)
-
-            // Message
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Allow \"\(clientName)\" to connect to iMCP?")
-
-                Text("This will give the client access to enabled services.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .multilineTextAlignment(.leading)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Connection Request")
+                        .font(.title2.weight(.semibold))
+                    Text("Allow “\(clientName)” to connect to Apple Core?")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.quaternary.opacity(0.28), in: RoundedRectangle(cornerRadius: 8))
 
-            // Always trust checkbox
-            HStack(alignment: .firstTextBaseline) {
-                Toggle("Always trust this client", isOn: $alwaysTrust)
-                    .toggleStyle(CheckboxToggleStyle())
+            VStack(alignment: .leading, spacing: 10) {
+                Label {
+                    Text("This client will get access to every service surface you have enabled.")
+                        .fixedSize(horizontal: false, vertical: true)
+                } icon: {
+                    Image(systemName: "square.grid.2x2")
+                        .foregroundStyle(.secondary)
+                }
+                .font(.callout)
+
+                Divider()
+
+                Toggle(isOn: $alwaysTrust) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Always trust this client")
+                        Text("Trusted clients connect without asking again. Manage them in Settings › Security.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .toggleStyle(.checkbox)
+            }
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.quaternary.opacity(0.28), in: RoundedRectangle(cornerRadius: 8))
+
+            HStack {
                 Spacer()
-            }
-            .padding(.bottom, 20)
 
-            // Buttons
-            HStack(spacing: 12) {
                 Button("Deny") {
                     onDeny()
                 }
-                .buttonStyle(.bordered)
                 .keyboardShortcut(.cancelAction)
 
                 Button("Allow") {
@@ -55,46 +80,21 @@ struct ConnectionApprovalView: View {
                 .keyboardShortcut(.defaultAction)
             }
         }
-        .padding(24)
-        .frame(width: 400, height: 300)
-        .fixedSize()
-        .background(Color(NSColor.windowBackgroundColor))
-        .cornerRadius(12)
-        .shadow(radius: 10)
-    }
-}
-
-struct CheckboxToggleStyle: ToggleStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        HStack {
-            Image(systemName: configuration.isOn ? "checkmark.square.fill" : "square")
-                .foregroundColor(configuration.isOn ? .accentColor : .secondary)
-                .accessibilityLabel(
-                    configuration.isOn ? "Always trust this client, checked" : "Always trust this client, unchecked"
-                )
-                .onTapGesture {
-                    configuration.isOn.toggle()
-                }
-
-            configuration.label
-                .onTapGesture {
-                    configuration.isOn.toggle()
-                }
-        }
+        .padding(20)
+        .frame(width: 440)
+        .fixedSize(horizontal: false, vertical: true)
     }
 }
 
 @MainActor
 class ConnectionApprovalWindowController: NSObject {
     private var window: NSWindow?
-    private var approvalView: ConnectionApprovalView?
 
     func showApprovalWindow(
         clientName: String,
         onApprove: @escaping (Bool) -> Void,
         onDeny: @escaping () -> Void
     ) {
-        // Create the SwiftUI view
         let approvalView = ConnectionApprovalView(
             clientName: clientName,
             onApprove: { alwaysTrust in
@@ -107,53 +107,25 @@ class ConnectionApprovalWindowController: NSObject {
             }
         )
 
-        // Create the hosting controller
         let hostingController = NSHostingController(rootView: approvalView)
 
-        // Create the window with fixed size matching the SwiftUI view
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
-            styleMask: [.titled, .closable],
-            backing: .buffered,
-            defer: false
-        )
-
+        let window = NSWindow(contentViewController: hostingController)
+        window.styleMask = [.titled, .closable]
         window.title = "Connection Request"
-        window.contentViewController = hostingController
         window.isReleasedWhenClosed = false
         window.level = .floating
-        window.isMovableByWindowBackground = false
-        window.titlebarAppearsTransparent = false
-
-        // Initial centering
+        window.tabbingMode = .disallowed
         window.center()
 
-        // Store references
         self.window = window
-        self.approvalView = approvalView
 
-        // Activate the app first
         NSApp.activate(ignoringOtherApps: true)
-
-        // Show the window
         window.makeKeyAndOrderFront(nil)
-
-        // Center again after showing to ensure proper positioning
-        Task { @MainActor in
-            if let screen = NSScreen.main {
-                let screenRect = screen.visibleFrame
-                let windowRect = window.frame
-                let x = (screenRect.width - windowRect.width) / 2 + screenRect.origin.x
-                let y = (screenRect.height - windowRect.height) / 2 + screenRect.origin.y
-                window.setFrameOrigin(NSPoint(x: x, y: y))
-            }
-        }
     }
 
     private func closeWindow() {
         window?.close()
         window = nil
-        approvalView = nil
     }
 }
 
@@ -167,5 +139,4 @@ class ConnectionApprovalWindowController: NSObject {
             print("Denied")
         }
     )
-    .frame(width: 500, height: 400)
 }

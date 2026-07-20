@@ -1,5 +1,21 @@
 # Apple Core worklog
 
+## 2026-07-20 — Revival: Bridgeport serving-shell architecture pivot
+
+**What changed:**
+
+- Un-archived `oliverames/apple-core` (still private) and cloned to `~/Developer/Projects/apple-core`; re-added `upstream` remote pointing at `mattt/iMCP`.
+- **Architecture pivot recorded in `BUILD_PLAN.md` §0a**, superseding §0 decision #6: the never-shipped `.app` + CLI/`NSXPCConnection` design is replaced by a single-process app using the HTTP/SSE serving shell ported from `bridgeport` (Oliver's more mature personal MCP gateway). §5.1 tracer-bullet framing, §5.2 version targets, §7 (Mail confirmed in v1 scope), §8, and §9 updated to match.
+- **Ported serving shell** into `App/Services/Serving/`: `AppleCoreHTTPServer.swift` (FlyingFox HTTP/SSE), `MCPTransportBridge.swift` (new — bridges HTTP/SSE to an in-process `MCP.Transport` instead of Bridgeport's child-process `ProcessBridge`), `CloudflareManager.swift`, `OAuthSupport.swift`, `LaunchAgentManager.swift`/`LaunchAgentPlist.swift`, `ServingConfig.swift` (per-surface `exposePublicly`, config at `~/.config/apple-core/`), `ProcessShell.swift`, `ServingLog.swift`. All rebranded `com.oliverames.bridgeport.*` → `com.oliverames.applecore.*`. Bonjour discovery (`NetworkDiscoveryManager`), `NWConnection` transport, and the CLI `StdioProxy` removed; `ServerNetworkManager.registerHandlers` dispatch preserved unchanged as the seam.
+- **Build is green** (`xcodebuild -scheme "Apple Core" -configuration Debug build` succeeds). The April blocker — Swift 6 strict-concurrency errors in the pinned `swift-sdk`'s `NetworkTransport.swift` — is moot: that code path is no longer compiled. Fixed en route: strict-concurrency/deprecation errors in `ServerController.swift` (new SDK `Tool.Content` case shapes, `JSONSchema`→`Value` bridge for `inputSchema`), `Capture.swift` (unused throwing Tasks, weak-capture mismatch), `CloudflareManager.swift` (static/instance mixup).
+- **Runtime smoke test passed** (BUILD_PLAN §5.1's pre-tracer gate, adapted): app launches, HTTP server on `127.0.0.1:8756` with generated bearer token, OAuth protected-resource metadata served, MCP `initialize` → `tools/list` → `tools/call` round-trips over SSE. Real result verified: `maps_search` returned the Vermont State House as a Schema.org `Place` via MapKit. `calendars_list` round-trips correctly but returns "access not authorized" until the TCC prompt is approved via the UI toggle (enabling via `defaults write` bypasses `service.activate()`).
+- **Licensing mechanics landed** per §4: root `LICENSE.md` is now GPL-3.0-or-later text; iMCP's MIT license preserved at `THIRD_PARTY_LICENSES/iMCP.LICENSE`; `NOTICE` documents current attribution state (iMCP + Bridgeport) and the discipline for future donor lifts.
+- **CI/release adapted from Bridgeport**: `ci.yml` (lint + build + unit tests + Gitleaks full-history scan, reusable via `workflow_call`), new `release.yml` (tag-triggered, CI-gated, uses `docs/release-notes/vX.Y.Z.md`), `RELEASING.md` rewritten, `Scripts/release.sh` defaults renamed iMCP → Apple Core. No release cut.
+
+**In flight at time of entry:** Bridgeport-design settings window + ping-warden menu bar pattern (App/Views, App/App.swift); native Notes surface (apple-notes-mcp parity direction, AppleScript via shared `AppleScriptRunner`) and Mail first slice (read-only AppleScript, §3.1 disk-first design still queued).
+
+**Left off at / next:** approve the Calendar TCC prompt via the settings toggle and re-run `calendars_list` for the full §5.1 tracer; then the remaining v1 surfaces per §5.2 (Reminders extensions, Messages-send, Safari tabs, and Mail's full disk-first translation).
+
 ## 2026-04-30 — Initial fork from mattt/iMCP
 
 **What changed:**

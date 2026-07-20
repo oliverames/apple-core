@@ -86,11 +86,15 @@ public enum AppleCoreServingPaths {
         configDirectory(environment: environment).appendingPathComponent("config.json")
     }
 
-    public static func oauthClientRegistryURL(environment: [String: String] = ProcessInfo.processInfo.environment) -> URL {
+    public static func oauthClientRegistryURL(environment: [String: String] = ProcessInfo.processInfo.environment)
+        -> URL
+    {
         configDirectory(environment: environment).appendingPathComponent("oauth_clients.json")
     }
 
-    public static func oauthAccessTokenStoreURL(environment: [String: String] = ProcessInfo.processInfo.environment) -> URL {
+    public static func oauthAccessTokenStoreURL(environment: [String: String] = ProcessInfo.processInfo.environment)
+        -> URL
+    {
         configDirectory(environment: environment).appendingPathComponent("oauth_tokens.json")
     }
 }

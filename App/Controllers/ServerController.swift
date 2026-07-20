@@ -1,4 +1,5 @@
 import AppKit
+import JSONSchema
 import MCP
 import OSLog
 import Ontology
@@ -11,6 +12,15 @@ import class Foundation.JSONDecoder
 import class Foundation.JSONEncoder
 
 private let log = Logger.server
+
+/// `Tool.inputSchema` (our app's model) is typed `JSONSchema`, but
+/// `MCP.Tool.init(inputSchema:)` expects `Value`. Round-trips through JSON,
+/// mirroring the same encode/decode pattern `App/Models/Tool.swift` already
+/// uses to turn tool results into `Value`.
+private func encodeSchemaAsValue(_ schema: JSONSchema) throws -> Value {
+    let data = try JSONEncoder().encode(schema)
+    return try JSONDecoder().decode(Value.self, from: data)
+}
 
 struct ServiceConfig: Identifiable {
     let id: String
@@ -49,7 +59,9 @@ enum ServiceRegistry {
             CaptureService.shared,
             ContactsService.shared,
             LocationService.shared,
+            MailService.shared,
             MapsService.shared,
+            NotesService.shared,
             MessageService.shared,
             RemindersService.shared,
             ShortcutsService.shared,
@@ -66,8 +78,10 @@ enum ServiceRegistry {
         captureEnabled: Binding<Bool>,
         contactsEnabled: Binding<Bool>,
         locationEnabled: Binding<Bool>,
+        mailEnabled: Binding<Bool>,
         mapsEnabled: Binding<Bool>,
         messagesEnabled: Binding<Bool>,
+        notesEnabled: Binding<Bool>,
         remindersEnabled: Binding<Bool>,
         shortcutsEnabled: Binding<Bool>,
         utilitiesEnabled: Binding<Bool>,
@@ -103,6 +117,13 @@ enum ServiceRegistry {
                 binding: locationEnabled
             ),
             ServiceConfig(
+                name: "Mail",
+                iconName: "envelope.fill",
+                color: .blue,
+                service: MailService.shared,
+                binding: mailEnabled
+            ),
+            ServiceConfig(
                 name: "Maps",
                 iconName: "mappin.and.ellipse",
                 color: .purple,
@@ -115,6 +136,13 @@ enum ServiceRegistry {
                 color: .green,
                 service: MessageService.shared,
                 binding: messagesEnabled
+            ),
+            ServiceConfig(
+                name: "Notes",
+                iconName: "note.text",
+                color: .yellow,
+                service: NotesService.shared,
+                binding: notesEnabled
             ),
             ServiceConfig(
                 name: "Reminders",
@@ -164,8 +192,10 @@ final class ServerController: ObservableObject {
     @AppStorage("captureEnabled") private var captureEnabled = false
     @AppStorage("contactsEnabled") private var contactsEnabled = false
     @AppStorage("locationEnabled") private var locationEnabled = false
+    @AppStorage("mailEnabled") private var mailEnabled = false
     @AppStorage("mapsEnabled") private var mapsEnabled = true  // Default enabled
     @AppStorage("messagesEnabled") private var messagesEnabled = false
+    @AppStorage("notesEnabled") private var notesEnabled = false
     @AppStorage("remindersEnabled") private var remindersEnabled = false
     @AppStorage("shortcutsEnabled") private var shortcutsEnabled = false
     @AppStorage("utilitiesEnabled") private var utilitiesEnabled = true  // Default enabled
@@ -181,8 +211,10 @@ final class ServerController: ObservableObject {
             captureEnabled: $captureEnabled,
             contactsEnabled: $contactsEnabled,
             locationEnabled: $locationEnabled,
+            mailEnabled: $mailEnabled,
             mapsEnabled: $mapsEnabled,
             messagesEnabled: $messagesEnabled,
+            notesEnabled: $notesEnabled,
             remindersEnabled: $remindersEnabled,
             shortcutsEnabled: $shortcutsEnabled,
             utilitiesEnabled: $utilitiesEnabled,
@@ -257,7 +289,9 @@ final class ServerController: ObservableObject {
     }
 
     init() {
-        Task {
+        Task { [weak self] in
+            guard let self else { return }
+
             // Initialize bindings from AppStorage before the server starts.
             await networkManager.updateServiceBindings(self.currentServiceBindings)
             await self.networkManager.start()
@@ -323,7 +357,7 @@ final class ServerController: ObservableObject {
     private func sendClientConnectionNotification(clientName: String) {
         let content = UNMutableNotificationContent()
         content.title = "Client Connected"
-        content.body = "Client '\(clientName)' has connected to iMCP"
+        content.body = "Client '\(clientName)' has connected to Apple Core"
         content.threadIdentifier = "client-connection-\(clientName)"
 
         let request = UNNotificationRequest(
@@ -440,7 +474,7 @@ actor MCPConnectionManager {
 
         // MCP server instance for this connection.
         self.server = MCP.Server(
-            name: Bundle.main.name ?? "iMCP",
+            name: Bundle.main.name ?? "Apple Core",
             version: Bundle.main.shortVersionString ?? "unknown",
             capabilities: MCP.Server.Capabilities(
                 tools: .init(listChanged: true)
@@ -715,14 +749,20 @@ actor ServerNetworkManager {
                     {
                         for tool in service.tools {
                             log.debug("Adding tool: \(tool.name)")
-                            tools.append(
-                                .init(
-                                    name: tool.name,
-                                    description: tool.description,
-                                    inputSchema: tool.inputSchema,
-                                    annotations: tool.annotations
+                            do {
+                                tools.append(
+                                    .init(
+                                        name: tool.name,
+                                        description: tool.description,
+                                        inputSchema: try encodeSchemaAsValue(tool.inputSchema),
+                                        annotations: tool.annotations
+                                    )
                                 )
-                            )
+                            } catch {
+                                log.error(
+                                    "Failed to encode input schema for tool \(tool.name): \(error)"
+                                )
+                            }
                         }
                     }
                 }
@@ -735,7 +775,7 @@ actor ServerNetworkManager {
         await server.withMethodHandler(CallTool.self) { [weak self] params in
             guard let self = self else {
                 return CallTool.Result(
-                    content: [.text("Server unavailable")],
+                    content: [.text(text: "Server unavailable", annotations: nil, _meta: nil)],
                     isError: true
                 )
             }
@@ -743,9 +783,15 @@ actor ServerNetworkManager {
             log.notice("Tool call received from \(connectionID): \(params.name)")
 
             guard await self.isEnabledState else {
-                log.notice("Tool call rejected: iMCP is disabled")
+                log.notice("Tool call rejected: Apple Core is disabled")
                 return CallTool.Result(
-                    content: [.text("iMCP is currently disabled. Please enable it to use tools.")],
+                    content: [
+                        .text(
+                            text: "Apple Core is currently disabled. Please enable it to use tools.",
+                            annotations: nil,
+                            _meta: nil
+                        )
+                    ],
                     isError: true
                 )
             }
@@ -774,7 +820,9 @@ actor ServerNetworkManager {
                                 content: [
                                     .audio(
                                         data: data.base64EncodedString(),
-                                        mimeType: mimeType
+                                        mimeType: mimeType,
+                                        annotations: nil,
+                                        _meta: nil
                                     )
                                 ],
                                 isError: false
@@ -785,7 +833,8 @@ actor ServerNetworkManager {
                                     .image(
                                         data: data.base64EncodedString(),
                                         mimeType: mimeType,
-                                        metadata: nil
+                                        annotations: nil,
+                                        _meta: nil
                                     )
                                 ],
                                 isError: false
@@ -799,20 +848,32 @@ actor ServerNetworkManager {
                             let data = try encoder.encode(value)
                             let text = String(data: data, encoding: .utf8)!
 
-                            return CallTool.Result(content: [.text(text)], isError: false)
+                            return CallTool.Result(
+                                content: [.text(text: text, annotations: nil, _meta: nil)],
+                                isError: false
+                            )
                         }
                     } catch {
                         log.error(
                             "Error executing tool \(params.name): \(error.localizedDescription)"
                         )
-                        return CallTool.Result(content: [.text("Error: \(error)")], isError: true)
+                        return CallTool.Result(
+                            content: [.text(text: "Error: \(error)", annotations: nil, _meta: nil)],
+                            isError: true
+                        )
                     }
                 }
             }
 
             log.error("Tool not found or service not enabled: \(params.name)")
             return CallTool.Result(
-                content: [.text("Tool not found or service not enabled: \(params.name)")],
+                content: [
+                    .text(
+                        text: "Tool not found or service not enabled: \(params.name)",
+                        annotations: nil,
+                        _meta: nil
+                    )
+                ],
                 isError: true
             )
         }
@@ -824,7 +885,7 @@ actor ServerNetworkManager {
         guard isEnabledState != enabled else { return }
 
         isEnabledState = enabled
-        log.info("iMCP enabled state changed to: \(enabled)")
+        log.info("Apple Core enabled state changed to: \(enabled)")
 
         // Notify all connected clients that the tool list has changed.
         for (_, connectionManager) in connections {

@@ -1,5 +1,13 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// Menu bar lifecycle reworked to follow ping-warden's execution pattern
+// (ping-warden/PingWarden/PingWarden/PingWardenApp.swift): an
+// NSApplicationDelegate owns an NSStatusItem + NSMenu directly (no
+// MenuBarExtra/MenuBarExtraAccess), the SwiftUI Settings scene is a
+// phantom that only hosts the app-settings command, and the real
+// Settings window is AppKit-managed with activation-policy switching.
+
 import AppKit
-import MenuBarExtraAccess
 import OSLog
 import SwiftUI
 
@@ -22,7 +30,9 @@ enum AppLaunchAgent {
         guard let executablePath = Bundle.main.executablePath,
             let stableExecutablePath = LaunchAgentManager.bundleExecutablePath(for: executablePath)
         else {
-            Logger.server.info("AppLaunchAgent: not running from an .app bundle in place, skipping LaunchAgent registration")
+            Logger.server.info(
+                "AppLaunchAgent: not running from an .app bundle in place, skipping LaunchAgent registration"
+            )
             return
         }
 
@@ -58,43 +68,284 @@ enum AppLaunchAgent {
                 }
             }
         } catch {
-            Logger.server.error("AppLaunchAgent: failed to install LaunchAgent: \(error.localizedDescription, privacy: .public)")
+            Logger.server.error(
+                "AppLaunchAgent: failed to install LaunchAgent: \(error.localizedDescription, privacy: .public)"
+            )
         }
     }
 }
 
-final class AppDelegate: NSObject, NSApplicationDelegate {
-    @AppStorage("runAsLaunchAgent") private var runAsLaunchAgent = true
+@MainActor
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
+    private static let enableItemTag = 100
+    private static let servicesHeaderTag = 110
+
+    private let serverController = ServerController()
+    private var statusItem: NSStatusItem?
+    private var statusMenu: NSMenu?
+    private var settingsWindowController: SettingsWindowController?
+    private var aboutWindowController: AboutWindowController?
+
+    private var runAsLaunchAgent: Bool {
+        UserDefaults.standard.object(forKey: "runAsLaunchAgent") as? Bool ?? true
+    }
+
+    private var isEnabled: Bool {
+        get { UserDefaults.standard.object(forKey: "isEnabled") as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: "isEnabled") }
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        guard runAsLaunchAgent else { return }
-        AppLaunchAgent.installIfNeeded()
+        if runAsLaunchAgent {
+            AppLaunchAgent.installIfNeeded()
+        }
+
+        setupMenuBar()
+
+        Task {
+            await serverController.setEnabled(isEnabled)
+        }
+    }
+
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        false
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        // Lockout recovery, as in ping-warden: re-opening the app with no
+        // visible windows always opens Settings.
+        if !flag {
+            openSettings()
+        }
+        return true
+    }
+
+    // MARK: - Menu Bar
+
+    private func setupMenuBar() {
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+
+        guard statusItem?.button != nil else {
+            Logger.server.error("Failed to create status item button")
+            return
+        }
+
+        updateMenuBarIcon()
+
+        let menu = NSMenu()
+        menu.delegate = self
+        // Manual isEnabled/state control: with autoenablesItems left on,
+        // AppKit re-enables items every time the menu opens, overriding the
+        // assignments in refreshMenuState().
+        menu.autoenablesItems = false
+
+        let enableItem = NSMenuItem(
+            title: "Enable MCP Server",
+            action: #selector(toggleEnabled),
+            keyEquivalent: ""
+        )
+        enableItem.target = self
+        enableItem.tag = Self.enableItemTag
+        menu.addItem(enableItem)
+
+        menu.addItem(NSMenuItem.separator())
+
+        let servicesHeader = NSMenuItem(title: "Services", action: nil, keyEquivalent: "")
+        servicesHeader.isEnabled = false
+        servicesHeader.tag = Self.servicesHeaderTag
+        menu.addItem(servicesHeader)
+
+        for config in serverController.computedServiceConfigs {
+            let item = NSMenuItem(
+                title: config.name,
+                action: #selector(toggleService(_:)),
+                keyEquivalent: ""
+            )
+            item.target = self
+            item.representedObject = config.id
+            item.image = serviceSymbol(config.iconName)
+            menu.addItem(item)
+        }
+
+        menu.addItem(NSMenuItem.separator())
+
+        let claudeDesktopItem = NSMenuItem(
+            title: "Configure Claude Desktop",
+            action: #selector(configureClaudeDesktop),
+            keyEquivalent: ""
+        )
+        claudeDesktopItem.target = self
+        menu.addItem(claudeDesktopItem)
+
+        menu.addItem(NSMenuItem.separator())
+
+        let settingsItem = NSMenuItem(
+            title: "Settings…",
+            action: #selector(openSettingsFromMenu),
+            keyEquivalent: ","
+        )
+        settingsItem.target = self
+        menu.addItem(settingsItem)
+
+        let aboutItem = NSMenuItem(
+            title: "About Apple Core",
+            action: #selector(openAbout),
+            keyEquivalent: ""
+        )
+        aboutItem.target = self
+        menu.addItem(aboutItem)
+
+        menu.addItem(NSMenuItem.separator())
+
+        let quitItem = NSMenuItem(
+            title: "Quit Apple Core",
+            action: #selector(NSApplication.terminate(_:)),
+            keyEquivalent: "q"
+        )
+        quitItem.isEnabled = true
+        menu.addItem(quitItem)
+
+        statusMenu = menu
+        statusItem?.menu = menu
+        refreshMenuState()
+    }
+
+    private func serviceSymbol(_ symbolName: String) -> NSImage? {
+        let image = NSImage(systemSymbolName: symbolName, accessibilityDescription: nil)
+        image?.isTemplate = true
+        return image
+    }
+
+    private func updateMenuBarIcon() {
+        guard let button = statusItem?.button else { return }
+        // Per Oliver: a logo showing one thing connecting to another. The
+        // symbol depicts two apps joined by a link; the disabled state dims
+        // via the button's system disabled appearance. Falls back to the
+        // legacy asset images if the symbol is unavailable on the running OS.
+        let symbolName = "app.connected.to.app.below.fill"
+        let image: NSImage?
+        if let symbol = NSImage(systemSymbolName: symbolName, accessibilityDescription: nil) {
+            let configuration = NSImage.SymbolConfiguration(pointSize: 15, weight: .regular)
+            image = symbol.withSymbolConfiguration(configuration) ?? symbol
+        } else {
+            image = NSImage(named: isEnabled ? "MenuIcon-On" : "MenuIcon-Off")
+        }
+        image?.isTemplate = true
+        button.image = image
+        button.appearsDisabled = !isEnabled
+        button.toolTip = isEnabled ? "Apple Core: MCP server enabled" : "Apple Core: MCP server disabled"
+        button.setAccessibilityLabel(button.toolTip)
+    }
+
+    private func refreshMenuState() {
+        guard let menu = statusMenu else { return }
+
+        let bindings = serviceBindings()
+
+        if let enableItem = menu.items.first(where: { $0.tag == Self.enableItemTag }) {
+            enableItem.state = isEnabled ? .on : .off
+        }
+
+        for item in menu.items {
+            guard let serviceID = item.representedObject as? String else { continue }
+            item.state = (bindings[serviceID]?.wrappedValue ?? false) ? .on : .off
+            item.isEnabled = isEnabled
+        }
+    }
+
+    func menuWillOpen(_ menu: NSMenu) {
+        guard menu === statusMenu else { return }
+        refreshMenuState()
+    }
+
+    private func serviceBindings() -> [String: Binding<Bool>] {
+        Dictionary(
+            uniqueKeysWithValues: serverController.computedServiceConfigs.map {
+                ($0.id, $0.binding)
+            }
+        )
+    }
+
+    // MARK: - Actions
+
+    @objc private func toggleEnabled() {
+        isEnabled.toggle()
+        updateMenuBarIcon()
+        refreshMenuState()
+        Task {
+            await serverController.setEnabled(isEnabled)
+        }
+    }
+
+    @objc private func toggleService(_ sender: NSMenuItem) {
+        guard let serviceID = sender.representedObject as? String,
+            let config = serverController.computedServiceConfigs.first(where: { $0.id == serviceID })
+        else { return }
+
+        config.binding.wrappedValue.toggle()
+
+        if config.binding.wrappedValue {
+            Task {
+                do {
+                    try await config.service.activate()
+                } catch {
+                    config.binding.wrappedValue = false
+                    self.refreshMenuState()
+                }
+            }
+        }
+
+        refreshMenuState()
+        let bindings = serviceBindings()
+        Task {
+            await serverController.updateServiceBindings(bindings)
+        }
+    }
+
+    @objc private func configureClaudeDesktop() {
+        ClaudeDesktop.showConfigurationPanel()
+    }
+
+    @objc private func openSettingsFromMenu() {
+        openSettings()
+    }
+
+    func openSettings() {
+        if settingsWindowController == nil {
+            settingsWindowController = SettingsWindowController(serverController: serverController)
+        }
+        settingsWindowController?.show()
+    }
+
+    @objc private func openAbout() {
+        if aboutWindowController == nil {
+            aboutWindowController = AboutWindowController()
+        }
+        aboutWindowController?.showWindow(nil)
+        NSApp.activate(ignoringOtherApps: true)
     }
 }
 
 @main
 struct App: SwiftUI.App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
-    @StateObject private var serverController = ServerController()
-    @AppStorage("isEnabled") private var isEnabled = true
-    @State private var isMenuPresented = false
 
     var body: some Scene {
-        MenuBarExtra("iMCP", image: #"MenuIcon-\#(isEnabled ? "On" : "Off")"#) {
-            ContentView(
-                serverManager: serverController,
-                isEnabled: $isEnabled,
-                isMenuPresented: $isMenuPresented
-            )
-        }
-        .menuBarExtraStyle(.window)
-        .menuBarExtraAccess(isPresented: $isMenuPresented)
-
         Settings {
-            SettingsView(serverController: serverController)
+            // Intentionally empty, and intentionally without a fixed frame
+            // (see ping-warden's PingWardenApp for the macOS 26 constraint
+            // crash this avoids). This phantom scene exists only to host the
+            // app-settings command group below; the real Settings window is
+            // AppKit-managed by AppDelegate/SettingsWindowController.
+            EmptyView()
         }
-
         .commands {
+            CommandGroup(replacing: .appSettings) {
+                Button("Settings…") {
+                    appDelegate.openSettings()
+                }
+                .keyboardShortcut(",", modifiers: .command)
+            }
             CommandGroup(replacing: .appTermination) {
                 Button("Quit") {
                     NSApplication.shared.terminate(nil)

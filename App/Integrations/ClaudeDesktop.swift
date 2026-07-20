@@ -6,7 +6,7 @@ import OSLog
 private let log = Logger.integration("claude-desktop")
 private let configPath =
     "/Users/\(NSUserName())/Library/Application Support/Claude/claude_desktop_config.json"
-private let configBookmarkKey = "me.mattt.iMCP.claudeConfigBookmark"
+private let configBookmarkKey = "com.oliverames.applecore.claudeConfigBookmark"
 
 private let jsonEncoder: JSONEncoder = {
     let encoder = JSONEncoder()
@@ -41,14 +41,14 @@ enum ClaudeDesktop {
     static func showConfigurationPanel() {
         do {
             log.debug("Loading existing Claude Desktop configuration")
-            let (config, imcpServer) = try loadConfig()
+            let (config, appleCoreServer) = try loadConfig()
 
             let fileExists = FileManager.default.fileExists(atPath: configPath)
 
             let alert = NSAlert()
-            alert.messageText = "Set Up iMCP Server"
+            alert.messageText = "Set Up Apple Core Server"
             alert.informativeText = """
-                This will \(fileExists ? "update" : "create") the iMCP server settings in Claude Desktop.
+                This will \(fileExists ? "update" : "create") the Apple Core server settings in Claude Desktop.
 
                 Location: \(configPath)
 
@@ -63,7 +63,7 @@ enum ClaudeDesktop {
             let alertResponse = alert.runModal()
             if alertResponse == .alertFirstButtonReturn {
                 log.debug("User clicked Save, updating configuration")
-                try updateConfig(config, upserting: imcpServer)
+                try updateConfig(config, upserting: appleCoreServer)
                 log.notice("Configuration updated successfully")
             } else {
                 log.debug("User cancelled configuration update")
@@ -115,10 +115,10 @@ private func saveSecurityScopedAccess(for url: URL) throws {
 }
 
 private func loadConfig() throws -> ([String: Value], ClaudeDesktop.Config.MCPServer) {
-    log.debug("Creating default iMCP server configuration")
-    let imcpServer = ClaudeDesktop.Config.MCPServer(
+    log.debug("Creating default Apple Core server configuration")
+    let appleCoreServer = ClaudeDesktop.Config.MCPServer(
         command: Bundle.main.bundleURL
-            .appendingPathComponent("Contents/MacOS/imcp-server")
+            .appendingPathComponent("Contents/MacOS/apple-core")
             .path
     )
 
@@ -189,24 +189,24 @@ private func loadConfig() throws -> ([String: Value], ClaudeDesktop.Config.MCPSe
             return ["mcpServers": .object([:])]
         }()
 
-    return (finalConfig, imcpServer)
+    return (finalConfig, appleCoreServer)
 }
 
 private func updateConfig(
     _ config: [String: Value],
-    upserting imcpServer: ClaudeDesktop.Config.MCPServer
+    upserting appleCoreServer: ClaudeDesktop.Config.MCPServer
 )
     throws
 {
-    // Update the iMCP server entry
+    // Update the Apple Core server entry
     var updatedConfig = config
-    let imcpServerValue = try Value(imcpServer)
+    let appleCoreServerValue = try Value(appleCoreServer)
 
     if var mcpServers = config["mcpServers"]?.objectValue {
-        mcpServers["iMCP"] = imcpServerValue
+        mcpServers["apple-core"] = appleCoreServerValue
         updatedConfig["mcpServers"] = .object(mcpServers)
     } else {
-        updatedConfig["mcpServers"] = .object(["iMCP": imcpServerValue])
+        updatedConfig["mcpServers"] = .object(["apple-core": appleCoreServerValue])
     }
 
     // First try with the security-scoped URL if available
@@ -246,7 +246,7 @@ private func updateConfig(
     // Finally, show save panel as a last resort
     log.debug("Showing save panel for new configuration location")
     let savePanel = NSSavePanel()
-    savePanel.message = "Choose where to save the iMCP server settings."
+    savePanel.message = "Choose where to save the Apple Core server settings."
     savePanel.prompt = "Set Up"
     savePanel.allowedContentTypes = [.json]
     savePanel.directoryURL = URL(fileURLWithPath: configPath).deletingLastPathComponent()

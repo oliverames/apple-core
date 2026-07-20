@@ -54,15 +54,23 @@ public enum LaunchAgentManager {
     }
 
     @discardableResult
-    public static func bootstrap(label: String, uid: UInt32, plistURL: URL, attempts: Int = 5) -> LaunchAgentCommandResult {
+    public static func bootstrap(label: String, uid: UInt32, plistURL: URL, attempts: Int = 5)
+        -> LaunchAgentCommandResult
+    {
         let clampedAttempts = max(1, attempts)
-        var lastResult = LaunchAgentCommandResult(status: -1, stdout: "", stderr: "launchctl bootstrap was not attempted")
+        var lastResult = LaunchAgentCommandResult(
+            status: -1,
+            stdout: "",
+            stderr: "launchctl bootstrap was not attempted"
+        )
 
-        for attempt in 0..<clampedAttempts {
+        for attempt in 0 ..< clampedAttempts {
             let result = commandResult(runShell("/bin/launchctl", ["bootstrap", "gui/\(uid)", plistURL.path]))
             lastResult = result
 
-            if result.succeeded || isLoaded(label: label, uid: uid) || result.stderr.localizedCaseInsensitiveContains("service is already loaded") {
+            if result.succeeded || isLoaded(label: label, uid: uid)
+                || result.stderr.localizedCaseInsensitiveContains("service is already loaded")
+            {
                 return LaunchAgentCommandResult(status: 0, stdout: result.stdout, stderr: result.stderr)
             }
 
@@ -82,12 +90,14 @@ public enum LaunchAgentManager {
         return bootstrap(label: label, uid: uid, plistURL: plistURL)
     }
 
-    private static func commandResult(_ result: (status: Int32, stdout: String, stderr: String)) -> LaunchAgentCommandResult {
+    private static func commandResult(_ result: (status: Int32, stdout: String, stderr: String))
+        -> LaunchAgentCommandResult
+    {
         LaunchAgentCommandResult(status: result.status, stdout: result.stdout, stderr: result.stderr)
     }
 
     private static func waitUntilUnloaded(label: String, uid: UInt32) {
-        for attempt in 0..<5 {
+        for attempt in 0 ..< 5 {
             if !isLoaded(label: label, uid: uid) {
                 return
             }

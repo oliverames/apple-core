@@ -280,7 +280,7 @@ final class CaptureService: NSObject, Service {
 
                 Task { @MainActor in
                     if delay > 0 {
-                        try await Task.sleep(for: .seconds(delay))
+                        try? await Task.sleep(for: .seconds(delay))
                     }
 
                     let settings = AVCapturePhotoSettings()
@@ -291,11 +291,11 @@ final class CaptureService: NSObject, Service {
                     let delegate = PhotoCaptureDelegate(
                         format: format,
                         quality: quality,
-                        completion: { [weak self] result in
+                        completion: { result in
                             Task { @MainActor in
                                 timeoutTask.cancel()
                                 captureSession.stopRunning()
-                                self?.currentPhotoDelegate = nil
+                                self.currentPhotoDelegate = nil
                                 await resumeOnce(result, nil)
                             }
                         }
@@ -384,7 +384,7 @@ final class CaptureService: NSObject, Service {
 
             return try await withCheckedThrowingContinuation { continuation in
                 Task {
-                    try await Task.sleep(for: .seconds(duration + 0.5))
+                    try? await Task.sleep(for: .seconds(duration + 0.5))
                     recorder.stop()
 
                     do {

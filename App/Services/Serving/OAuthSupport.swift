@@ -63,7 +63,8 @@ public actor OAuthTokenStore {
         self.accessTokens = Self.loadAccessTokens(from: accessTokenStoreURL)
     }
 
-    public func registerClient(clientName: String, redirectURIs: [String], now: Date = Date()) -> OAuthRegisteredClient {
+    public func registerClient(clientName: String, redirectURIs: [String], now: Date = Date()) -> OAuthRegisteredClient
+    {
         let client = OAuthRegisteredClient(
             clientID: ServingConfigManager.generateSecureToken(),
             clientName: clientName,
@@ -80,7 +81,9 @@ public actor OAuthTokenStore {
         clients[id]
     }
 
-    public func adoptClientIfNeeded(clientID: String, clientName: String, redirectURI: String, now: Date = Date()) -> OAuthRegisteredClient? {
+    public func adoptClientIfNeeded(clientID: String, clientName: String, redirectURI: String, now: Date = Date())
+        -> OAuthRegisteredClient?
+    {
         if let client = clients[clientID] {
             return client
         }
@@ -93,7 +96,8 @@ public actor OAuthTokenStore {
 
         let client = OAuthRegisteredClient(
             clientID: clientID,
-            clientName: clientName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "OAuth client" : clientName,
+            clientName: clientName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? "OAuth client" : clientName,
             redirectURIs: [redirectURI],
             issuedAt: Int(now.timeIntervalSince1970)
         )
@@ -201,7 +205,11 @@ public actor OAuthTokenStore {
 
         var tokens: [String: OAuthAccessToken] = [:]
         for entry in persisted.tokens where entry.expiresAt > now {
-            tokens[entry.token] = OAuthAccessToken(token: entry.token, resource: entry.resource, expiresAt: entry.expiresAt)
+            tokens[entry.token] = OAuthAccessToken(
+                token: entry.token,
+                resource: entry.resource,
+                expiresAt: entry.expiresAt
+            )
         }
         return tokens
     }
@@ -223,7 +231,8 @@ public actor OAuthTokenStore {
         let persisted = PersistedOAuthAccessTokens(
             tokens: accessTokens.values
                 .sorted { $0.token < $1.token }
-                .map { PersistedOAuthAccessToken(token: $0.token, resource: $0.resource, expiresAt: $0.expiresAt) })
+                .map { PersistedOAuthAccessToken(token: $0.token, resource: $0.resource, expiresAt: $0.expiresAt) }
+        )
         Self.writePrivateJSON(persisted, to: accessTokenStoreURL, label: "OAuth access tokens")
     }
 

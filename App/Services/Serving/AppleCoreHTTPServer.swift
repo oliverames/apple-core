@@ -257,21 +257,36 @@ public actor AppleCoreHTTPServer {
     private func oauthRegisterClient(_ request: HTTPRequest) async -> HTTPResponse {
         do {
             guard Self.isContentLengthAllowed(request) else {
-                return Self.oauthErrorResponse(.payloadTooLarge, "invalid_request", "Request body too large.", request: request)
+                return Self.oauthErrorResponse(
+                    .payloadTooLarge,
+                    "invalid_request",
+                    "Request body too large.",
+                    request: request
+                )
             }
 
             let data = try await request.bodyData
             guard data.count <= Self.maxRequestBodyBytes,
                 let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
             else {
-                return Self.oauthErrorResponse(.badRequest, "invalid_request", "Expected a JSON dynamic client registration request.", request: request)
+                return Self.oauthErrorResponse(
+                    .badRequest,
+                    "invalid_request",
+                    "Expected a JSON dynamic client registration request.",
+                    request: request
+                )
             }
 
             let redirectURIs = object["redirect_uris"] as? [String] ?? []
             guard !redirectURIs.isEmpty,
                 redirectURIs.allSatisfy(OAuthSupport.isAllowedRedirectURI)
             else {
-                return Self.oauthErrorResponse(.badRequest, "invalid_redirect_uri", "Redirect URIs must be https URLs or localhost callback URLs.", request: request)
+                return Self.oauthErrorResponse(
+                    .badRequest,
+                    "invalid_redirect_uri",
+                    "Redirect URIs must be https URLs or localhost callback URLs.",
+                    request: request
+                )
             }
 
             let clientName = (object["client_name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -295,14 +310,24 @@ public actor AppleCoreHTTPServer {
                 noStore: true
             )
         } catch {
-            return Self.oauthErrorResponse(.badRequest, "invalid_request", "Could not read dynamic client registration request.", request: request)
+            return Self.oauthErrorResponse(
+                .badRequest,
+                "invalid_request",
+                "Could not read dynamic client registration request.",
+                request: request
+            )
         }
     }
 
     private func oauthAuthorizeForm(_ request: HTTPRequest) async -> HTTPResponse {
         let query = OAuthSupport.queryDictionary(request.query.map { URLQueryItem(name: $0.name, value: $0.value) })
         guard let validation = await validatedAuthorizationRequest(query) else {
-            return Self.oauthErrorResponse(.badRequest, "invalid_request", "Invalid OAuth authorization request.", request: request)
+            return Self.oauthErrorResponse(
+                .badRequest,
+                "invalid_request",
+                "Invalid OAuth authorization request.",
+                request: request
+            )
         }
 
         return Self.htmlResponse(.ok, authorizationFormHTML(validation: validation, error: nil))
@@ -320,7 +345,12 @@ public actor AppleCoreHTTPServer {
 
             let form = OAuthSupport.parseFormURLEncoded(data)
             guard let validation = await validatedAuthorizationRequest(form) else {
-                return Self.oauthErrorResponse(.badRequest, "invalid_request", "Invalid OAuth authorization request.", request: request)
+                return Self.oauthErrorResponse(
+                    .badRequest,
+                    "invalid_request",
+                    "Invalid OAuth authorization request.",
+                    request: request
+                )
             }
 
             let approvalToken = form["apple_core_token"] ?? ""
@@ -328,7 +358,10 @@ public actor AppleCoreHTTPServer {
                 // Slow down online guessing against the approval form; the
                 // master token is high-entropy but this endpoint is public.
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
-                return Self.htmlResponse(.forbidden, authorizationFormHTML(validation: validation, error: "Apple Core token did not match."))
+                return Self.htmlResponse(
+                    .forbidden,
+                    authorizationFormHTML(validation: validation, error: "Apple Core token did not match.")
+                )
             }
 
             guard
@@ -339,11 +372,21 @@ public actor AppleCoreHTTPServer {
                     resource: validation.resource
                 )
             else {
-                return Self.oauthErrorResponse(.badRequest, "invalid_request", "Could not issue authorization code.", request: request)
+                return Self.oauthErrorResponse(
+                    .badRequest,
+                    "invalid_request",
+                    "Could not issue authorization code.",
+                    request: request
+                )
             }
 
             guard var components = URLComponents(string: validation.redirectURI) else {
-                return Self.oauthErrorResponse(.badRequest, "invalid_redirect_uri", "Invalid redirect URI.", request: request)
+                return Self.oauthErrorResponse(
+                    .badRequest,
+                    "invalid_redirect_uri",
+                    "Invalid redirect URI.",
+                    request: request
+                )
             }
             var queryItems = components.queryItems ?? []
             queryItems.append(URLQueryItem(name: "code", value: code))
@@ -356,18 +399,33 @@ public actor AppleCoreHTTPServer {
             headers[HTTPHeader("Location")] = components.url?.absoluteString ?? validation.redirectURI
             return HTTPResponse(statusCode: .seeOther, headers: headers)
         } catch {
-            return Self.oauthErrorResponse(.badRequest, "invalid_request", "Could not read OAuth authorization approval.", request: request)
+            return Self.oauthErrorResponse(
+                .badRequest,
+                "invalid_request",
+                "Could not read OAuth authorization approval.",
+                request: request
+            )
         }
     }
 
     private func oauthToken(_ request: HTTPRequest) async -> HTTPResponse {
         do {
             guard Self.isContentLengthAllowed(request) else {
-                return Self.oauthErrorResponse(.payloadTooLarge, "invalid_request", "Request body too large.", request: request)
+                return Self.oauthErrorResponse(
+                    .payloadTooLarge,
+                    "invalid_request",
+                    "Request body too large.",
+                    request: request
+                )
             }
             let data = try await request.bodyData
             guard data.count <= Self.maxRequestBodyBytes else {
-                return Self.oauthErrorResponse(.payloadTooLarge, "invalid_request", "Request body too large.", request: request)
+                return Self.oauthErrorResponse(
+                    .payloadTooLarge,
+                    "invalid_request",
+                    "Request body too large.",
+                    request: request
+                )
             }
 
             let form = OAuthSupport.parseFormURLEncoded(data)
@@ -377,7 +435,12 @@ public actor AppleCoreHTTPServer {
                 let redirectURI = form["redirect_uri"],
                 let verifier = form["code_verifier"]
             else {
-                return Self.oauthErrorResponse(.badRequest, "invalid_request", "Expected authorization_code token exchange with PKCE.", request: request)
+                return Self.oauthErrorResponse(
+                    .badRequest,
+                    "invalid_request",
+                    "Expected authorization_code token exchange with PKCE.",
+                    request: request
+                )
             }
 
             guard
@@ -388,7 +451,12 @@ public actor AppleCoreHTTPServer {
                     codeVerifier: verifier
                 )
             else {
-                return Self.oauthErrorResponse(.badRequest, "invalid_grant", "Authorization code could not be redeemed.", request: request)
+                return Self.oauthErrorResponse(
+                    .badRequest,
+                    "invalid_grant",
+                    "Authorization code could not be redeemed.",
+                    request: request
+                )
             }
 
             return Self.jsonResponse(
@@ -403,7 +471,12 @@ public actor AppleCoreHTTPServer {
                 noStore: true
             )
         } catch {
-            return Self.oauthErrorResponse(.badRequest, "invalid_request", "Could not read OAuth token request.", request: request)
+            return Self.oauthErrorResponse(
+                .badRequest,
+                "invalid_request",
+                "Could not read OAuth token request.",
+                request: request
+            )
         }
     }
 
@@ -555,7 +628,11 @@ public actor AppleCoreHTTPServer {
         var headers = HTTPHeaders()
         headers[.contentType] = "text/plain"
         headers[HTTPHeader("Retry-After")] = "30"
-        return HTTPResponse(statusCode: .serviceUnavailable, headers: headers, body: Data("Too many active sessions\n".utf8))
+        return HTTPResponse(
+            statusCode: .serviceUnavailable,
+            headers: headers,
+            body: Data("Too many active sessions\n".utf8)
+        )
     }
 
     private func registerSession(_ session: MCPSSESession) {
@@ -623,7 +700,9 @@ public actor AppleCoreHTTPServer {
             return false
         }
 
-        let pathComponents = resourceComponents.path.split(separator: "/", omittingEmptySubsequences: true).map(String.init)
+        let pathComponents = resourceComponents.path.split(separator: "/", omittingEmptySubsequences: true).map(
+            String.init
+        )
         return pathComponents == ["mcp"]
     }
 
@@ -781,7 +860,12 @@ public actor AppleCoreHTTPServer {
         HTTPResponse(statusCode: statusCode, headers: [.contentType: "text/html; charset=utf-8"], body: Data(html.utf8))
     }
 
-    private static func jsonResponse(_ statusCode: HTTPStatusCode, _ object: [String: Any], request: HTTPRequest, noStore: Bool = false) -> HTTPResponse {
+    private static func jsonResponse(
+        _ statusCode: HTTPStatusCode,
+        _ object: [String: Any],
+        request: HTTPRequest,
+        noStore: Bool = false
+    ) -> HTTPResponse {
         let data = (try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])) ?? Data("{}".utf8)
         var headers = oauthCORSHeaders(for: request)
         headers[.contentType] = "application/json"
@@ -793,7 +877,12 @@ public actor AppleCoreHTTPServer {
         return HTTPResponse(statusCode: statusCode, headers: headers, body: data)
     }
 
-    private static func oauthErrorResponse(_ statusCode: HTTPStatusCode, _ error: String, _ description: String, request: HTTPRequest) -> HTTPResponse {
+    private static func oauthErrorResponse(
+        _ statusCode: HTTPStatusCode,
+        _ error: String,
+        _ description: String,
+        request: HTTPRequest
+    ) -> HTTPResponse {
         jsonResponse(
             statusCode,
             [
@@ -844,7 +933,7 @@ public actor AppleCoreHTTPServer {
         let maxCount = max(lhsBytes.count, rhsBytes.count)
         var difference = lhsBytes.count ^ rhsBytes.count
 
-        for index in 0..<maxCount {
+        for index in 0 ..< maxCount {
             let left = index < lhsBytes.count ? lhsBytes[index] : 0
             let right = index < rhsBytes.count ? rhsBytes[index] : 0
             difference |= Int(left ^ right)

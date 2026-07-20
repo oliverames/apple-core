@@ -177,7 +177,10 @@ public actor CloudflareManager {
             return CloudflareOperationResult(settings: settings, status: status, didChangeSettings: before != settings)
         }
         guard fileManager.fileExists(atPath: settings.cloudflaredPath) else {
-            let status = status(messageOverride: "cloudflared is not installed at \(settings.cloudflaredPath).", forcedState: .missingCloudflared)
+            let status = status(
+                messageOverride: "cloudflared is not installed at \(settings.cloudflaredPath).",
+                forcedState: .missingCloudflared
+            )
             return CloudflareOperationResult(settings: settings, status: status, didChangeSettings: before != settings)
         }
 
@@ -189,10 +192,15 @@ public actor CloudflareManager {
                 settings.createdByAppleCore = true
             } else {
                 let status = status(
-                    messageOverride: "Apple Core could not create the Cloudflare tunnel. Run cloudflared tunnel login or configure a tunnel token, then try again.",
+                    messageOverride:
+                        "Apple Core could not create the Cloudflare tunnel. Run cloudflared tunnel login or configure a tunnel token, then try again.",
                     forcedState: .needsTunnel
                 )
-                return CloudflareOperationResult(settings: settings, status: status, didChangeSettings: before != settings)
+                return CloudflareOperationResult(
+                    settings: settings,
+                    status: status,
+                    didChangeSettings: before != settings
+                )
             }
         }
 
@@ -234,9 +242,16 @@ public actor CloudflareManager {
     @discardableResult
     public func stopTunnel() -> CloudflareTunnelStatus {
         if isLaunchAgentRunning() {
-            let result = LaunchAgentManager.bootout(label: settings.launchAgentLabel, uid: uid, plistURL: launchAgentURL)
+            let result = LaunchAgentManager.bootout(
+                label: settings.launchAgentLabel,
+                uid: uid,
+                plistURL: launchAgentURL
+            )
             if result.status != 0 {
-                return status(messageOverride: "Cloudflare tunnel failed to stop: \(sanitized(result.stderr))", forcedState: .error)
+                return status(
+                    messageOverride: "Cloudflare tunnel failed to stop: \(sanitized(result.stderr))",
+                    forcedState: .error
+                )
             }
         }
         return status(messageOverride: "Cloudflare tunnel stopped.", forcedState: .stopped)
@@ -253,7 +268,10 @@ public actor CloudflareManager {
 
         let result = LaunchAgentManager.restart(label: settings.launchAgentLabel, uid: uid, plistURL: launchAgentURL)
         if result.status != 0 {
-            return status(messageOverride: "Cloudflare tunnel failed to restart: \(sanitized(result.stderr))", forcedState: .error)
+            return status(
+                messageOverride: "Cloudflare tunnel failed to restart: \(sanitized(result.stderr))",
+                forcedState: .error
+            )
         }
         return status(messageOverride: "Cloudflare tunnel restarted.", forcedState: nil)
     }
@@ -286,7 +304,8 @@ public actor CloudflareManager {
             normalized.tunnelName = "apple-core"
         }
         if normalized.configFilePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            normalized.configFilePath = AppleCoreServingPaths.configDirectory()
+            normalized.configFilePath =
+                AppleCoreServingPaths.configDirectory()
                 .appendingPathComponent("cloudflared/config.yml")
                 .path
         } else {
@@ -313,7 +332,8 @@ public actor CloudflareManager {
     }
 
     public static func cloudflaredConfigYAML(settings: CloudflareSettings, port: UInt16, bindHost: String) -> String {
-        let tunnel = settings.tunnelId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let tunnel =
+            settings.tunnelId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ? settings.tunnelName
             : settings.tunnelId
         let hostname = settings.hostname.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -427,7 +447,8 @@ public actor CloudflareManager {
         settings.credentialsFilePath = credentialsPath
 
         do {
-            let configURL = URL(fileURLWithPath: NSString(string: settings.configFilePath).expandingTildeInPath).standardizedFileURL
+            let configURL = URL(fileURLWithPath: NSString(string: settings.configFilePath).expandingTildeInPath)
+                .standardizedFileURL
             try ensurePrivateDirectory(configURL.deletingLastPathComponent())
             let yaml = Self.cloudflaredConfigYAML(settings: settings, port: port, bindHost: bindHost)
             try yaml.write(to: configURL, atomically: true, encoding: .utf8)
@@ -453,8 +474,10 @@ public actor CloudflareManager {
                 label: settings.launchAgentLabel,
                 cloudflaredPath: settings.cloudflaredPath,
                 configFilePath: settings.configFilePath,
-                stdoutPath: AppleCoreServingPaths.configDirectory().appendingPathComponent("cloudflared_stdout.log").path,
-                stderrPath: AppleCoreServingPaths.configDirectory().appendingPathComponent("cloudflared_stderr.log").path
+                stdoutPath: AppleCoreServingPaths.configDirectory().appendingPathComponent("cloudflared_stdout.log")
+                    .path,
+                stderrPath: AppleCoreServingPaths.configDirectory().appendingPathComponent("cloudflared_stderr.log")
+                    .path
             )
             try data.write(to: launchAgentURL, options: .atomic)
             try fileManager.setAttributes([.posixPermissions: 0o644], ofItemAtPath: launchAgentURL.path)
@@ -491,7 +514,7 @@ public actor CloudflareManager {
         let credentialsPath =
             settings.credentialsFilePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ? defaultCredentialsPath(forTunnelID: settings.tunnelName)
-            : expandedPath(settings.credentialsFilePath)
+            : Self.expandedPath(settings.credentialsFilePath)
         settings.credentialsFilePath = credentialsPath
 
         do {
@@ -540,7 +563,8 @@ public actor CloudflareManager {
     }
 
     private func ensureDNSRoute() -> Bool {
-        let tunnel = settings.tunnelId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let tunnel =
+            settings.tunnelId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ? settings.tunnelName
             : settings.tunnelId
         let result = runShell(settings.cloudflaredPath, ["tunnel", "route", "dns", tunnel, settings.hostname])
@@ -570,7 +594,7 @@ public actor CloudflareManager {
     private func effectiveCredentialsPath() -> String {
         let configured = settings.credentialsFilePath.trimmingCharacters(in: .whitespacesAndNewlines)
         if !configured.isEmpty {
-            return expandedPath(configured)
+            return Self.expandedPath(configured)
         }
 
         if !settings.tunnelId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -592,7 +616,7 @@ public actor CloudflareManager {
             .path
     }
 
-    private func expandedPath(_ path: String) -> String {
+    private static func expandedPath(_ path: String) -> String {
         URL(fileURLWithPath: NSString(string: path).expandingTildeInPath).standardizedFileURL.path
     }
 
@@ -606,7 +630,7 @@ public actor CloudflareManager {
     private func firstUUID(in text: String) -> String? {
         let pattern = #"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"#
         guard let regex = try? NSRegularExpression(pattern: pattern),
-            let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..<text.endIndex, in: text)),
+            let match = regex.firstMatch(in: text, range: NSRange(text.startIndex ..< text.endIndex, in: text)),
             let range = Range(match.range, in: text)
         else {
             return nil
@@ -628,7 +652,8 @@ public actor CloudflareManager {
     }
 
     private static func yamlScalar(_ value: String) -> String {
-        let escaped = value
+        let escaped =
+            value
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "\"", with: "\\\"")
         return "\"\(escaped)\""

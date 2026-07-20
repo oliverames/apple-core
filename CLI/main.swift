@@ -28,7 +28,9 @@ struct CLIServingConfig: Decodable {
 func loadServingConfig() -> CLIServingConfig {
     let environment = ProcessInfo.processInfo.environment
     let configDirectory: URL
-    if let override = environment["APPLECORE_CONFIG_HOME"], !override.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+    if let override = environment["APPLECORE_CONFIG_HOME"],
+        !override.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    {
         configDirectory = URL(fileURLWithPath: NSString(string: override).expandingTildeInPath).standardizedFileURL
     } else {
         configDirectory = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".config/apple-core")
