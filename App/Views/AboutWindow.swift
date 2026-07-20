@@ -6,7 +6,7 @@
 import AppKit
 import SwiftUI
 
-class AboutWindowController: NSWindowController {
+final class AboutWindowController: NSWindowController {
     convenience init() {
         let window = NSWindow(contentViewController: NSHostingController(rootView: AboutView()))
         window.styleMask = [.titled, .closable]

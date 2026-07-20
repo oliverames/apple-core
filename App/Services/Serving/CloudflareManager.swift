@@ -66,6 +66,52 @@ public struct CloudflareSettings: Codable, Sendable, Equatable {
         self.apiTokenOPReference = apiTokenOPReference
         self.createdByAppleCore = createdByAppleCore
     }
+
+    // Tolerant decoding: every field falls back to its default when absent,
+    // so a hand-written or externally-generated cloudflare block missing a
+    // key can never fail the whole AppleCoreServingConfig decode. Before
+    // this, a single missing key made `ServingConfigManager.load()` silently
+    // return an empty config, and the next save clobbered the real file.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let defaults = CloudflareSettings()
+        enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? defaults.enabled
+        profileName =
+            try container.decodeIfPresent(String.self, forKey: .profileName) ?? defaults.profileName
+        accountId =
+            try container.decodeIfPresent(String.self, forKey: .accountId) ?? defaults.accountId
+        zoneId = try container.decodeIfPresent(String.self, forKey: .zoneId) ?? defaults.zoneId
+        domain = try container.decodeIfPresent(String.self, forKey: .domain) ?? defaults.domain
+        hostname =
+            try container.decodeIfPresent(String.self, forKey: .hostname) ?? defaults.hostname
+        tunnelName =
+            try container.decodeIfPresent(String.self, forKey: .tunnelName) ?? defaults.tunnelName
+        tunnelId =
+            try container.decodeIfPresent(String.self, forKey: .tunnelId) ?? defaults.tunnelId
+        credentialsFilePath =
+            try container.decodeIfPresent(String.self, forKey: .credentialsFilePath)
+            ?? defaults.credentialsFilePath
+        configFilePath =
+            try container.decodeIfPresent(String.self, forKey: .configFilePath)
+            ?? defaults.configFilePath
+        cloudflaredPath =
+            try container.decodeIfPresent(String.self, forKey: .cloudflaredPath)
+            ?? defaults.cloudflaredPath
+        launchAgentLabel =
+            try container.decodeIfPresent(String.self, forKey: .launchAgentLabel)
+            ?? defaults.launchAgentLabel
+        routeMode =
+            try container.decodeIfPresent(String.self, forKey: .routeMode) ?? defaults.routeMode
+        apiTokenEnvVar =
+            try container.decodeIfPresent(String.self, forKey: .apiTokenEnvVar)
+            ?? defaults.apiTokenEnvVar
+        apiTokenOPReference =
+            try container.decodeIfPresent(String.self, forKey: .apiTokenOPReference)
+            ?? defaults.apiTokenOPReference
+        createdByAppleCore =
+            try container.decodeIfPresent(Bool.self, forKey: .createdByAppleCore)
+            ?? defaults.createdByAppleCore
+    }
 }
 
 public enum CloudflareTunnelState: String, Codable, Sendable {

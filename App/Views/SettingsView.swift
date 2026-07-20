@@ -75,7 +75,12 @@ struct SettingsView: View {
         .navigationSplitViewStyle(.prominentDetail)
         .frame(minWidth: 860, idealWidth: 980, minHeight: 560, idealHeight: 680)
         .task {
+            model.reloadConfigFromDisk()
             await model.refreshCloudflareStatus()
+        }
+        .onChange(of: selection) { _, _ in
+            model.reloadConfigFromDisk()
+            Task { await model.refreshCloudflareStatus() }
         }
     }
 
@@ -107,7 +112,7 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
                 Divider()
-                LabeledContent("Public Services") {
+                LabeledContent("Remote Services") {
                     Text("\(model.publiclyExposedServiceCount(from: serviceConfigs))")
                         .foregroundStyle(.secondary)
                 }
@@ -119,7 +124,7 @@ struct SettingsView: View {
                         .font(.system(.body, design: .monospaced))
                         .textSelection(.enabled)
                 }
-                LabeledContent("Public") {
+                LabeledContent("Remote") {
                     Text(model.publicBaseURL.isEmpty ? "Not configured" : "\(model.clientBaseURL)/mcp")
                         .font(.system(.body, design: .monospaced))
                         .foregroundStyle(model.publicBaseURL.isEmpty ? .secondary : .primary)
@@ -146,7 +151,7 @@ struct SettingsView: View {
                         "\(model.localBaseURL)/mcp"
                     }
 
-                    CopyButton(title: "Copy Public URL", systemImage: "globe") {
+                    CopyButton(title: "Copy Remote URL", systemImage: "globe") {
                         "\(model.clientBaseURL)/mcp"
                     }
                     .disabled(model.publicBaseURL.isEmpty)
@@ -162,7 +167,8 @@ struct SettingsView: View {
             PaneHeader(
                 title: "Services",
                 subtitle:
-                    "Enable Apple system service surfaces and choose which are visible through the public hostname."
+                    "Enable Apple system service surfaces and choose which allow remote access through the tunnel "
+                    + "hostname. Remote access always requires authentication (bearer token or OAuth)."
             )
 
             LazyVStack(alignment: .leading, spacing: 12) {
@@ -296,7 +302,7 @@ struct SettingsView: View {
             PaneHeader(
                 title: "Cloudflare",
                 subtitle:
-                    "Create and run a named Cloudflare Tunnel owned by Apple Core, with explicit per-service public exposure."
+                    "Create and run a named Cloudflare Tunnel owned by Apple Core, with explicit per-service remote access."
             )
 
             SettingsGroup(title: "Status") {
@@ -314,14 +320,18 @@ struct SettingsView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Divider()
-                LabeledContent("Public URL") {
-                    Text(
+                LabeledContent("Remote URL") {
+                    let derivedURL =
                         model.publicBaseURL.isEmpty
-                            ? CloudflareManager.publicBaseURL(for: model.cloudflare) : model.publicBaseURL
-                    )
-                    .font(.system(.body, design: .monospaced))
-                    .foregroundStyle(model.cloudflare.hostname.isEmpty ? .secondary : .primary)
-                    .textSelection(.enabled)
+                        ? CloudflareManager.publicBaseURL(for: model.cloudflare) : model.publicBaseURL
+                    if derivedURL.isEmpty {
+                        Text("Not configured")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text(derivedURL)
+                            .font(.system(.body, design: .monospaced))
+                            .textSelection(.enabled)
+                    }
                 }
             }
 
@@ -339,7 +349,7 @@ struct SettingsView: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Enable Cloudflare Tunnel")
                         Text(
-                            "Apple Core will manage a local cloudflared LaunchAgent, but services are exposed only when their Public toggle is on."
+                            "Apple Core will manage a local cloudflared LaunchAgent, but services allow remote access only when their Remote Access toggle is on."
                         )
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -398,47 +408,53 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
 
-                ActionGrid(minimumItemWidth: 180) {
-                    Button {
-                        Task { await model.prepareCloudflareConfiguration() }
-                    } label: {
-                        Label("Prepare Local Config", systemImage: "wrench.and.screwdriver")
-                    }
-                    .disabled(!model.cloudflare.enabled)
+                HStack(spacing: 10) {
+                    Spacer()
 
-                    Button {
-                        Task { await model.bootstrapCloudflareTunnel() }
-                    } label: {
-                        Label("Create or Repair Tunnel", systemImage: "plus.circle")
-                    }
-                    .disabled(!model.cloudflare.enabled || !(model.cloudflareStatus?.cloudflaredInstalled ?? false))
+                    Menu {
+                        Button("Prepare Local Config") {
+                            Task { await model.prepareCloudflareConfiguration() }
+                        }
+                        .disabled(!model.cloudflare.enabled)
 
-                    Button {
-                        Task { await model.startCloudflareTunnel() }
-                    } label: {
-                        Label("Start Tunnel", systemImage: "play.circle")
-                    }
-                    .disabled(!model.cloudflare.enabled || model.cloudflareStatus?.state == .running)
+                        Button("Create or Repair Tunnel") {
+                            Task { await model.bootstrapCloudflareTunnel() }
+                        }
+                        .disabled(
+                            !model.cloudflare.enabled || !(model.cloudflareStatus?.cloudflaredInstalled ?? false)
+                        )
 
-                    Button {
-                        Task { await model.stopCloudflareTunnel() }
+                        Button("Restart Tunnel") {
+                            Task { await model.restartCloudflareTunnel() }
+                        }
+                        .disabled(!model.cloudflare.enabled || model.cloudflareStatus?.state == .needsTunnel)
                     } label: {
-                        Label("Stop Tunnel", systemImage: "stop.circle")
+                        Label("Tunnel Actions", systemImage: "ellipsis.circle")
                     }
-                    .disabled(model.cloudflareStatus?.state != .running)
+                    .fixedSize()
 
-                    Button {
-                        Task { await model.restartCloudflareTunnel() }
-                    } label: {
-                        Label("Restart Tunnel", systemImage: "arrow.clockwise.circle")
+                    if model.cloudflareStatus?.state == .running {
+                        Button {
+                            Task { await model.stopCloudflareTunnel() }
+                        } label: {
+                            Label("Stop Tunnel", systemImage: "stop.circle")
+                                .frame(width: 130)
+                        }
+                    } else {
+                        Button {
+                            Task { await model.startCloudflareTunnel() }
+                        } label: {
+                            Label("Start Tunnel", systemImage: "play.circle")
+                                .frame(width: 130)
+                        }
+                        .disabled(!model.cloudflare.enabled)
                     }
-                    .disabled(!model.cloudflare.enabled || model.cloudflareStatus?.state == .needsTunnel)
                 }
             }
 
             SettingsGroup(title: "Routing") {
                 Text(
-                    "One Cloudflare hostname forwards to \(model.localBaseURL); only services with Public enabled are exposed."
+                    "One Cloudflare hostname forwards to \(model.localBaseURL); only services with Remote Access enabled are reachable, and every remote request must authenticate."
                 )
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -446,9 +462,9 @@ struct SettingsView: View {
                 Divider()
 
                 LabeledContent("Route Mode") {
-                    Text(model.cloudflare.routeMode)
-                        .font(.system(.body, design: .monospaced))
+                    Text(humanizedRouteMode)
                         .foregroundStyle(.secondary)
+                        .help("Configured route mode: \(model.cloudflare.routeMode)")
                 }
 
                 Label(
@@ -473,7 +489,15 @@ struct SettingsView: View {
             )
         )
         .textFieldStyle(.roundedBorder)
+        .frame(maxWidth: 340, alignment: .leading)
         .onSubmit { model.save(restartServer: false) }
+    }
+
+    private var humanizedRouteMode: String {
+        switch model.cloudflare.routeMode {
+        case "single-hostname-path-routing": "Single hostname, path-based routing"
+        default: model.cloudflare.routeMode
+        }
     }
 
     private var cloudflareStatusText: String {
@@ -516,12 +540,12 @@ struct SettingsView: View {
             PaneHeader(
                 title: "Cloud Clients",
                 subtitle:
-                    "Copy the public Apple Core endpoint into Claude custom connectors and other cloud MCP clients; OAuth clients register here automatically."
+                    "Copy the remote Apple Core endpoint into Claude custom connectors and other cloud MCP clients; OAuth clients register here automatically."
             )
 
             SettingsGroup(title: "Endpoint") {
                 LabeledContent("MCP URL") {
-                    Text(model.publicBaseURL.isEmpty ? "Public base URL not configured" : "\(model.clientBaseURL)/mcp")
+                    Text(model.publicBaseURL.isEmpty ? "Remote base URL not configured" : "\(model.clientBaseURL)/mcp")
                         .font(.system(.body, design: .monospaced))
                         .foregroundStyle(model.publicBaseURL.isEmpty ? .secondary : .primary)
                         .textSelection(.enabled)
@@ -535,6 +559,12 @@ struct SettingsView: View {
 
                     CopyButton(title: "Copy Token", systemImage: "key") {
                         model.token
+                    }
+
+                    Button {
+                        ClaudeDesktop.showConfigurationPanel()
+                    } label: {
+                        Label("Configure Claude Desktop…", systemImage: "desktopcomputer")
                     }
                 }
             }
@@ -585,23 +615,47 @@ struct SettingsView: View {
             )
 
             SettingsGroup(title: "Listener") {
-                SettingsField(label: "Port") {
+                LabeledContent("Port") {
                     TextField("8756", text: $model.portText)
                         .textFieldStyle(.roundedBorder)
-                        .frame(maxWidth: 120)
+                        .multilineTextAlignment(.trailing)
+                        .frame(width: 100)
                         .onSubmit { model.save() }
                 }
-                SettingsField(label: "Bind Host") {
+                Divider()
+                LabeledContent("Bind Host") {
                     TextField("127.0.0.1", text: $model.bindHost)
                         .textFieldStyle(.roundedBorder)
-                        .frame(maxWidth: 220)
+                        .multilineTextAlignment(.trailing)
+                        .frame(width: 200)
                         .onSubmit { model.save() }
                 }
+                Divider()
+                HStack {
+                    Spacer()
+                    Button {
+                        model.save()
+                    } label: {
+                        Label("Apply and Restart Server", systemImage: "checkmark.circle")
+                    }
+                }
+            }
 
-                Button {
-                    model.save()
-                } label: {
-                    Label("Apply and Restart Server", systemImage: "checkmark.circle")
+            SettingsGroup(title: "General") {
+                Toggle(
+                    isOn: Binding(
+                        get: { model.isOpenAtLoginEnabled },
+                        set: { newValue in
+                            model.setOpenAtLogin(newValue)
+                        }
+                    )
+                ) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Open at Login")
+                        Text("Standard login item: opens Apple Core and its menu bar icon when you log in.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
 
@@ -621,9 +675,12 @@ struct SettingsView: View {
                 ) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Run as LaunchAgent")
-                        Text("Keeps Apple Core running in the background and relaunches it at login.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                        Text(
+                            "Background keep-alive: launchd relaunches Apple Core if it quits (and also starts it at "
+                                + "login, so Open at Login above is redundant while this is on)."
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                     }
                 }
 
@@ -637,23 +694,29 @@ struct SettingsView: View {
                     )
                 }
 
-                ActionGrid(minimumItemWidth: 180) {
+                Divider()
+
+                HStack(spacing: 10) {
+                    Spacer()
                     Button {
                         model.installAppLaunchAgent()
                     } label: {
                         Label("Install or Repair", systemImage: "wrench.and.screwdriver")
+                            .frame(width: 150)
                     }
 
                     Button {
                         model.refreshAppLaunchAgentStatus()
                     } label: {
                         Label("Refresh Status", systemImage: "arrow.clockwise")
+                            .frame(width: 150)
                     }
                 }
             }
         }
         .onAppear {
             model.refreshAppLaunchAgentStatus()
+            model.refreshOpenAtLoginStatus()
         }
     }
 }
@@ -690,8 +753,13 @@ private struct ServiceRow: View {
 
             Spacer()
 
-            Toggle("Public", isOn: model.exposePubliclyBinding(forServiceID: config.id))
+            Toggle("Remote", isOn: model.exposePubliclyBinding(forServiceID: config.id))
                 .disabled(!config.binding.wrappedValue)
+                .accessibilityLabel("Allow remote access to \(config.name)")
+                .help(
+                    "Allow this service through the remote tunnel hostname. "
+                        + "Remote requests still require authentication (bearer token or OAuth)."
+                )
 
             Toggle(
                 isOn: Binding(
@@ -830,7 +898,7 @@ private struct SettingsField<Content: View>: View {
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 12) {
             Text(label)
-                .frame(width: 150, alignment: .trailing)
+                .frame(width: 120, alignment: .trailing)
                 .foregroundStyle(.secondary)
             content
         }

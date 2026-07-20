@@ -87,21 +87,28 @@ struct ConnectionApprovalView: View {
 }
 
 @MainActor
-class ConnectionApprovalWindowController: NSObject {
+final class ConnectionApprovalWindowController: NSObject, NSWindowDelegate {
     private var window: NSWindow?
+    /// Fires exactly once per request: closing the window with the titlebar
+    /// close button (neither Allow nor Deny clicked) must still resolve the
+    /// pending connection, so it counts as a deny.
+    private var pendingDeny: (() -> Void)?
 
     func showApprovalWindow(
         clientName: String,
         onApprove: @escaping (Bool) -> Void,
         onDeny: @escaping () -> Void
     ) {
+        pendingDeny = onDeny
         let approvalView = ConnectionApprovalView(
             clientName: clientName,
             onApprove: { alwaysTrust in
+                self.pendingDeny = nil
                 onApprove(alwaysTrust)
                 self.closeWindow()
             },
             onDeny: {
+                self.pendingDeny = nil
                 onDeny()
                 self.closeWindow()
             }
@@ -116,6 +123,7 @@ class ConnectionApprovalWindowController: NSObject {
         window.level = .floating
         window.tabbingMode = .disallowed
         window.center()
+        window.delegate = self
 
         self.window = window
 
@@ -124,7 +132,17 @@ class ConnectionApprovalWindowController: NSObject {
     }
 
     private func closeWindow() {
+        window?.delegate = nil
         window?.close()
+        window = nil
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        // Titlebar close without choosing: resolve the request as a deny.
+        if let deny = pendingDeny {
+            pendingDeny = nil
+            deny()
+        }
         window = nil
     }
 }

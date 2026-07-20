@@ -22,8 +22,8 @@ A single signed menu-bar app (`com.oliverames.applecore`) — no XPC, no require
 
 - **Local**: MCP clients connect to `http://127.0.0.1:8756/mcp` (Streamable HTTP + SSE) with a locally-generated bearer token (`~/.config/apple-core/config.json`). A thin bundled CLI (`Contents/MacOS/apple-core`) bridges stdio-only clients to the same endpoint.
 - **Remote**: an optional Cloudflare Tunnel (managed in-app) exposes selected surfaces to cloud clients — Claude custom connectors, ChatGPT apps — behind OAuth 2.1 + PKCE.
-- **Per-surface control**: each surface (Calendar, Notes, Mail, …) has an enable toggle and a separate local-only vs. publicly-exposed toggle, managed in a Bridgeport-style settings window (Dashboard / Services / Security / Cloudflare / Cloud Clients / Server panes).
-- **Menu bar**: ping-warden-style `NSStatusItem` app with a `cable.connector` SF Symbol icon; per-client connection approval with a persistent trust list.
+- **Per-surface control**: each surface (Calendar, Notes, Mail, …) has an enable toggle and a separate Remote Access toggle (local-only by default; remote access always requires authentication — it is never anonymous), managed in a Bridgeport-style settings window (Dashboard / Services / Security / Cloudflare / Cloud Clients / Server panes).
+- **Menu bar**: ping-warden-style `NSStatusItem` app using the `app.connected.to.app.below.fill` SF Symbol (one app connecting to another); the same glyph is rendered as the app icon by `Scripts/generate_app_icon.swift` as placeholder artwork. Per-client connection approval with a persistent trust list.
 - **Daemon**: a LaunchAgent keeps the server available in the background.
 
 Full architecture rationale, per-surface deep dives, and the build sequence are in [`docs/planning/BUILD_PLAN.md`](docs/planning/BUILD_PLAN.md).

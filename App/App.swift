@@ -169,16 +169,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         menu.addItem(NSMenuItem.separator())
 
-        let claudeDesktopItem = NSMenuItem(
-            title: "Configure Claude Desktop",
-            action: #selector(configureClaudeDesktop),
-            keyEquivalent: ""
-        )
-        claudeDesktopItem.target = self
-        menu.addItem(claudeDesktopItem)
-
-        menu.addItem(NSMenuItem.separator())
-
         let settingsItem = NSMenuItem(
             title: "Settings…",
             action: #selector(openSettingsFromMenu),
@@ -300,10 +290,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         Task {
             await serverController.updateServiceBindings(bindings)
         }
-    }
-
-    @objc private func configureClaudeDesktop() {
-        ClaudeDesktop.showConfigurationPanel()
     }
 
     @objc private func openSettingsFromMenu() {

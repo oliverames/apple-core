@@ -103,12 +103,21 @@ public enum AppleCoreServingPaths {
 /// Adapted from the relevant subset of Bridgeport's `ConfigManager`.
 public enum ServingConfigManager {
     public static func load(from url: URL = AppleCoreServingPaths.configURL()) -> AppleCoreServingConfig {
-        guard let data = try? Data(contentsOf: url),
-            let config = try? JSONDecoder().decode(AppleCoreServingConfig.self, from: data)
-        else {
+        guard let data = try? Data(contentsOf: url) else {
             return AppleCoreServingConfig()
         }
-        return config
+        do {
+            return try JSONDecoder().decode(AppleCoreServingConfig.self, from: data)
+        } catch {
+            // Never silently discard an existing config: a decode failure
+            // followed by a save would clobber the on-disk file. Log loudly
+            // and fall back to defaults only for this in-memory session.
+            logMessage(
+                "ERROR: failed to decode \(url.path): \(error). "
+                    + "Using in-memory defaults; the on-disk file is left untouched until a save."
+            )
+            return AppleCoreServingConfig()
+        }
     }
 
     public static func save(_ config: AppleCoreServingConfig, to url: URL = AppleCoreServingPaths.configURL()) {

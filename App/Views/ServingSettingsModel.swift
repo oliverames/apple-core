@@ -9,6 +9,7 @@
 
 import AppKit
 import OSLog
+import ServiceManagement
 import SwiftUI
 
 @MainActor
@@ -21,6 +22,7 @@ final class ServingSettingsModel: ObservableObject {
     @Published var registeredOAuthClients: [OAuthRegisteredClient] = []
     @Published var isShowingToken = false
     @Published var isAppLaunchAgentLoaded = false
+    @Published var isOpenAtLoginEnabled = false
     @Published var lastStatusMessage = "Ready"
 
     @AppStorage("runAsLaunchAgent") var runAsLaunchAgent = true
@@ -35,6 +37,7 @@ final class ServingSettingsModel: ObservableObject {
         self.bindHost = loaded.bindHost ?? "127.0.0.1"
         self.allowedOriginsText = (loaded.allowedOrigins ?? []).joined(separator: "\n")
         refreshAppLaunchAgentStatus()
+        refreshOpenAtLoginStatus()
         reloadOAuthClients()
     }
 
@@ -86,23 +89,61 @@ final class ServingSettingsModel: ObservableObject {
 
     // MARK: - Persistence
 
-    /// Persists the current config and restarts the HTTP server so the new
+    /// Re-reads the config file so edits made outside the app (or by the
+    /// serving stack) show up; the model otherwise loads it once at init.
+    /// Called when panes appear, so it also overwrites any un-saved edits
+    /// in the port/host/origins fields with the on-disk values.
+    func reloadConfigFromDisk() {
+        let loaded = ServingConfigManager.load()
+        config = loaded
+        portText = String(loaded.port ?? 8756)
+        bindHost = loaded.bindHost ?? "127.0.0.1"
+        allowedOriginsText = (loaded.allowedOrigins ?? []).joined(separator: "\n")
+    }
+
+    /// Persists the model's edits and restarts the HTTP server so the new
     /// values take effect (the server reads its config once at startup).
+    ///
+    /// Non-destructive by construction: instead of writing the in-memory
+    /// snapshot wholesale (which once deleted a cloudflare block written to
+    /// the file by another process while this model held a stale copy), it
+    /// re-loads the on-disk config and overlays only the fields this window
+    /// edits — and overlays optional sub-blocks only when the model actually
+    /// has a value for them. Unknown/untouched keys keep their disk values.
     func save(restartServer: Bool = true) {
+        var merged = ServingConfigManager.load()
+
         if let parsedPort = UInt16(portText.trimmingCharacters(in: .whitespacesAndNewlines)), parsedPort > 0 {
-            config.port = parsedPort
+            merged.port = parsedPort
         }
         let trimmedHost = bindHost.trimmingCharacters(in: .whitespacesAndNewlines)
-        config.bindHost = trimmedHost.isEmpty ? "127.0.0.1" : trimmedHost
+        merged.bindHost = trimmedHost.isEmpty ? "127.0.0.1" : trimmedHost
 
         let origins =
             allowedOriginsText
             .split(whereSeparator: \.isNewline)
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
-        config.allowedOrigins = origins.isEmpty ? nil : origins
+        merged.allowedOrigins = origins.isEmpty ? nil : origins
 
-        ServingConfigManager.save(config)
+        if let token = config.token {
+            merged.token = token
+        }
+        if let allowQueryTokenAuth = config.allowQueryTokenAuth {
+            merged.allowQueryTokenAuth = allowQueryTokenAuth
+        }
+        if let serviceSettings = config.serviceSettings {
+            merged.serviceSettings = serviceSettings
+        }
+        if let cloudflare = config.cloudflare {
+            merged.cloudflare = cloudflare
+        }
+        if let publicBaseURL = config.publicBaseURL {
+            merged.publicBaseURL = publicBaseURL
+        }
+
+        config = merged
+        ServingConfigManager.save(merged)
         lastStatusMessage = "Saved"
 
         if restartServer {
@@ -178,6 +219,33 @@ final class ServingSettingsModel: ObservableObject {
             return
         }
         registeredOAuthClients = registry.clients.sorted { $0.issuedAt > $1.issuedAt }
+    }
+
+    // MARK: - Open at Login
+
+    /// Standard login item via SMAppService: opens the app (menu bar icon)
+    /// at login. Distinct from the LaunchAgent below, which is a keep-alive
+    /// daemon lifecycle; status can change in System Settings, so refresh
+    /// whenever the pane appears.
+    func refreshOpenAtLoginStatus() {
+        isOpenAtLoginEnabled = SMAppService.mainApp.status == .enabled
+    }
+
+    func setOpenAtLogin(_ enabled: Bool) {
+        do {
+            if enabled {
+                try SMAppService.mainApp.register()
+            } else {
+                try SMAppService.mainApp.unregister()
+            }
+            lastStatusMessage = enabled ? "Open at Login enabled" : "Open at Login disabled"
+        } catch {
+            Logger.server.error(
+                "Open at Login update failed: \(error.localizedDescription, privacy: .public)"
+            )
+            lastStatusMessage = "Open at Login update failed: \(error.localizedDescription)"
+        }
+        refreshOpenAtLoginStatus()
     }
 
     // MARK: - LaunchAgent
