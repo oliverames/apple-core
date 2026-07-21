@@ -37,6 +37,7 @@ Commands:
   package     Create the release zip from the app bundle
   notarize    Submit the app bundle for notarization
   staple      Staple the notarization ticket to the app bundle
+  appcast     Sign the release zip (Sparkle EdDSA) and add an item to appcast.xml
   commit      Commit version bump and create release tag
   release     Create a GitHub release (no assets)
   upload      Upload the release asset to GitHub
@@ -355,6 +356,103 @@ validate_staple() {
   xcrun stapler validate "${APP_BUNDLE}"
 }
 
+# Locate Sparkle's sign_update tool from the resolved SPM artifacts.
+find_sign_update() {
+  local candidate
+  candidate="$(find "${HOME}/Library/Developer/Xcode/DerivedData" \
+    -type f -name sign_update -path "*artifacts*Sparkle*" 2>/dev/null | head -1)"
+  if [[ -z "${candidate}" ]]; then
+    candidate="$(find "${HOME}/Library/Developer/Xcode/DerivedData" \
+      -type f -name sign_update 2>/dev/null | head -1)"
+  fi
+  if [[ -z "${candidate}" ]]; then
+    echo "sign_update not found. Build the app once so SPM fetches Sparkle's artifacts." >&2
+    exit 1
+  fi
+  printf '%s' "${candidate}"
+}
+
+# Sign the release zip with the Sparkle EdDSA key (from the login keychain,
+# where `generate_keys` stored it) and prepend a new item to appcast.xml.
+# Publish afterward by copying appcast.xml to the gh-pages branch (see
+# RELEASING.md); the app's SUFeedURL points at GitHub Pages.
+update_appcast() {
+  require_version
+  local release_zip_path sign_update signature notes_html pub_date length
+  release_zip_path="$(release_zip)"
+  if [[ ! -f "${release_zip_path}" ]]; then
+    echo "Missing release asset: ${release_zip_path}. Run package first." >&2
+    exit 1
+  fi
+  sign_update="$(find_sign_update)"
+  echo "Signing ${release_zip_path} with ${sign_update}"
+  signature="$("${sign_update}" "${release_zip_path}" -p)"
+  length="$(stat -f%z "${release_zip_path}")"
+  notes_html="$("$(dirname "${BASH_SOURCE[0]}")/render_release_notes.sh" "${VERSION}")"
+  pub_date="$(LC_ALL=en_US.UTF-8 date -u '+%a, %d %b %Y %H:%M:%S +0000')"
+
+  VERSION="${VERSION}" SIGNATURE="${signature}" LENGTH="${length}" \
+  NOTES_HTML="${notes_html}" PUB_DATE="${pub_date}" python3 - <<'PYEOF'
+import os, re, sys
+
+version = os.environ["VERSION"]
+signature = os.environ["SIGNATURE"].strip()
+length = os.environ["LENGTH"]
+notes = os.environ["NOTES_HTML"]
+pub_date = os.environ["PUB_DATE"]
+
+# sparkle:version must be a monotonically increasing build number; derive
+# it from the semantic version the same way ping-warden does (3.0.0 -> 30000).
+parts = [int(p) for p in version.split(".")]
+while len(parts) < 3:
+    parts.append(0)
+numeric = parts[0] * 10000 + parts[1] * 100 + parts[2]
+
+url = (
+    "https://github.com/oliverames/apple-core/releases/download/"
+    f"v{version}/Apple Core-{version}.zip"
+).replace(" ", "%20")
+
+item = f"""    <item>
+      <title>Version {version}</title>
+      <link>https://github.com/oliverames/apple-core/releases/tag/v{version}</link>
+      <sparkle:version>{numeric}</sparkle:version>
+      <sparkle:shortVersionString>{version}</sparkle:shortVersionString>
+      <description><![CDATA[
+{notes}
+      ]]></description>
+      <pubDate>{pub_date}</pubDate>
+      <enclosure url="{url}"
+                 length="{length}"
+                 type="application/octet-stream"
+                 {signature} />
+      <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+    </item>
+"""
+
+with open("appcast.xml") as f:
+    content = f.read()
+
+if f"<sparkle:shortVersionString>{version}</sparkle:shortVersionString>" in content:
+    print(f"appcast.xml already contains {version}; not adding a duplicate.", file=sys.stderr)
+    sys.exit(1)
+
+# Insert the new item immediately after <language>, so newest items lead.
+marker = re.search(r"^(\s*<language>.*</language>\n)", content, re.MULTILINE)
+if not marker:
+    print("appcast.xml missing <language> marker; is the skeleton intact?", file=sys.stderr)
+    sys.exit(1)
+insert_at = marker.end()
+content = content[:insert_at] + item + content[insert_at:]
+
+with open("appcast.xml", "w") as f:
+    f.write(content)
+print(f"Added {version} to appcast.xml")
+PYEOF
+
+  echo "Next: publish appcast.xml to the gh-pages branch (see RELEASING.md)."
+}
+
 commit_and_tag() {
   require_version
   local release_zip_path
@@ -476,6 +574,9 @@ case "${COMMAND}" in
     ;;
   push-tags)
     push_tags
+    ;;
+  appcast)
+    update_appcast
     ;;
   release)
     release
