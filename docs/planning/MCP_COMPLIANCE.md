@@ -19,7 +19,7 @@ Date: 2026-07-21. Installed server: Apple Core 1.0.0 (Streamable HTTP + SSE, bea
 | Public endpoint without authentication | **401** |
 | Public endpoint with authentication, all compiled surfaces exposed | **77 tools** |
 | Claude Code | **Previously verified end to end**; the earlier run covered the then-current 59-tool surface |
-| Codex CLI 0.144.6 | **Streamable HTTP + bearer configuration accepted**; direct live handshake enumerates 77 tools. Model-driven enumeration awaits post-disclosure confirmation before sending the inventory to an external model session. |
+| Codex CLI 0.144.6 | **Pass**; a direct authenticated handshake enumerates 77 tools, and an authenticated model run dynamically discovered and called `location_geocode`, receiving structured content. |
 
 The source defines 81 tools. Four WeatherKit tools are excluded from the current Release build because `WEATHERKIT_AVAILABLE` is not set, leaving 77 runtime tools.
 
@@ -38,6 +38,7 @@ Results:
 - Local: 77 tools, 77 unique names, 77 output schemas.
 - Public: 77 tools with all 11 compiled services explicitly remote-enabled. The same endpoint returns 401 without authentication. Remote read-only Location and Maps calls pass using public test inputs.
 - Read-only local calls pass for Calendar, Capture, Contacts, Location, Mail, Maps, Messages, Notes, Reminders, and Shortcuts. Utilities is remotely enumerated but has no read-only tool.
+- Codex model path: dynamic discovery found Apple Core's `location_geocode`; the model completed a structured read-only call for the public address `1 Infinite Loop, Cupertino, CA`. The exact 77-tool count remains verified at the protocol layer because the model-visible discovery surface does not provide an inventory-count operation.
 - The opt-in harness at `Scripts/integration_test.py` passes enumeration and the reversible local Mail template create/read/delete path. Apple-account mutations remain gated behind an exact acknowledgement plus named disposable Calendar, Reminders, Notes, or Mail containers.
 
 ## Output contract
@@ -65,7 +66,6 @@ Local visibility requires the service toggle. Remote visibility requires both th
 
 ## Remaining external gates
 
-1. Run the model-driven Codex enumeration only after post-disclosure confirmation to share the live tool names, descriptions, and schemas with that external model session.
-2. Apple-account write probes remain optional future coverage and require named disposable containers plus a fresh instruction permitting writes. The current verification was intentionally read-only.
+Apple-account write probes remain optional future coverage and require named disposable containers plus a fresh instruction permitting writes. The current verification was intentionally read-only.
 
 The first release remains parked until Oliver explicitly says to cut it.
