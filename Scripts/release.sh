@@ -4,6 +4,7 @@ set -euo pipefail
 APP_NAME="${APP_NAME:-Apple Core}"
 APP_BUNDLE="${APP_BUNDLE:-${APP_NAME}.app}"
 KEYCHAIN_PROFILE="${KEYCHAIN_PROFILE:-notarytool-profile}"
+GITHUB_REPOSITORY="${GITHUB_REPOSITORY:-oliverames/apple-core}"
 VERSION="${VERSION:-}"
 BUILD_NUMBER="${BUILD_NUMBER:-}"
 SCHEME="${SCHEME:-Apple Core}"
@@ -53,6 +54,7 @@ Environment:
   APP_NAME          App name (default: Apple Core)
   APP_BUNDLE        App bundle path (default: ${APP_NAME}.app)
   KEYCHAIN_PROFILE  Notarytool profile (default: notarytool-profile)
+  GITHUB_REPOSITORY GitHub repository used for release publishing
   RELEASE_DERIVED_DATA_PATH Neutral DerivedData path used for public builds
   VERSION           Required for bumping, commit, release, and upload
   BUILD_NUMBER      Optional; used when bumping build number
@@ -539,7 +541,7 @@ create_release() {
   local tag
   tag="$(release_tag)"
   echo "Creating GitHub release ${tag}"
-  gh release create "${tag}" --generate-notes
+  gh release create "${tag}" --repo "${GITHUB_REPOSITORY}" --generate-notes
 }
 
 upload_asset() {
@@ -552,8 +554,8 @@ upload_asset() {
     exit 1
   fi
   echo "Uploading release asset ${release_zip_path}"
-  gh release upload "${tag}" "${release_zip_path}" --clobber
-  gh release view --web "${tag}"
+  gh release upload "${tag}" "${release_zip_path}" --repo "${GITHUB_REPOSITORY}" --clobber
+  gh release view --web "${tag}" --repo "${GITHUB_REPOSITORY}"
 }
 
 all() {
