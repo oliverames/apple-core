@@ -53,4 +53,28 @@ If a signed/notarized DMG or zip was produced locally, attach it:
 VERSION=1.0.0 Scripts/release.sh upload
 ```
 
+## Sparkle Auto-Updates
+
+Apple Core ships Sparkle 2 (mirroring ping-warden's setup): `SPUStandardUpdaterController` in the app, "Check for Updates…" in the status menu, and a signed appcast served from GitHub Pages at `https://oliverames.github.io/apple-core/appcast.xml` (the `SUFeedURL` in `App/Info.plist`).
+
+- **Keys (one-time, done 2026-07-20):** the EdDSA keypair was generated with Sparkle's `generate_keys`; the public key is in `App/Info.plist` (`SUPublicEDKey`) and the private key lives in the login Keychain as "Private key for signing Sparkle updates". Never export or commit the private key.
+- **Per release**, after `package` (and `notarize`/`staple` if signing):
+
+```bash
+VERSION=1.0.0 Scripts/release.sh appcast   # signs dist/Apple Core-1.0.0.zip, prepends an item to appcast.xml
+```
+
+  The item's release notes come from `docs/release-notes/v<version>.md`, rendered to HTML by `Scripts/render_release_notes.sh` — write that file first. The enclosure URL points at the GitHub release asset, so `upload` must publish the same zip that was signed.
+
+- **Publish the appcast** by copying the updated `appcast.xml` to the `gh-pages` branch and pushing (Pages serves that branch, matching ping-warden):
+
+```bash
+git worktree add /tmp/apple-core-pages gh-pages
+cp appcast.xml /tmp/apple-core-pages/ && cd /tmp/apple-core-pages
+git add appcast.xml && git commit -m "appcast: v<version>" && git push origin gh-pages
+cd - && git worktree remove /tmp/apple-core-pages
+```
+
+Updates are EdDSA-verified before extraction (`SURequireSignedFeed`/`SUVerifyUpdateBeforeExtraction` are enabled), so an appcast item with a bad or missing signature is rejected by clients.
+
 **Do not run any of the publish steps without explicit confirmation for each release** — this file documents the mechanism, it is not a standing authorization to cut releases.
