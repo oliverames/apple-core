@@ -354,7 +354,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } catch {
             updaterStartupError = error
             Logger.server.error(
-                "Sparkle updater failed to start: \(error.localizedDescription, privacy: .public)")
+                "Sparkle updater failed to start: \(error.localizedDescription, privacy: .public)"
+            )
             return false
         }
     }
