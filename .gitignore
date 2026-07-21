@@ -31,6 +31,10 @@ playground.xcworkspace
 
 .build/
 
+# Python integration helpers
+__pycache__/
+*.py[cod]
+
 # Release artifacts
 dist/
 
