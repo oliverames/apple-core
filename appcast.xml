@@ -5,6 +5,66 @@
     <link>https://oliverames.github.io/apple-core/appcast.xml</link>
     <description>Updates for Apple Core - a native macOS MCP server for Apple services</description>
     <language>en</language>
+    <item>
+      <title>Version 1.0.0</title>
+      <link>https://github.com/oliverames/apple-core/releases/tag/v1.0.0</link>
+      <sparkle:version>1</sparkle:version>
+      <sparkle:shortVersionString>1.0.0</sparkle:shortVersionString>
+      <description><![CDATA[
+<style>
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Helvetica, Arial, sans-serif;
+    font-size: 13px;
+    line-height: 1.55;
+    color: #1d1d1f;
+    margin: 0;
+    padding: 0;
+}
+h1, h2, h3 { color: #000; font-weight: 600; }
+h1 { font-size: 18px; margin: 0 0 10px 0; }
+h2 {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    color: #6e6e73;
+    margin: 18px 0 6px 0;
+}
+h3 { font-size: 13px; margin: 14px 0 6px 0; }
+p { margin: 0 0 10px 0; }
+ul, ol { padding-left: 20px; margin: 0 0 10px 0; }
+li { margin-bottom: 5px; }
+li > strong:first-child { color: #000; }
+code {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    background: #f2f2f7;
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-size: 12px;
+}
+a { color: #0071e3; text-decoration: none; }
+a:hover { text-decoration: underline; }
+hr { border: 0; border-top: 1px solid #e5e5ea; margin: 16px 0; }
+@media (prefers-color-scheme: dark) {
+    body { color: #f5f5f7; }
+    h1, h2, h3, li > strong:first-child { color: #fff; }
+    h2 { color: #98989d; }
+    code { background: #2c2c2e; }
+    hr { border-top-color: #38383a; }
+}
+</style>
+<h1>Apple Core 1.0</h1>
+<p>Apple Core is a native macOS menu bar app that lets MCP clients work with Apple services on your Mac. The standard build has 77 tools for Calendar, Reminders, Contacts, Location, Maps, Messages, screen and camera capture, Shortcuts, Notes, Mail, and utility tasks.</p>
+<p>Connections use a bearer token that the app generates locally. New installs listen only on localhost. Remote access is optional, and each service stays local until you turn on its Remote toggle. If you choose to use a Cloudflare Tunnel, Apple Core creates configuration for your own Cloudflare account.</p>
+<p>The download does not contain the developer's bearer token, Cloudflare credentials, OAuth clients, Apple account data, or macOS privacy permissions. Every Mac starts with its own configuration under <code class="notranslate">~/.config/apple-core/</code> and requests access to Apple services through the normal macOS permission controls.</p>
+<p>Version 1.0 is signed with a Developer ID certificate, notarized by Apple, and distributed through a signed Sparkle update feed.</p>
+      ]]></description>
+      <pubDate>Tue, 21 Jul 2026 20:30:20 +0000</pubDate>
+      <enclosure url="https://github.com/oliverames/apple-core/releases/download/v1.0.0/Apple%20Core-1.0.0.zip"
+                 length="8659081"
+                 type="application/octet-stream"
+                 d42F4wLicsek+rLDJi7tyjLKX9UmyXhPmhYDuodv/MYIrQTRahXrc4Z8rKTd6RfVqSBEvQ9kd06JgJmVWfuzBg== />
+      <sparkle:minimumSystemVersion>15.1</sparkle:minimumSystemVersion>
+    </item>
     <!-- `Scripts/release.sh appcast` prepends signed release entries here. -->
   </channel>
 </rss>
