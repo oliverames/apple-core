@@ -10,6 +10,8 @@ private let defaultMessageLimit = 20
 private let maximumMessageLimit = 100
 private let maximumBatchSize = 50
 private let maximumRecipients = 50
+private let maximumTemplateCount = 200
+private let maximumTemplateBytes = 64 * 1024
 
 // MARK: - Output models
 
@@ -55,6 +57,80 @@ private struct MailComposeResult: Codable, Sendable {
 private struct MailReplyResult: Codable, Sendable {
     let status: String
     let messageId: Int
+}
+
+private struct MailUnreadCount: Codable, Sendable {
+    let account: String?
+    let mailbox: String?
+    let unreadCount: Int
+    let mailboxesCounted: Int
+}
+
+private struct MailMailboxStats: Codable, Sendable {
+    let name: String
+    let messageCount: Int
+    let unreadCount: Int
+}
+
+private struct MailAccountStats: Codable, Sendable {
+    let name: String
+    let mailboxCount: Int
+    let messageCount: Int
+    let unreadCount: Int
+    let mailboxes: [MailMailboxStats]
+}
+
+private struct MailStats: Codable, Sendable {
+    let accounts: [MailAccountStats]
+    let totalMessages: Int
+    let totalUnread: Int
+}
+
+private struct MailThreadResult: Codable, Sendable {
+    let subjectRoot: String
+    let messages: [MailMessageSummary]
+}
+
+private struct MailAttachmentInfo: Codable, Sendable {
+    let index: Int
+    let name: String
+    let mimeType: String?
+    let fileSize: Int?
+    let downloaded: Bool?
+}
+
+private struct MailSaveAttachmentResult: Codable, Sendable {
+    let saved: String
+    let attachmentName: String
+}
+
+private struct MailMailboxMutationResult: Codable, Sendable {
+    let status: String
+    let account: String
+    let mailbox: String
+}
+
+private struct MailTemplate: Codable, Sendable {
+    let name: String
+    var subject: String
+    var body: String
+    var createdAt: String
+    var updatedAt: String
+}
+
+private struct MailTemplateSummary: Codable, Sendable {
+    let name: String
+    let subject: String
+    let updatedAt: String
+}
+
+private struct MailTemplateListResult: Codable, Sendable {
+    let templates: [MailTemplateSummary]
+}
+
+private struct MailTemplateDeleteResult: Codable, Sendable {
+    let status: String
+    let name: String
 }
 
 private struct MailMessageDetail: Codable, Sendable {
@@ -446,16 +522,274 @@ private let forwardScript =
         }
         """
 
+// Thread reconstruction is an approximation: Mail's scripting interface
+// does not expose Message-ID/References headers, so the "thread" is every
+// message in the same mailbox whose subject contains the anchor message's
+// subject stripped of Re:/Fwd: prefixes. Unrelated messages that share a
+// short subject may be included; true header-based threading arrives with
+// the disk-first index (BUILD_PLAN §3.1).
+private let getThreadScript =
+    resolveMailboxHelper + "\n"
+        + """
+        function run(argv) {
+            const accountName = argv[0];
+            const mailboxName = argv[1];
+            const messageId = parseInt(argv[2], 10);
+            const limit = parseInt(argv[3], 10);
+            const Mail = Application('Mail');
+            const mailbox = resolveMailbox(Mail, accountName, mailboxName);
+
+            const matches = mailbox.messages.whose({ id: messageId })();
+            if (matches.length === 0) {
+                throw new Error('NOT_FOUND: no message with id ' + messageId);
+            }
+            const subject = matches[0].subject() || '';
+            const root = subject.replace(/^((re|fwd?|fw)(\\[\\d+\\])?:\\s*)+/i, '').trim();
+
+            let related = matches;
+            if (root !== '') {
+                related = mailbox.messages.whose({ subject: { _contains: root } })();
+            }
+            const count = Math.min(limit, related.length);
+            const rows = [];
+            for (let i = 0; i < count; i++) {
+                const message = related[i];
+                rows.push({
+                    id: message.id(),
+                    subject: message.subject() || '',
+                    sender: message.sender() || '',
+                    dateReceived: message.dateReceived() ? message.dateReceived().toISOString() : null,
+                    isRead: message.readStatus() === true,
+                });
+            }
+            return JSON.stringify({ subjectRoot: root, messages: rows });
+        }
+        """
+
+private let unreadCountScript = """
+    function run(argv) {
+        const accountName = argv[0];
+        const mailboxName = argv[1];
+        const Mail = Application('Mail');
+
+        let accounts;
+        if (accountName === '') {
+            accounts = Mail.accounts();
+        } else {
+            accounts = Mail.accounts.whose({ name: accountName })();
+            if (accounts.length === 0) {
+                throw new Error('NOT_FOUND: no account named ' + accountName);
+            }
+        }
+
+        let total = 0;
+        let counted = 0;
+        for (const account of accounts) {
+            for (const mailbox of account.mailboxes()) {
+                if (mailboxName !== '' && mailbox.name() !== mailboxName) {
+                    continue;
+                }
+                total += mailbox.unreadCount();
+                counted += 1;
+            }
+        }
+        if (mailboxName !== '' && counted === 0) {
+            throw new Error('NOT_FOUND: no mailbox named ' + mailboxName);
+        }
+        return JSON.stringify({
+            account: accountName === '' ? null : accountName,
+            mailbox: mailboxName === '' ? null : mailboxName,
+            unreadCount: total,
+            mailboxesCounted: counted,
+        });
+    }
+    """
+
+private let statsScript = """
+    function run(argv) {
+        const accountName = argv[0];
+        const Mail = Application('Mail');
+
+        let accounts;
+        if (accountName === '') {
+            accounts = Mail.accounts();
+        } else {
+            accounts = Mail.accounts.whose({ name: accountName })();
+            if (accounts.length === 0) {
+                throw new Error('NOT_FOUND: no account named ' + accountName);
+            }
+        }
+
+        const rows = [];
+        let totalMessages = 0;
+        let totalUnread = 0;
+        for (const account of accounts) {
+            const mailboxes = [];
+            let accountMessages = 0;
+            let accountUnread = 0;
+            for (const mailbox of account.mailboxes()) {
+                const messageCount = mailbox.messages.length;
+                const unreadCount = mailbox.unreadCount();
+                mailboxes.push({
+                    name: mailbox.name(),
+                    messageCount: messageCount,
+                    unreadCount: unreadCount,
+                });
+                accountMessages += messageCount;
+                accountUnread += unreadCount;
+            }
+            rows.push({
+                name: account.name(),
+                mailboxCount: mailboxes.length,
+                messageCount: accountMessages,
+                unreadCount: accountUnread,
+                mailboxes: mailboxes,
+            });
+            totalMessages += accountMessages;
+            totalUnread += accountUnread;
+        }
+        return JSON.stringify({
+            accounts: rows,
+            totalMessages: totalMessages,
+            totalUnread: totalUnread,
+        });
+    }
+    """
+
+private let listAttachmentsScript =
+    resolveMailboxHelper + "\n"
+        + """
+        function run(argv) {
+            const accountName = argv[0];
+            const mailboxName = argv[1];
+            const messageId = parseInt(argv[2], 10);
+            const Mail = Application('Mail');
+            const mailbox = resolveMailbox(Mail, accountName, mailboxName);
+
+            const matches = mailbox.messages.whose({ id: messageId })();
+            if (matches.length === 0) {
+                throw new Error('NOT_FOUND: no message with id ' + messageId);
+            }
+            const attachments = matches[0].mailAttachments();
+            const rows = [];
+            for (let i = 0; i < attachments.length; i++) {
+                const attachment = attachments[i];
+                let mimeType = null;
+                let fileSize = null;
+                let downloaded = null;
+                try { mimeType = attachment.mimeType(); } catch (error) {}
+                try { fileSize = attachment.fileSize(); } catch (error) {}
+                try { downloaded = attachment.downloaded(); } catch (error) {}
+                rows.push({
+                    index: i,
+                    name: attachment.name() || '',
+                    mimeType: mimeType,
+                    fileSize: fileSize,
+                    downloaded: downloaded,
+                });
+            }
+            return JSON.stringify(rows);
+        }
+        """
+
+// Saves one attachment (selected by list index, resolved in Swift) to a
+// destination path that Swift has already validated and de-duplicated.
+private let saveAttachmentScript =
+    resolveMailboxHelper + "\n"
+        + """
+        function run(argv) {
+            const accountName = argv[0];
+            const mailboxName = argv[1];
+            const messageId = parseInt(argv[2], 10);
+            const attachmentIndex = parseInt(argv[3], 10);
+            const destinationPath = argv[4];
+            const Mail = Application('Mail');
+            const mailbox = resolveMailbox(Mail, accountName, mailboxName);
+
+            const matches = mailbox.messages.whose({ id: messageId })();
+            if (matches.length === 0) {
+                throw new Error('NOT_FOUND: no message with id ' + messageId);
+            }
+            const attachments = matches[0].mailAttachments();
+            if (attachmentIndex < 0 || attachmentIndex >= attachments.length) {
+                throw new Error('NOT_FOUND: no attachment at index ' + attachmentIndex);
+            }
+            const attachment = attachments[attachmentIndex];
+            Mail.save(attachment, { in: Path(destinationPath) });
+            return JSON.stringify({
+                saved: destinationPath,
+                attachmentName: attachment.name() || '',
+            });
+        }
+        """
+
+private let createMailboxScript = """
+    function run(argv) {
+        const accountName = argv[0];
+        const mailboxName = argv[1];
+        const Mail = Application('Mail');
+
+        const accounts = Mail.accounts.whose({ name: accountName })();
+        if (accounts.length === 0) {
+            throw new Error('NOT_FOUND: no account named ' + accountName);
+        }
+        const existing = accounts[0].mailboxes.whose({ name: mailboxName })();
+        if (existing.length > 0) {
+            throw new Error('EXISTS: mailbox ' + mailboxName + ' already exists in ' + accountName);
+        }
+        accounts[0].mailboxes.push(Mail.Mailbox({ name: mailboxName }));
+        return JSON.stringify({ status: 'created', account: accountName, mailbox: mailboxName });
+    }
+    """
+
+private let renameMailboxScript =
+    resolveMailboxHelper + "\n"
+        + """
+        function run(argv) {
+            const accountName = argv[0];
+            const mailboxName = argv[1];
+            const newName = argv[2];
+            const Mail = Application('Mail');
+            const mailbox = resolveMailbox(Mail, accountName, mailboxName);
+            mailbox.name = newName;
+            return JSON.stringify({ status: 'renamed', account: accountName, mailbox: newName });
+        }
+        """
+
+private let deleteMailboxScript =
+    resolveMailboxHelper + "\n"
+        + """
+        function run(argv) {
+            const accountName = argv[0];
+            const mailboxName = argv[1];
+            const Mail = Application('Mail');
+            const mailbox = resolveMailbox(Mail, accountName, mailboxName);
+            Mail.delete(mailbox);
+            return JSON.stringify({ status: 'deleted', account: accountName, mailbox: mailboxName });
+        }
+        """
+
 // MARK: - Service
 
 /// Apple Mail access — AppleScript/JXA slice.
 ///
-/// Reads plus triage writes (read/flag/move/delete, batched) and compose
-/// (send/reply/forward/draft), all against Mail.app via the shared
-/// AppleScriptRunner. The full design in docs/planning/BUILD_PLAN.md §3.1
-/// (disk-first .emlx parsing with an FTS5 index for fast search across
-/// the whole store) is explicitly multi-week future work; this file is
-/// the scaffold it will grow into.
+/// Reads (including thread approximation, unread counts, stats, and
+/// attachments), triage writes (read/flag/move/delete, batched), compose
+/// (send/reply/forward/draft), mailbox CRUD, and a local template store,
+/// all against Mail.app via the shared AppleScriptRunner except templates,
+/// which live in a JSON file under ~/.config/apple-core (mode 0600;
+/// override the directory with APPLECORE_CONFIG_HOME for tests).
+///
+/// Deliberately excluded:
+/// - Mail rules (create/list/enable/disable/delete): Mail's rule scripting
+///   surface is fragile — rule conditions are only partially scriptable,
+///   silently drop qualifiers, and differ across macOS releases. A broken
+///   rule mutates every future inbound message, so the risk/benefit is
+///   poor; manage rules in Mail's own settings UI.
+/// - Cross-mailbox and body search: deferred to the disk-first .emlx +
+///   FTS5 index design in docs/planning/BUILD_PLAN.md §3.1, which this
+///   file remains the scaffold for. Per-mailbox subject/sender search is
+///   the AppleScript-feasible ceiling.
 final class MailService: Service {
     static let shared = MailService()
 
@@ -937,6 +1271,458 @@ final class MailService: Service {
                 timeout: 120
             )
         }
+
+        Tool(
+            name: "mail_get_thread",
+            description:
+                "Get the conversation around a message. Approximation: returns messages in the same mailbox whose subject matches the anchor's subject with Re:/Fwd: prefixes stripped (Mail's scripting interface exposes no Message-ID/References headers)",
+            inputSchema: .object(
+                properties: [
+                    "account": .string(
+                        description: "Account name (from mail_list_accounts)"
+                    ),
+                    "mailbox": .string(
+                        description: "Mailbox name containing the anchor message"
+                    ),
+                    "id": .integer(
+                        description: "Anchor message id (from mail_list_messages or mail_search)"
+                    ),
+                    "limit": .integer(
+                        description: "Maximum messages to return (max \(maximumMessageLimit))",
+                        default: .int(defaultMessageLimit)
+                    ),
+                ],
+                required: ["account", "mailbox", "id"],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Get Thread",
+                readOnlyHint: true,
+                openWorldHint: false
+            )
+        ) { arguments in
+            let account = try Self.requiredString("account", from: arguments)
+            let mailbox = try Self.requiredString("mailbox", from: arguments)
+            let id = try Self.requiredID(from: arguments)
+            let limit = Self.clampedLimit(arguments["limit"]?.intValue)
+            return try await AppleScriptRunner.shared.runJSON(
+                .jxa,
+                script: getThreadScript,
+                arguments: [account, mailbox, String(id), String(limit)],
+                as: MailThreadResult.self,
+                timeout: 120
+            )
+        }
+
+        Tool(
+            name: "mail_get_unread_count",
+            description:
+                "Get the unread message count, across all accounts or scoped to one account and/or mailbox",
+            inputSchema: .object(
+                properties: [
+                    "account": .string(
+                        description: "Account name; all accounts if omitted"
+                    ),
+                    "mailbox": .string(
+                        description: "Mailbox name; all mailboxes if omitted"
+                    ),
+                ],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Get Unread Count",
+                readOnlyHint: true,
+                openWorldHint: false
+            )
+        ) { arguments in
+            let account = arguments["account"]?.stringValue ?? ""
+            let mailbox = arguments["mailbox"]?.stringValue ?? ""
+            return try await AppleScriptRunner.shared.runJSON(
+                .jxa,
+                script: unreadCountScript,
+                arguments: [account, mailbox],
+                as: MailUnreadCount.self,
+                timeout: 120
+            )
+        }
+
+        Tool(
+            name: "mail_get_stats",
+            description:
+                "Summarize message and unread counts per mailbox and per account. Can be slow across large stores; scope to one account when possible",
+            inputSchema: .object(
+                properties: [
+                    "account": .string(
+                        description: "Account name; all accounts if omitted"
+                    )
+                ],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Get Mail Stats",
+                readOnlyHint: true,
+                openWorldHint: false
+            )
+        ) { arguments in
+            let account = arguments["account"]?.stringValue ?? ""
+            return try await AppleScriptRunner.shared.runJSON(
+                .jxa,
+                script: statsScript,
+                arguments: [account],
+                as: MailStats.self,
+                timeout: 180
+            )
+        }
+
+        Tool(
+            name: "mail_list_attachments",
+            description:
+                "List a message's attachments with index, name, MIME type, size, and download status",
+            inputSchema: .object(
+                properties: [
+                    "account": .string(
+                        description: "Account name (from mail_list_accounts)"
+                    ),
+                    "mailbox": .string(
+                        description: "Mailbox name containing the message"
+                    ),
+                    "id": .integer(
+                        description: "Message id (from mail_list_messages or mail_search)"
+                    ),
+                ],
+                required: ["account", "mailbox", "id"],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "List Attachments",
+                readOnlyHint: true,
+                openWorldHint: false
+            )
+        ) { arguments in
+            let account = try Self.requiredString("account", from: arguments)
+            let mailbox = try Self.requiredString("mailbox", from: arguments)
+            let id = try Self.requiredID(from: arguments)
+            return try await AppleScriptRunner.shared.runJSON(
+                .jxa,
+                script: listAttachmentsScript,
+                arguments: [account, mailbox, String(id)],
+                as: [MailAttachmentInfo].self,
+                timeout: 120
+            )
+        }
+
+        Tool(
+            name: "mail_save_attachment",
+            description:
+                "Save one attachment to disk (default ~/Downloads). Never overwrites: an existing filename gets a numeric suffix. save_dir must be an existing directory inside the user's home",
+            inputSchema: .object(
+                properties: [
+                    "account": .string(
+                        description: "Account name (from mail_list_accounts)"
+                    ),
+                    "mailbox": .string(
+                        description: "Mailbox name containing the message"
+                    ),
+                    "id": .integer(
+                        description: "Message id (from mail_list_messages or mail_search)"
+                    ),
+                    "attachment": .string(
+                        description:
+                            "Attachment name or zero-based index (from mail_list_attachments). A name matches the first attachment with that name"
+                    ),
+                    "save_dir": .string(
+                        description:
+                            "Destination directory; ~/Downloads if omitted. Must already exist and be inside the user's home directory"
+                    ),
+                ],
+                required: ["account", "mailbox", "id", "attachment"],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Save Attachment",
+                readOnlyHint: false,
+                destructiveHint: false,
+                idempotentHint: false,
+                openWorldHint: false
+            )
+        ) { arguments in
+            let account = try Self.requiredString("account", from: arguments)
+            let mailbox = try Self.requiredString("mailbox", from: arguments)
+            let id = try Self.requiredID(from: arguments)
+            let selector = try Self.requiredString("attachment", from: arguments)
+            let saveDir = arguments["save_dir"]?.stringValue
+            return try await Self.saveAttachment(
+                account: account,
+                mailbox: mailbox,
+                id: id,
+                selector: selector,
+                saveDir: saveDir
+            )
+        }
+
+        Tool(
+            name: "mail_create_mailbox",
+            description: "Create a new mailbox in an account",
+            inputSchema: .object(
+                properties: [
+                    "account": .string(
+                        description: "Account name (from mail_list_accounts)"
+                    ),
+                    "name": .string(
+                        description: "Name for the new mailbox"
+                    ),
+                ],
+                required: ["account", "name"],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Create Mailbox",
+                readOnlyHint: false,
+                destructiveHint: false,
+                idempotentHint: false,
+                openWorldHint: false
+            )
+        ) { arguments in
+            let account = try Self.requiredString("account", from: arguments)
+            let name = try Self.requiredString("name", from: arguments)
+            return try await AppleScriptRunner.shared.runJSON(
+                .jxa,
+                script: createMailboxScript,
+                arguments: [account, name],
+                as: MailMailboxMutationResult.self,
+                timeout: 60
+            )
+        }
+
+        Tool(
+            name: "mail_rename_mailbox",
+            description: "Rename a mailbox",
+            inputSchema: .object(
+                properties: [
+                    "account": .string(
+                        description: "Account name (from mail_list_accounts)"
+                    ),
+                    "name": .string(
+                        description: "Current mailbox name"
+                    ),
+                    "new_name": .string(
+                        description: "New mailbox name"
+                    ),
+                ],
+                required: ["account", "name", "new_name"],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Rename Mailbox",
+                readOnlyHint: false,
+                destructiveHint: false,
+                idempotentHint: false,
+                openWorldHint: false
+            )
+        ) { arguments in
+            let account = try Self.requiredString("account", from: arguments)
+            let name = try Self.requiredString("name", from: arguments)
+            let newName = try Self.requiredString("new_name", from: arguments)
+            return try await AppleScriptRunner.shared.runJSON(
+                .jxa,
+                script: renameMailboxScript,
+                arguments: [account, name, newName],
+                as: MailMailboxMutationResult.self,
+                timeout: 60
+            )
+        }
+
+        Tool(
+            name: "mail_delete_mailbox",
+            description:
+                "Delete a mailbox and the messages it contains",
+            inputSchema: .object(
+                properties: [
+                    "account": .string(
+                        description: "Account name (from mail_list_accounts)"
+                    ),
+                    "name": .string(
+                        description: "Mailbox name to delete"
+                    ),
+                ],
+                required: ["account", "name"],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Delete Mailbox",
+                readOnlyHint: false,
+                destructiveHint: true,
+                idempotentHint: false,
+                openWorldHint: false
+            )
+        ) { arguments in
+            let account = try Self.requiredString("account", from: arguments)
+            let name = try Self.requiredString("name", from: arguments)
+            return try await AppleScriptRunner.shared.runJSON(
+                .jxa,
+                script: deleteMailboxScript,
+                arguments: [account, name],
+                as: MailMailboxMutationResult.self,
+                timeout: 60
+            )
+        }
+
+        Tool(
+            name: "mail_save_template",
+            description:
+                "Save (or overwrite) a reusable email template in the local template store (~/.config/apple-core/mail_templates.json; not stored in Mail)",
+            inputSchema: .object(
+                properties: [
+                    "name": .string(
+                        description: "Template name (unique key)"
+                    ),
+                    "subject": .string(
+                        description: "Template subject; may contain {{placeholders}}"
+                    ),
+                    "body": .string(
+                        description: "Template plain-text body; may contain {{placeholders}}"
+                    ),
+                ],
+                required: ["name", "subject", "body"],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Save Template",
+                readOnlyHint: false,
+                destructiveHint: false,
+                idempotentHint: true,
+                openWorldHint: false
+            )
+        ) { arguments in
+            let name = try Self.requiredString("name", from: arguments)
+            let subject = try Self.requiredString("subject", from: arguments)
+            let body = try Self.requiredString("body", from: arguments)
+            return try Self.saveTemplate(name: name, subject: subject, body: body)
+        }
+
+        Tool(
+            name: "mail_list_templates",
+            description: "List saved email templates from the local template store",
+            inputSchema: .object(
+                properties: [:],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "List Templates",
+                readOnlyHint: true,
+                openWorldHint: false
+            )
+        ) { _ in
+            let templates = try Self.loadTemplates()
+            let summaries = templates.values
+                .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+                .map { MailTemplateSummary(name: $0.name, subject: $0.subject, updatedAt: $0.updatedAt) }
+            return MailTemplateListResult(templates: summaries)
+        }
+
+        Tool(
+            name: "mail_get_template",
+            description: "Get one saved email template, including its body",
+            inputSchema: .object(
+                properties: [
+                    "name": .string(
+                        description: "Template name (from mail_list_templates)"
+                    )
+                ],
+                required: ["name"],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Get Template",
+                readOnlyHint: true,
+                openWorldHint: false
+            )
+        ) { arguments in
+            let name = try Self.requiredString("name", from: arguments)
+            guard let template = try Self.loadTemplates()[name] else {
+                throw Self.error("NOT_FOUND: no template named \(name)")
+            }
+            return template
+        }
+
+        Tool(
+            name: "mail_delete_template",
+            description: "Delete a saved email template from the local template store",
+            inputSchema: .object(
+                properties: [
+                    "name": .string(
+                        description: "Template name (from mail_list_templates)"
+                    )
+                ],
+                required: ["name"],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Delete Template",
+                readOnlyHint: false,
+                destructiveHint: true,
+                idempotentHint: false,
+                openWorldHint: false
+            )
+        ) { arguments in
+            let name = try Self.requiredString("name", from: arguments)
+            var templates = try Self.loadTemplates()
+            guard templates.removeValue(forKey: name) != nil else {
+                throw Self.error("NOT_FOUND: no template named \(name)")
+            }
+            try Self.storeTemplates(templates)
+            return MailTemplateDeleteResult(status: "deleted", name: name)
+        }
+
+        Tool(
+            name: "mail_use_template",
+            description:
+                "Compose an email from a saved template, substituting {{placeholder}} variables, then save it as a draft or send it",
+            inputSchema: .object(
+                properties: [
+                    "name": .string(
+                        description: "Template name (from mail_list_templates)"
+                    ),
+                    "to": .array(
+                        description: "Recipient email addresses; max \(maximumRecipients)",
+                        items: .string()
+                    ),
+                    "cc": .array(
+                        description: "Cc email addresses",
+                        items: .string()
+                    ),
+                    "bcc": .array(
+                        description: "Bcc email addresses",
+                        items: .string()
+                    ),
+                    "account": .string(
+                        description:
+                            "Account name to send from (from mail_list_accounts); Mail's default if omitted"
+                    ),
+                    "variables": .object(
+                        description:
+                            "Placeholder values: {\"key\": \"value\"} replaces every {{key}} in the subject and body",
+                        additionalProperties: true
+                    ),
+                    "action": .string(
+                        description: "Save to Drafts or send immediately",
+                        default: "draft",
+                        enum: ["draft", "send"]
+                    ),
+                ],
+                required: ["name", "to"],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Use Template",
+                readOnlyHint: false,
+                destructiveHint: false,
+                idempotentHint: false,
+                openWorldHint: true
+            )
+        ) { arguments in
+            try await Self.useTemplate(arguments: arguments)
+        }
     }
 
     // MARK: - Helpers
@@ -1097,6 +1883,228 @@ final class MailService: Service {
             .jxa,
             script: composeScript,
             arguments: [try Self.encodeJSON(payload), action],
+            as: MailComposeResult.self,
+            timeout: 120
+        )
+    }
+
+    // MARK: - Attachments
+
+    /// Resolves the attachment selector, validates and de-duplicates the
+    /// destination path, then saves via JXA. Two script runs (list, save)
+    /// keep filename sanitation and overwrite protection in Swift.
+    private static func saveAttachment(
+        account: String,
+        mailbox: String,
+        id: Int,
+        selector: String,
+        saveDir: String?
+    ) async throws -> MailSaveAttachmentResult {
+        let attachments = try await AppleScriptRunner.shared.runJSON(
+            .jxa,
+            script: listAttachmentsScript,
+            arguments: [account, mailbox, String(id)],
+            as: [MailAttachmentInfo].self,
+            timeout: 120
+        )
+        guard !attachments.isEmpty else {
+            throw Self.error("NOT_FOUND: message \(id) has no attachments")
+        }
+
+        let attachment: MailAttachmentInfo
+        if let index = Int(selector) {
+            guard let match = attachments.first(where: { $0.index == index }) else {
+                throw Self.error("NOT_FOUND: no attachment at index \(index) (message has \(attachments.count))")
+            }
+            attachment = match
+        } else {
+            guard let match = attachments.first(where: { $0.name == selector }) else {
+                throw Self.error("NOT_FOUND: no attachment named \(selector)")
+            }
+            attachment = match
+        }
+
+        let directory = try Self.validatedSaveDirectory(saveDir)
+        let destination = Self.uniqueDestination(
+            in: directory,
+            fileName: Self.sanitizedFileName(attachment.name)
+        )
+
+        _ = try await AppleScriptRunner.shared.runJSON(
+            .jxa,
+            script: saveAttachmentScript,
+            arguments: [account, mailbox, String(id), String(attachment.index), destination.path],
+            as: MailSaveAttachmentResult.self,
+            timeout: 180
+        )
+        return MailSaveAttachmentResult(saved: destination.path, attachmentName: attachment.name)
+    }
+
+    /// Default: ~/Downloads. A caller-supplied directory must already
+    /// exist, resolve to a real directory, and live inside the user's
+    /// home so a tool call can't scatter files across the filesystem.
+    private static func validatedSaveDirectory(_ saveDir: String?) throws -> URL {
+        let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL
+        guard let saveDir, !saveDir.isEmpty else {
+            return home.appendingPathComponent("Downloads", isDirectory: true)
+        }
+
+        let expanded = (saveDir as NSString).expandingTildeInPath
+        let url = URL(fileURLWithPath: expanded).standardizedFileURL.resolvingSymlinksInPath()
+
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
+            isDirectory.boolValue
+        else {
+            throw Self.error("save_dir must be an existing directory: \(saveDir)")
+        }
+        let homePrefix = home.resolvingSymlinksInPath().path + "/"
+        guard (url.path + "/").hasPrefix(homePrefix) else {
+            throw Self.error("save_dir must be inside the user's home directory")
+        }
+        return url
+    }
+
+    /// Strips path separators and control characters; an empty or
+    /// dot-leading result falls back to a safe default.
+    private static func sanitizedFileName(_ name: String) -> String {
+        var cleaned =
+            name
+            .components(separatedBy: CharacterSet(charactersIn: "/:\\").union(.controlCharacters))
+            .joined(separator: "_")
+            .trimmingCharacters(in: .whitespaces)
+        while cleaned.hasPrefix(".") {
+            cleaned.removeFirst()
+        }
+        return cleaned.isEmpty ? "attachment" : cleaned
+    }
+
+    /// Appends " 2", " 3", ... before the extension until the name is free.
+    private static func uniqueDestination(in directory: URL, fileName: String) -> URL {
+        let base = (fileName as NSString).deletingPathExtension
+        let ext = (fileName as NSString).pathExtension
+        var candidate = directory.appendingPathComponent(fileName)
+        var counter = 2
+        while FileManager.default.fileExists(atPath: candidate.path) {
+            let numbered = ext.isEmpty ? "\(base) \(counter)" : "\(base) \(counter).\(ext)"
+            candidate = directory.appendingPathComponent(numbered)
+            counter += 1
+        }
+        return candidate
+    }
+
+    // MARK: - Templates
+    //
+    // Templates are Apple Core's own data (Mail has no template concept),
+    // stored as JSON at ~/.config/apple-core/mail_templates.json with
+    // 0600 permissions. APPLECORE_CONFIG_HOME overrides the directory so
+    // tests never touch the real store.
+
+    private static var templatesFileURL: URL {
+        let configDir: URL
+        if let override = ProcessInfo.processInfo.environment["APPLECORE_CONFIG_HOME"],
+            !override.isEmpty
+        {
+            configDir = URL(fileURLWithPath: (override as NSString).expandingTildeInPath, isDirectory: true)
+        } else {
+            configDir = FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent(".config/apple-core", isDirectory: true)
+        }
+        return configDir.appendingPathComponent("mail_templates.json")
+    }
+
+    private static func loadTemplates() throws -> [String: MailTemplate] {
+        let url = Self.templatesFileURL
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            return [:]
+        }
+        let data = try Data(contentsOf: url)
+        return try JSONDecoder().decode([String: MailTemplate].self, from: data)
+    }
+
+    private static func storeTemplates(_ templates: [String: MailTemplate]) throws {
+        let url = Self.templatesFileURL
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(),
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .prettyPrinted]
+        let data = try encoder.encode(templates)
+        try data.write(to: url, options: .atomic)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: url.path
+        )
+    }
+
+    private static func saveTemplate(
+        name: String,
+        subject: String,
+        body: String
+    ) throws -> MailTemplate {
+        guard subject.utf8.count + body.utf8.count <= maximumTemplateBytes else {
+            throw Self.error("template exceeds the size limit of \(maximumTemplateBytes) bytes")
+        }
+        var templates = try Self.loadTemplates()
+        let now = ISO8601DateFormatter().string(from: Date())
+        var template =
+            templates[name]
+            ?? MailTemplate(name: name, subject: subject, body: body, createdAt: now, updatedAt: now)
+        template.subject = subject
+        template.body = body
+        template.updatedAt = now
+        if templates[name] == nil, templates.count >= maximumTemplateCount {
+            throw Self.error("template store is full (limit \(maximumTemplateCount))")
+        }
+        templates[name] = template
+        try Self.storeTemplates(templates)
+        return template
+    }
+
+    private static func useTemplate(arguments: [String: Value]) async throws -> MailComposeResult {
+        let name = try Self.requiredString("name", from: arguments)
+        guard let template = try Self.loadTemplates()[name] else {
+            throw Self.error("NOT_FOUND: no template named \(name)")
+        }
+
+        var variables: [String: String] = [:]
+        if case .object(let values)? = arguments["variables"] {
+            for (key, value) in values {
+                variables[key] = value.stringValue ?? ""
+            }
+        }
+        var subject = template.subject
+        var body = template.body
+        for (key, value) in variables {
+            subject = subject.replacingOccurrences(of: "{{\(key)}}", with: value)
+            body = body.replacingOccurrences(of: "{{\(key)}}", with: value)
+        }
+
+        let to = try Self.requiredAddresses("to", from: arguments)
+        let cc = Self.addresses("cc", from: arguments)
+        let bcc = Self.addresses("bcc", from: arguments)
+        guard to.count + cc.count + bcc.count <= maximumRecipients else {
+            throw Self.error("recipient count exceeds the limit of \(maximumRecipients)")
+        }
+        let action = arguments["action"]?.stringValue ?? "draft"
+        guard action == "draft" || action == "send" else {
+            throw Self.error("action must be draft or send")
+        }
+
+        let payload = ComposePayload(
+            to: to,
+            cc: cc,
+            bcc: bcc,
+            subject: subject,
+            body: body,
+            account: arguments["account"]?.stringValue
+        )
+        return try await AppleScriptRunner.shared.runJSON(
+            .jxa,
+            script: composeScript,
+            arguments: [try Self.encodeJSON(payload), action == "send" ? "send" : "draft"],
             as: MailComposeResult.self,
             timeout: 120
         )

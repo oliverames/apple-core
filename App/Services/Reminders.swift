@@ -5,6 +5,25 @@ import Ontology
 
 private let log = Logger.service("reminders")
 
+// Known coverage exclusions (verified 2026-07-21 on macOS 27.0 beta):
+//
+// - Subtasks: EventKit does not expose reminder subtasks through public API.
+//   `EKReminder` has no public `parent`/`subTasks` members (confirmed by
+//   compiling probes against the current SDK; both fail with "has no member").
+//   The hierarchy is private to Reminders.app / private ReminderKit framework,
+//   and BUILD_PLAN §3.3's claim of native support in macOS 14.4 does not hold
+//   against the shipping SDK. Reminders' AppleScript dictionary offers no
+//   route either: `sdef /System/Applications/Reminders.app` defines only a
+//   `show` command and read-only `container` properties. Subtasks are
+//   therefore excluded rather than hacked in.
+//
+// - Cross-account moves: EventKit rejects moving a reminder between accounts
+//   (error -3002). BUILD_PLAN §3.3 sketched an AppleScript fallback, but the
+//   same sdef inspection shows Reminders' scripting dictionary has no `move`,
+//   `make`, or `delete` commands and `container` is read-only, so no clean
+//   scripted move (or delete-and-recreate) exists. The typed error below is
+//   kept instead of a fallback.
+
 final class RemindersService: Service {
     private let eventStore = EKEventStore()
 
@@ -242,6 +261,7 @@ final class RemindersService: Service {
                         description: "Minutes before due date to set alarms",
                         items: .integer()
                     ),
+                    "recurrence": RecurrenceRuleParser.recurrenceSchema,
                 ],
                 required: ["title"],
                 additionalProperties: false
@@ -319,6 +339,26 @@ final class RemindersService: Service {
                 }
             }
 
+            // Set recurrence (EKReminder shares EKRecurrenceRule with EKEvent)
+            if let recurrenceValue = arguments["recurrence"] {
+                switch try RecurrenceRuleParser.parse(argument: recurrenceValue) {
+                case .clear:
+                    reminder.recurrenceRules = nil
+                case .rule(let rule):
+                    guard reminder.dueDateComponents != nil else {
+                        throw NSError(
+                            domain: "RemindersError",
+                            code: 2,
+                            userInfo: [
+                                NSLocalizedDescriptionKey:
+                                    "A recurring reminder requires a due date"
+                            ]
+                        )
+                    }
+                    reminder.recurrenceRules = [rule]
+                }
+            }
+
             // Save the reminder
             try self.eventStore.save(reminder, commit: true)
 
@@ -328,7 +368,7 @@ final class RemindersService: Service {
         Tool(
             name: "reminders_update",
             description:
-                "Update an existing reminder's title, notes, due date, priority, list, or alarms",
+                "Update an existing reminder's title, notes, due date, priority, list, alarms, or recurrence (recurrence \"none\" clears the rule)",
             inputSchema: .object(
                 properties: [
                     "id": .string(
@@ -353,6 +393,7 @@ final class RemindersService: Service {
                             "Minutes before due date to set alarms; replaces any existing alarms",
                         items: .integer()
                     ),
+                    "recurrence": RecurrenceRuleParser.recurrenceSchema,
                 ],
                 required: ["id"],
                 additionalProperties: false
@@ -440,7 +481,8 @@ final class RemindersService: Service {
                 try self.requireWritable(targetList)
 
                 // EventKit cannot move reminders between accounts (error -3002),
-                // e.g. from an iCloud list to an "On My Mac" list.
+                // e.g. from an iCloud list to an "On My Mac" list. No AppleScript
+                // fallback exists either; see the header comment on this file.
                 guard
                     targetList.source.sourceIdentifier
                         == reminder.calendar.source.sourceIdentifier
@@ -465,6 +507,26 @@ final class RemindersService: Service {
                 reminder.alarms = alarmMinutes.compactMap {
                     guard case .int(let minutes) = $0 else { return nil }
                     return EKAlarm(relativeOffset: TimeInterval(-minutes * 60))
+                }
+            }
+
+            // Set recurrence (EKReminder shares EKRecurrenceRule with EKEvent)
+            if let recurrenceValue = arguments["recurrence"] {
+                switch try RecurrenceRuleParser.parse(argument: recurrenceValue) {
+                case .clear:
+                    reminder.recurrenceRules = nil
+                case .rule(let rule):
+                    guard reminder.dueDateComponents != nil else {
+                        throw NSError(
+                            domain: "RemindersError",
+                            code: 2,
+                            userInfo: [
+                                NSLocalizedDescriptionKey:
+                                    "A recurring reminder requires a due date"
+                            ]
+                        )
+                    }
+                    reminder.recurrenceRules = [rule]
                 }
             }
 

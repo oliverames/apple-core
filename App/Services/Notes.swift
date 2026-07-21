@@ -7,9 +7,24 @@ import OSLog
 
 private let log = Logger.service("notes")
 
+// Deliberately excluded tool surface (vs sweetrb/apple-notes-mcp):
+// - get-checklist-state / sync status: not exposed by Notes' scripting
+//   dictionary or its HTML bodies.
+// - show-note / show-folder / show-attachment / get-selected-notes:
+//   GUI-context tools; Apple Core is headless by design.
+// - health-check / doctor: a cross-service doctor is planned separately
+//   (DONORS §4), not per-service.
+// - get-note-link: the notes:// deep-link UUID lives only in the NoteStore
+//   SQLite DB (ruled out by BUILD_PLAN §3.5), and this macOS's scripting
+//   dictionary has no `note link` property (verified 2026-07-21: it is
+//   absent from `note.properties()` and fails to compile in AppleScript).
+// - fetch-attachment (inline base64): notes_save_attachment covers the
+//   need without pushing megabytes of base64 through the MCP transport.
+
 private let defaultListLimit = 50
 private let defaultSearchLimit = 20
 private let maximumLimit = 200
+private let maximumBatchSize = 50
 
 // MARK: - Output models
 
@@ -108,6 +123,36 @@ private struct NotesStats: Codable, Sendable {
     let modifiedLast24h: Int
     let modifiedLast7d: Int
     let modifiedLast30d: Int
+}
+
+private struct NoteAttachment: Codable, Sendable {
+    let index: Int
+    let id: String
+    let name: String
+    let contentIdentifier: String?
+    let creationDate: String?
+    let modificationDate: String?
+    let isShared: Bool
+}
+
+private struct AttachmentSaveResult: Codable, Sendable {
+    let saved: Bool
+    let noteId: String
+    let attachmentId: String
+    let attachmentName: String
+    let savedPath: String
+}
+
+private struct BatchItemResult: Codable, Sendable {
+    let id: String
+    let success: Bool
+    let error: String?
+}
+
+private struct BatchResult: Codable, Sendable {
+    let succeeded: Int
+    let failed: Int
+    let results: [BatchItemResult]
 }
 
 // MARK: - JXA / AppleScript sources
@@ -520,6 +565,56 @@ private let exportNotesScript = """
         }
         return JSON.stringify(result);
     }
+    """
+
+private let listAttachmentsScript = """
+    function run(argv) {
+        const noteId = argv[0];
+        const Notes = Application('Notes');
+        const note = Notes.notes.byId(noteId);
+
+        let attachments;
+        try { attachments = note.attachments(); } catch (e) {
+            throw new Error('NOT_FOUND: no note with id ' + noteId);
+        }
+
+        const rows = [];
+        for (let i = 0; i < attachments.length; i++) {
+            const attachment = attachments[i];
+            let contentIdentifier = null;
+            try { contentIdentifier = attachment.contentIdentifier(); } catch (e) {}
+            rows.push({
+                index: i,
+                id: attachment.id(),
+                name: attachment.name() || '',
+                contentIdentifier: contentIdentifier,
+                creationDate: attachment.creationDate()
+                    ? attachment.creationDate().toISOString() : null,
+                modificationDate: attachment.modificationDate()
+                    ? attachment.modificationDate().toISOString() : null,
+                isShared: attachment.shared() === true,
+            });
+        }
+        return JSON.stringify(rows);
+    }
+    """
+
+private let saveAttachmentScript = """
+    on run argv
+        set noteId to item 1 of argv
+        set attachmentId to item 2 of argv
+        set savePath to item 3 of argv
+        tell application "Notes"
+            set targetNote to note id noteId
+            repeat with anAttachment in attachments of targetNote
+                if (id of anAttachment as text) is attachmentId then
+                    save anAttachment in (POSIX file savePath)
+                    return "saved"
+                end if
+            end repeat
+        end tell
+        error "NOT_FOUND: no attachment with id " & attachmentId
+    end run
     """
 
 // MARK: - Service
@@ -1057,6 +1152,174 @@ final class NotesService: Service {
                 timeout: 180
             )
         }
+
+        Tool(
+            name: "notes_list_attachments",
+            description:
+                "List a note's attachments (name, id, index, dates). Use the returned id or index with notes_save_attachment.",
+            inputSchema: .object(
+                properties: [
+                    "id": .string(
+                        description: "Note id (from notes_list or notes_search)"
+                    )
+                ],
+                required: ["id"],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "List Note Attachments",
+                readOnlyHint: true,
+                openWorldHint: false
+            )
+        ) { arguments in
+            let id = try Self.requiredString("id", from: arguments)
+            return try await AppleScriptRunner.shared.runJSON(
+                .jxa,
+                script: listAttachmentsScript,
+                arguments: [id],
+                as: [NoteAttachment].self
+            )
+        }
+
+        Tool(
+            name: "notes_save_attachment",
+            description:
+                "Save one of a note's attachments to disk. Identify the attachment by id, name, or index from notes_list_attachments. Never overwrites: an existing file gets a numbered suffix.",
+            inputSchema: .object(
+                properties: [
+                    "id": .string(
+                        description: "Note id (from notes_list or notes_search)"
+                    ),
+                    "attachment": .string(
+                        description:
+                            "Attachment id, exact name, or numeric index (from notes_list_attachments)"
+                    ),
+                    "directory": .string(
+                        description: "Destination directory; ~/Downloads if omitted"
+                    ),
+                ],
+                required: ["id", "attachment"],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Save Note Attachment",
+                destructiveHint: false,
+                openWorldHint: false
+            )
+        ) { arguments in
+            let id = try Self.requiredString("id", from: arguments)
+            let selector = try Self.requiredString("attachment", from: arguments)
+            let attachments = try await AppleScriptRunner.shared.runJSON(
+                .jxa,
+                script: listAttachmentsScript,
+                arguments: [id],
+                as: [NoteAttachment].self
+            )
+            guard let attachment = Self.selectAttachment(selector, from: attachments) else {
+                throw NSError(
+                    domain: "NotesError",
+                    code: 4,
+                    userInfo: [
+                        NSLocalizedDescriptionKey:
+                            "NOT_FOUND: no attachment matching \"\(selector)\" (note has \(attachments.count))"
+                    ]
+                )
+            }
+            let directory = Self.resolvedSaveDirectory(arguments["directory"]?.stringValue)
+            try FileManager.default.createDirectory(
+                at: directory,
+                withIntermediateDirectories: true
+            )
+            let path = Self.unusedPath(
+                in: directory,
+                filename: Self.sanitizedFilename(attachment.name)
+            )
+            _ = try await AppleScriptRunner.shared.run(
+                .appleScript,
+                script: saveAttachmentScript,
+                arguments: [id, attachment.id, path.path],
+                timeout: 120
+            )
+            log.notice("Saved attachment \(attachment.id, privacy: .private)")
+            return AttachmentSaveResult(
+                saved: true,
+                noteId: id,
+                attachmentId: attachment.id,
+                attachmentName: attachment.name,
+                savedPath: path.path
+            )
+        }
+
+        Tool(
+            name: "notes_batch_move",
+            description:
+                "Move up to \(maximumBatchSize) notes to a folder in one call, reporting success or failure per note id. Uses Notes' native move, preserving ids, dates, and attachments.",
+            inputSchema: .object(
+                properties: [
+                    "ids": .array(
+                        description: "Note ids to move (from notes_list or notes_search)",
+                        items: .string()
+                    ),
+                    "folder": .string(
+                        description: "Destination folder name (must already exist)"
+                    ),
+                    "account": .string(
+                        description:
+                            "Account containing the destination folder (e.g. iCloud); first matching folder in any account if omitted"
+                    ),
+                ],
+                required: ["ids", "folder"],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Batch Move Notes",
+                destructiveHint: false,
+                openWorldHint: false
+            )
+        ) { arguments in
+            let ids = try Self.requiredIds(from: arguments)
+            let folder = try Self.requiredString("folder", from: arguments)
+            let account = arguments["account"]?.stringValue ?? ""
+            return await Self.runBatch(ids: ids) { id in
+                _ = try await AppleScriptRunner.shared.run(
+                    .appleScript,
+                    script: moveNoteScript,
+                    arguments: [id, folder, account]
+                )
+            }
+        }
+
+        Tool(
+            name: "notes_batch_delete",
+            description:
+                "Delete up to \(maximumBatchSize) notes in one call (each moves to Recently Deleted), reporting success or failure per note id",
+            inputSchema: .object(
+                properties: [
+                    "ids": .array(
+                        description: "Note ids to delete (from notes_list or notes_search)",
+                        items: .string()
+                    )
+                ],
+                required: ["ids"],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Batch Delete Notes",
+                destructiveHint: true,
+                openWorldHint: false
+            )
+        ) { arguments in
+            let ids = try Self.requiredIds(from: arguments)
+            let result = await Self.runBatch(ids: ids) { id in
+                _ = try await AppleScriptRunner.shared.run(
+                    .appleScript,
+                    script: deleteNoteScript,
+                    arguments: [id]
+                )
+            }
+            log.notice("Batch-deleted \(result.succeeded) of \(ids.count) notes")
+            return result
+        }
     }
 
     // MARK: - Helpers
@@ -1077,6 +1340,114 @@ final class NotesService: Service {
 
     private static func clampedLimit(_ requested: Int?, default defaultValue: Int) -> Int {
         min(max(requested ?? defaultValue, 1), maximumLimit)
+    }
+
+    /// Extracts a non-empty `ids` array capped at `maximumBatchSize`.
+    private static func requiredIds(from arguments: [String: Value]) throws -> [String] {
+        guard case .array(let values)? = arguments["ids"] else {
+            throw NSError(
+                domain: "NotesError",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "ids is required"]
+            )
+        }
+        let ids = values.compactMap { $0.stringValue }.filter { !$0.isEmpty }
+        guard !ids.isEmpty else {
+            throw NSError(
+                domain: "NotesError",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "ids must contain at least one note id"]
+            )
+        }
+        guard ids.count <= maximumBatchSize else {
+            throw NSError(
+                domain: "NotesError",
+                code: 5,
+                userInfo: [
+                    NSLocalizedDescriptionKey:
+                        "Too many ids (\(ids.count)); the maximum per batch is \(maximumBatchSize)"
+                ]
+            )
+        }
+        return ids
+    }
+
+    /// Runs `operation` for each id sequentially (Notes' AppleScript
+    /// interface serializes anyway), collecting per-id outcomes.
+    private static func runBatch(
+        ids: [String],
+        operation: (String) async throws -> Void
+    ) async -> BatchResult {
+        var results: [BatchItemResult] = []
+        for id in ids {
+            do {
+                try await operation(id)
+                results.append(BatchItemResult(id: id, success: true, error: nil))
+            } catch {
+                results.append(
+                    BatchItemResult(id: id, success: false, error: error.localizedDescription)
+                )
+            }
+        }
+        let succeeded = results.filter(\.success).count
+        return BatchResult(
+            succeeded: succeeded,
+            failed: results.count - succeeded,
+            results: results
+        )
+    }
+
+    /// Matches an attachment by id, exact name, or numeric index (from
+    /// notes_list_attachments), in that order.
+    private static func selectAttachment(
+        _ selector: String,
+        from attachments: [NoteAttachment]
+    ) -> NoteAttachment? {
+        if let byId = attachments.first(where: { $0.id == selector }) {
+            return byId
+        }
+        if let byName = attachments.first(where: { $0.name == selector }) {
+            return byName
+        }
+        if let index = Int(selector) {
+            return attachments.first(where: { $0.index == index })
+        }
+        return nil
+    }
+
+    private static func resolvedSaveDirectory(_ requested: String?) -> URL {
+        guard let requested, !requested.isEmpty else {
+            return FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent("Downloads")
+        }
+        return URL(fileURLWithPath: (requested as NSString).expandingTildeInPath)
+    }
+
+    /// Strips path separators and control characters so an attachment name
+    /// can't escape the destination directory.
+    private static func sanitizedFilename(_ name: String) -> String {
+        let separators = CharacterSet(charactersIn: "/:\\").union(.controlCharacters)
+        let cleaned =
+            name
+            .components(separatedBy: separators)
+            .joined(separator: "-")
+            .trimmingCharacters(in: .whitespaces)
+        return cleaned.isEmpty ? "attachment" : cleaned
+    }
+
+    /// Returns a path in `directory` that does not exist yet, appending
+    /// " 2", " 3", ... before the extension when needed (never overwrites).
+    private static func unusedPath(in directory: URL, filename: String) -> URL {
+        let base = (filename as NSString).deletingPathExtension
+        let ext = (filename as NSString).pathExtension
+        var candidate = directory.appendingPathComponent(filename)
+        var counter = 2
+        while FileManager.default.fileExists(atPath: candidate.path) {
+            let numbered = ext.isEmpty ? "\(base) \(counter)" : "\(base) \(counter).\(ext)"
+            candidate = directory.appendingPathComponent(numbered)
+            counter += 1
+        }
+        return candidate
     }
 
     /// Notes treats the first heading/line as the title, so the composer
