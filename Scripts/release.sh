@@ -23,6 +23,11 @@ PROVISIONING_PROFILE_UUID="${PROVISIONING_PROFILE_UUID:-}"
 # Derived artifact names for notarization/release steps.
 NOTARY_ZIP="${DIST_DIR}/${APP_NAME}-notarize.zip"
 
+# Swift package dependencies can embed their checkout path in diagnostic
+# strings. Build release products under a neutral path so public binaries do
+# not disclose the build user's username or home directory.
+RELEASE_DERIVED_DATA_PATH="${RELEASE_DERIVED_DATA_PATH:-/private/tmp/apple-core-release-derived-data}"
+
 print_usage() {
   cat <<'EOF'
 Usage: Scripts/release.sh [command]
@@ -48,6 +53,7 @@ Environment:
   APP_NAME          App name (default: Apple Core)
   APP_BUNDLE        App bundle path (default: ${APP_NAME}.app)
   KEYCHAIN_PROFILE  Notarytool profile (default: notarytool-profile)
+  RELEASE_DERIVED_DATA_PATH Neutral DerivedData path used for public builds
   VERSION           Required for bumping, commit, release, and upload
   BUILD_NUMBER      Optional; used when bumping build number
   SCHEME            Xcode scheme for build check (default: Apple Core)
@@ -271,14 +277,17 @@ build_zip() {
 build_check() {
   echo "Checking release build (scheme: ${SCHEME}, configuration: ${CONFIGURATION})"
   xcodebuild -quiet -scheme "${SCHEME}" -configuration "${CONFIGURATION}" \
-    -destination "${DESTINATION}" CODE_SIGNING_ALLOWED=NO build
+    -destination "${DESTINATION}" -derivedDataPath "${RELEASE_DERIVED_DATA_PATH}" \
+    CODE_SIGNING_ALLOWED=NO build
   resolve_app_bundle
 }
 
 archive_app() {
   ensure_dist_dir
   echo "Archiving app to ${ARCHIVE_PATH}"
-  xcodebuild -quiet -scheme "${SCHEME}" -configuration "${CONFIGURATION}" -destination "generic/platform=macOS" archive -archivePath "${ARCHIVE_PATH}"
+  xcodebuild -quiet -scheme "${SCHEME}" -configuration "${CONFIGURATION}" \
+    -destination "generic/platform=macOS" -derivedDataPath "${RELEASE_DERIVED_DATA_PATH}" \
+    archive -archivePath "${ARCHIVE_PATH}"
 }
 
 write_export_options() {
@@ -409,7 +418,7 @@ update_appcast() {
   echo "Signing ${release_zip_path} with ${sign_update}"
   signature="$("${sign_update}" "${release_zip_path}" -p)"
   length="$(stat -f%z "${release_zip_path}")"
-  notes_html="$("$(dirname "${BASH_SOURCE[0]}")/render_release_notes.sh" "${VERSION}")"
+  notes_html="$(bash "$(dirname "${BASH_SOURCE[0]}")/render_release_notes.sh" "${VERSION}")"
   pub_date="$(LC_ALL=en_US.UTF-8 date -u '+%a, %d %b %Y %H:%M:%S +0000')"
   build_number="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "${APP_BUNDLE}/Contents/Info.plist")"
 
