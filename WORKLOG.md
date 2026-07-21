@@ -1,5 +1,15 @@
 # Apple Core worklog
 
+## 2026-07-21 — Public release posture, Sparkle, full parity backlog
+
+- **Repo made public** under GPL-3.0-or-later (Oliver's call; Gitleaks full-history scan green beforehand).
+- **Sparkle 2 auto-updates** wired per ping-warden's pattern: `SPUStandardUpdaterController` with explicit startup, "Check for Updates…" menu item, EdDSA keys (public in Info.plist, private in login Keychain), signed-feed enforcement, `release.sh appcast` signing command + `render_release_notes.sh`, appcast served from the `gh-pages` branch via GitHub Pages (live, HTTP 200).
+- **MCP compliance verified** (`docs/planning/MCP_COMPLIANCE.md`): all tool schemas valid against JSON Schema 2020-12, protocol 2025-06-18 negotiated, Claude Code enumerated every tool live; Codex config accepted (authenticated enumeration is a follow-up). Pinned swift-sdk already supports `outputSchema`/`structuredContent` — wiring them is queued.
+- **Parity backlog completed in two waves** (21 → 75 tools served): Messages send + group chats; Calendar/Reminders full CRUD plus shared RFC 5545 recurrence parser (30/30 fixtures); Mail 5 → 26 tools (triage, compose, threads, stats, attachments, mailbox CRUD, templates); Notes 8 → 19 (folders, move, markdown converter, attachments, batch ops). Exclusions are evidence-documented in each service's header (Mail rules, Notes DB-backed tools, reminder subtasks — no public API even in the macOS 27 beta SDK this machine runs).
+- **UX pass**: Bridgeport-style settings panes reworked to native forms, Remote Access terminology, Open at Login, connector app icon generated from the menu bar symbol, approval-window close-as-deny fix, and a config save-clobber loop fixed (tolerant CloudflareSettings decoding + merge-on-save + reload-on-appear).
+- **Cloudflare remote access configured and verified**: tunnel `apple-core` → `https://applecore.amesvt.com/mcp`, 401 unauthenticated, full MCP round-trips with bearer token.
+- **Still open**: runtime write-path integration tests (disposable accounts per BUILD_PLAN §3.2/§5.1), TCC grants via UI toggles, outputSchema wiring, Codex authenticated enumeration, new AppIcon artwork if the placeholder should be replaced, first release cut (explicitly awaiting Oliver's go).
+
 ## 2026-07-20 — Revival: Bridgeport serving-shell architecture pivot
 
 **What changed:**
