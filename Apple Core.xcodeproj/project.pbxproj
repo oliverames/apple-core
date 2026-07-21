@@ -24,6 +24,7 @@
 		FFAC00000000000000000005 /* FlyingFox in Frameworks */ = {isa = PBXBuildFile; productRef = FFAC00000000000000000002 /* FlyingFox */; };
 		FFAC00000000000000000006 /* FlyingSocks in Frameworks */ = {isa = PBXBuildFile; productRef = FFAC00000000000000000003 /* FlyingSocks */; };
 		FFAC00000000000000000007 /* Logging in Frameworks */ = {isa = PBXBuildFile; productRef = FFAC00000000000000000004 /* Logging */; };
+		FFAC00000000000000000012 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = FFAC00000000000000000011 /* Sparkle */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -99,6 +100,7 @@
 				FFAC00000000000000000005 /* FlyingFox in Frameworks */,
 				FFAC00000000000000000006 /* FlyingSocks in Frameworks */,
 				FFAC00000000000000000007 /* Logging in Frameworks */,
+				FFAC00000000000000000012 /* Sparkle in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -167,6 +169,7 @@
 				FFAC00000000000000000002 /* FlyingFox */,
 				FFAC00000000000000000003 /* FlyingSocks */,
 				FFAC00000000000000000004 /* Logging */,
+				FFAC00000000000000000011 /* Sparkle */,
 			);
 			productName = iMCP;
 			productReference = F8F44E6D2D59038D0075D79C /* iMCP.app */;
@@ -234,6 +237,7 @@
 				F8D8C48C2DCE0E6800369E5C /* XCRemoteSwiftPackageReference "JSONSchema" */,
 				F87796FA2E0764AE00328CC6 /* XCRemoteSwiftPackageReference "MenuBarExtraAccess" */,
 				FFAC00000000000000000001 /* XCRemoteSwiftPackageReference "FlyingFox" */,
+				FFAC00000000000000000010 /* XCRemoteSwiftPackageReference "Sparkle" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = F8F44E6E2D59038D0075D79C /* Products */;
@@ -663,6 +667,14 @@
 				minimumVersion = 0.26.0;
 			};
 		};
+		FFAC00000000000000000010 /* XCRemoteSwiftPackageReference "Sparkle" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/sparkle-project/Sparkle";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.9.4;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -741,6 +753,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = F88358352D64A085000317CD /* XCRemoteSwiftPackageReference "swift-log" */;
 			productName = Logging;
+		};
+		FFAC00000000000000000011 /* Sparkle */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = FFAC00000000000000000010 /* XCRemoteSwiftPackageReference "Sparkle" */;
+			productName = Sparkle;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

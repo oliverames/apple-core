@@ -6,5 +6,15 @@
 	<true/>
 	<key>NSAppleEventsUsageDescription</key>
 	<string>Apple Core uses Apple Events to read and manage your Notes and Mail on your behalf when those services are enabled.</string>
+	<key>SUEnableInstallerLauncherService</key>
+	<true/>
+	<key>SUFeedURL</key>
+	<string>https://oliverames.github.io/apple-core/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>qMLqpF6nJjBtvt0UMuGfe6zy4/psV9nTA/YHsXU4uqs=</string>
+	<key>SURequireSignedFeed</key>
+	<true/>
+	<key>SUVerifyUpdateBeforeExtraction</key>
+	<true/>
 </dict>
 </plist>

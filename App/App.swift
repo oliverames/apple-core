@@ -9,6 +9,7 @@
 
 import AppKit
 import OSLog
+import Sparkle
 import SwiftUI
 
 /// Registers Apple Core as a per-user LaunchAgent so it keeps running (and
@@ -79,12 +80,23 @@ enum AppLaunchAgent {
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private static let enableItemTag = 100
     private static let servicesHeaderTag = 110
+    private static let checkForUpdatesItemTag = 120
 
     private let serverController = ServerController()
     private var statusItem: NSStatusItem?
     private var statusMenu: NSMenu?
     private var settingsWindowController: SettingsWindowController?
     private var aboutWindowController: AboutWindowController?
+
+    // Sparkle auto-updating, following ping-warden's pattern
+    // (PingWardenApp.swift): the controller is created with
+    // startingUpdater: false and started explicitly so a startup failure can
+    // be logged and surfaced instead of silently disabling updates. The feed
+    // URL and public EdDSA key live in Info.plist (SUFeedURL / SUPublicEDKey)
+    // as the single source of truth.
+    private var updaterController: SPUStandardUpdaterController?
+    private var updaterStartupError: Error?
+    private var updaterHasStarted = false
 
     private var runAsLaunchAgent: Bool {
         UserDefaults.standard.object(forKey: "runAsLaunchAgent") as? Bool ?? true
@@ -99,6 +111,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if runAsLaunchAgent {
             AppLaunchAgent.installIfNeeded()
         }
+
+        updaterController = SPUStandardUpdaterController(
+            startingUpdater: false,
+            updaterDelegate: nil,
+            userDriverDelegate: nil
+        )
+        _ = startUpdaterIfNeeded()
 
         setupMenuBar()
 
@@ -168,6 +187,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         menu.addItem(NSMenuItem.separator())
+
+        let updatesItem = NSMenuItem(
+            title: "Check for Updates…",
+            action: #selector(checkForUpdates),
+            keyEquivalent: ""
+        )
+        updatesItem.target = self
+        updatesItem.tag = Self.checkForUpdatesItemTag
+        menu.addItem(updatesItem)
 
         let settingsItem = NSMenuItem(
             title: "Settings…",
@@ -241,6 +269,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             item.state = (bindings[serviceID]?.wrappedValue ?? false) ? .on : .off
             item.isEnabled = isEnabled
         }
+
+        if let updatesItem = menu.items.first(where: { $0.tag == Self.checkForUpdatesItemTag }) {
+            // Mirror ping-warden: keep the item clickable while no update
+            // session is running; a startup failure is surfaced on click.
+            let sessionInProgress = updaterController?.updater.sessionInProgress ?? false
+            updatesItem.isEnabled = !sessionInProgress
+        }
     }
 
     func menuWillOpen(_ menu: NSMenu) {
@@ -290,6 +325,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         Task {
             await serverController.updateServiceBindings(bindings)
         }
+    }
+
+    @objc private func checkForUpdates() {
+        guard startUpdaterIfNeeded() else {
+            presentUpdaterStartFailureAlert()
+            return
+        }
+        if let activeFeedURL = updaterController?.updater.feedURL?.absoluteString {
+            Logger.server.info("Checking Sparkle updates from feed: \(activeFeedURL, privacy: .public)")
+        }
+        updaterController?.updater.checkForUpdates()
+    }
+
+    @discardableResult
+    private func startUpdaterIfNeeded() -> Bool {
+        guard let updater = updaterController?.updater else {
+            return false
+        }
+        if updaterHasStarted {
+            return true
+        }
+        do {
+            try updater.start()
+            updaterHasStarted = true
+            updaterStartupError = nil
+            return true
+        } catch {
+            updaterStartupError = error
+            Logger.server.error(
+                "Sparkle updater failed to start: \(error.localizedDescription, privacy: .public)")
+            return false
+        }
+    }
+
+    private func presentUpdaterStartFailureAlert() {
+        let alert = NSAlert()
+        alert.messageText = "Unable to Check for Updates"
+        alert.informativeText =
+            updaterStartupError?.localizedDescription
+            ?? "The update system could not be started. Please try again later."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "OK")
+        NSApp.activate(ignoringOtherApps: true)
+        alert.runModal()
     }
 
     @objc private func openSettingsFromMenu() {
