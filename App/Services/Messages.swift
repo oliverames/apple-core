@@ -266,7 +266,7 @@ final class MessageService: NSObject, Service, NSOpenSavePanelDelegate {
         ) { arguments in
             try await self.activate()
 
-            let limit = max(arguments["limit"]?.intValue ?? defaultLimit, 1)
+            let limit = min(max(arguments["limit"]?.intValue ?? defaultLimit, 1), 200)
             let db = try self.createDatabaseConnection()
 
             let chats: [[String: Value]] = try db.fetchChats(limit: limit).map { chat in
