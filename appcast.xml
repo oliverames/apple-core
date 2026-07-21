@@ -5,9 +5,6 @@
     <link>https://oliverames.github.io/apple-core/appcast.xml</link>
     <description>Updates for Apple Core - a native macOS MCP server for Apple services</description>
     <language>en</language>
-    <!-- No releases yet. `Scripts/release.sh appcast` appends signed <item>
-         entries here once the first release is cut. Note: the repository is
-         currently private, so this feed is not reachable at the URL above
-         until the repo is made public (or the appcast is hosted elsewhere). -->
+    <!-- `Scripts/release.sh appcast` prepends signed release entries here. -->
   </channel>
 </rss>

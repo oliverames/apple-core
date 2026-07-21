@@ -8,9 +8,9 @@
 
 A personal macOS MCP (Model Context Protocol) server that exposes local Apple services, including Calendar, Reminders, Contacts, Mail, Notes, Messages, Maps, Location, Capture, and Shortcuts, to MCP clients such as Claude Desktop, Claude Code, and Cursor.
 
-**Status:** release preparation. The app builds, serves MCP locally and through an optional authenticated Cloudflare Tunnel, and has 77 tools in the standard build. Apple Core began as a hard-fork of [`mattt/iMCP`](https://github.com/mattt/iMCP); it now runs those per-surface implementations plus expanded Notes and Mail surfaces behind the HTTP/SSE serving shell ported from [Bridgeport](https://github.com/oliverames/bridgeport), replacing the original Bonjour transport. The architecture pivot is recorded in [`docs/planning/BUILD_PLAN.md` §0a](docs/planning/BUILD_PLAN.md).
+**Status:** Apple Core 1.0 is the first public release. The app serves MCP locally and through an optional authenticated Cloudflare Tunnel, with 77 tools in the standard build. Apple Core began as a hard-fork of [`mattt/iMCP`](https://github.com/mattt/iMCP); it now runs those per-surface implementations plus expanded Notes and Mail surfaces behind the HTTP/SSE serving shell ported from [Bridgeport](https://github.com/oliverames/bridgeport), replacing the original Bonjour transport. The architecture pivot is recorded in [`docs/planning/BUILD_PLAN.md` §0a](docs/planning/BUILD_PLAN.md).
 
-No public release has been cut yet. The repository and signed Sparkle appcast infrastructure exist, but the first Developer ID signed and notarized build remains deliberately unpublished.
+Download the signed and notarized app from [GitHub Releases](https://github.com/oliverames/apple-core/releases/latest). Each installation creates its own bearer token and stores its configuration and OAuth state under that Mac user's `~/.config/apple-core/` folder. The release does not contain Oliver's token, Cloudflare tunnel credentials, OAuth clients, Apple account data, or service permissions. Remote access and every per-service Remote toggle start off.
 
 ## Origin and license
 
