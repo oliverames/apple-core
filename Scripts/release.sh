@@ -3,7 +3,7 @@ set -euo pipefail
 
 APP_NAME="${APP_NAME:-Apple Core}"
 APP_BUNDLE="${APP_BUNDLE:-${APP_NAME}.app}"
-KEYCHAIN_PROFILE="${KEYCHAIN_PROFILE:-}"
+KEYCHAIN_PROFILE="${KEYCHAIN_PROFILE:-notarytool-profile}"
 VERSION="${VERSION:-}"
 BUILD_NUMBER="${BUILD_NUMBER:-}"
 SCHEME="${SCHEME:-Apple Core}"
@@ -47,7 +47,7 @@ Commands:
 Environment:
   APP_NAME          App name (default: Apple Core)
   APP_BUNDLE        App bundle path (default: ${APP_NAME}.app)
-  KEYCHAIN_PROFILE  Enables notarize/staple during all; required for notarize
+  KEYCHAIN_PROFILE  Notarytool profile (default: notarytool-profile)
   VERSION           Required for bumping, commit, release, and upload
   BUILD_NUMBER      Optional; used when bumping build number
   SCHEME            Xcode scheme for build check (default: Apple Core)

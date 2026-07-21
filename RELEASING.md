@@ -48,7 +48,7 @@ VERSION=1.0.0 Scripts/release.sh export     # export Developer ID signed app (re
 VERSION=1.0.0 Scripts/release.sh package    # zip + sha256
 ```
 
-`Scripts/release.sh all` requires `KEYCHAIN_PROFILE` and performs the complete signed, notarized, stapled, and validated local preparation. Individual subcommands remain available for diagnosis, but `commit` also refuses to tag an app that fails Developer ID, Gatekeeper, or stapler validation.
+`Scripts/release.sh all` uses the verified `notarytool-profile` keychain profile by default and performs the complete signed, notarized, stapled, and validated local preparation. Override `KEYCHAIN_PROFILE` if another Mac uses a different profile name. Individual subcommands remain available for diagnosis, but `commit` also refuses to tag an app that fails Developer ID, Gatekeeper, or stapler validation.
 
 Notarization (`Scripts/release.sh notarize`, `staple`) requires `KEYCHAIN_PROFILE` pointing at App Store Connect credentials. A public release must be Developer ID signed, notarized, stapled, and validated before packaging. Ad hoc or unnotarized builds are for local development only.
 
