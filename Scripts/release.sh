@@ -438,8 +438,8 @@ pub_date = os.environ["PUB_DATE"]
 
 url = (
     "https://github.com/oliverames/apple-core/releases/download/"
-    f"v{version}/Apple Core-{version}.zip"
-).replace(" ", "%20")
+    f"v{version}/Apple.Core-{version}.zip"
+)
 
 item = f"""    <item>
       <title>Version {version}</title>
