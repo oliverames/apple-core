@@ -17,9 +17,9 @@ Date: 2026-07-21. Installed server: Apple Core 1.0.0 (Streamable HTTP + SSE, bea
 | Protocol negotiation | **2025-06-18** |
 | Server identity | **Apple Core 1.0.0** |
 | Public endpoint without authentication | **401** |
-| Public endpoint with authentication, no surfaces exposed | **0 tools** (default deny) |
+| Public endpoint with authentication, all compiled surfaces exposed | **77 tools** |
 | Claude Code | **Previously verified end to end**; the earlier run covered the then-current 59-tool surface |
-| Codex CLI 0.144.6 | **Streamable HTTP + bearer configuration accepted**; direct live handshake enumerates 77 tools. Model-driven enumeration awaits explicit approval to disclose the tool inventory to an external model session. |
+| Codex CLI 0.144.6 | **Streamable HTTP + bearer configuration accepted**; direct live handshake enumerates 77 tools. Model-driven enumeration awaits post-disclosure confirmation before sending the inventory to an external model session. |
 
 The source defines 81 tools. Four WeatherKit tools are excluded from the current Release build because `WEATHERKIT_AVAILABLE` is not set, leaving 77 runtime tools.
 
@@ -36,8 +36,8 @@ The live installed app at `/Applications/Apple Core.app` was exercised over `htt
 Results:
 
 - Local: 77 tools, 77 unique names, 77 output schemas.
-- Public: zero tools while `serviceSettings` is absent, confirming that remote access fails closed until individual surfaces are explicitly exposed.
-- Read-only live calls pass for Mail, Notes, Messages, Shortcuts, Maps, Reminders, and Contacts. Calendar still requires the user-controlled macOS Privacy & Security toggle.
+- Public: 77 tools with all 11 compiled services explicitly remote-enabled. The same endpoint returns 401 without authentication. Remote read-only Location and Maps calls pass using public test inputs.
+- Read-only local calls pass for Calendar, Capture, Contacts, Location, Mail, Maps, Messages, Notes, Reminders, and Shortcuts. Utilities is remotely enumerated but has no read-only tool.
 - The opt-in harness at `Scripts/integration_test.py` passes enumeration and the reversible local Mail template create/read/delete path. Apple-account mutations remain gated behind an exact acknowledgement plus named disposable Calendar, Reminders, Notes, or Mail containers.
 
 ## Output contract
@@ -65,9 +65,7 @@ Local visibility requires the service toggle. Remote visibility requires both th
 
 ## Remaining external gates
 
-1. Enable Apple Core in macOS Privacy & Security > Calendars, then rerun the read-only Calendar probe.
-2. Supply named disposable Apple containers and run `APPLE_CORE_INTEGRATION_ACK=I_AM_USING_DISPOSABLE_ACCOUNTS Scripts/integration_test.py --writes` for Calendar, Reminders, Notes, and Mail mailbox CRUD.
-3. Install a valid Developer ID Application identity and configure a `notarytool` keychain profile before archive, export, notarization, and Gatekeeper validation.
-4. Run the model-driven Codex enumeration only after explicit approval to share the live tool names and schemas with that external model session.
+1. Run the model-driven Codex enumeration only after post-disclosure confirmation to share the live tool names, descriptions, and schemas with that external model session.
+2. Apple-account write probes remain optional future coverage and require named disposable containers plus a fresh instruction permitting writes. The current verification was intentionally read-only.
 
 The first release remains parked until Oliver explicitly says to cut it.
