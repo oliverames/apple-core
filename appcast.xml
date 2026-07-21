@@ -62,7 +62,7 @@ hr { border: 0; border-top: 1px solid #e5e5ea; margin: 16px 0; }
       <enclosure url="https://github.com/oliverames/apple-core/releases/download/v1.0.0/Apple%20Core-1.0.0.zip"
                  length="8659081"
                  type="application/octet-stream"
-                 d42F4wLicsek+rLDJi7tyjLKX9UmyXhPmhYDuodv/MYIrQTRahXrc4Z8rKTd6RfVqSBEvQ9kd06JgJmVWfuzBg== />
+                 sparkle:edSignature="d42F4wLicsek+rLDJi7tyjLKX9UmyXhPmhYDuodv/MYIrQTRahXrc4Z8rKTd6RfVqSBEvQ9kd06JgJmVWfuzBg==" />
       <sparkle:minimumSystemVersion>15.1</sparkle:minimumSystemVersion>
     </item>
     <!-- `Scripts/release.sh appcast` prepends signed release entries here. -->

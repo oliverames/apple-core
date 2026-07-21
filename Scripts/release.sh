@@ -425,6 +425,7 @@ update_appcast() {
   VERSION="${VERSION#v}" BUILD_NUMBER="${build_number}" SIGNATURE="${signature}" LENGTH="${length}" \
   NOTES_HTML="${notes_html}" PUB_DATE="${pub_date}" python3 - <<'PYEOF'
 import os, re, sys
+import xml.etree.ElementTree as ET
 
 version = os.environ["VERSION"]
 build_number = os.environ["BUILD_NUMBER"]
@@ -450,7 +451,7 @@ item = f"""    <item>
       <enclosure url="{url}"
                  length="{length}"
                  type="application/octet-stream"
-                 {signature} />
+                 sparkle:edSignature="{signature}" />
       <sparkle:minimumSystemVersion>15.1</sparkle:minimumSystemVersion>
     </item>
 """
@@ -469,6 +470,12 @@ if not marker:
     sys.exit(1)
 insert_at = marker.end()
 content = content[:insert_at] + item + content[insert_at:]
+
+try:
+    ET.fromstring(content)
+except ET.ParseError as error:
+    print(f"generated appcast XML is invalid: {error}", file=sys.stderr)
+    sys.exit(1)
 
 with open("appcast.xml", "w") as f:
     f.write(content)
