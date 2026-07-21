@@ -182,12 +182,22 @@ final class ServingSettingsModel: ObservableObject {
         applyCloudflareResult(result)
     }
 
+    func setCloudflareEnabled(_ enabled: Bool) async {
+        var settings = cloudflare
+        settings.enabled = enabled
+        cloudflare = settings
+        config.publicBaseURL = CloudflareManager.publicBaseURL(for: settings)
+        let result = await cloudflareManager().reconcileTunnel()
+        applyCloudflareResult(result)
+    }
+
     func startCloudflareTunnel() async {
         cloudflareStatus = await cloudflareManager().startTunnel()
     }
 
     func stopCloudflareTunnel() async {
-        cloudflareStatus = await cloudflareManager().stopTunnel()
+        let result = await cloudflareManager().disableTunnel()
+        applyCloudflareResult(result)
     }
 
     func restartCloudflareTunnel() async {

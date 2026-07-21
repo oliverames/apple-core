@@ -340,9 +340,7 @@ struct SettingsView: View {
                     isOn: Binding(
                         get: { model.cloudflare.enabled },
                         set: { newValue in
-                            model.cloudflare.enabled = newValue
-                            model.save(restartServer: false)
-                            Task { await model.refreshCloudflareStatus() }
+                            Task { await model.setCloudflareEnabled(newValue) }
                         }
                     )
                 ) {
@@ -393,12 +391,6 @@ struct SettingsView: View {
                         }
                         SettingsField(label: "Credentials File") {
                             cloudflareTextField("Created by cloudflared tunnel create", keyPath: \.credentialsFilePath)
-                        }
-                        SettingsField(label: "Token Env Var") {
-                            cloudflareTextField("CLOUDFLARE_API_TOKEN", keyPath: \.apiTokenEnvVar)
-                        }
-                        SettingsField(label: "Token op:// Ref") {
-                            cloudflareTextField("Optional op://Development/… reference", keyPath: \.apiTokenOPReference)
                         }
                     }
                     .padding(.top, 6)

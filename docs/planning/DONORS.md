@@ -2,7 +2,7 @@
 
 This doc consolidates the seven upstream MCP servers that contributed code, patterns, or design decisions to Apple Core. Each donor is listed with its license, activity status as of 2026-04-30, the specific role it plays in the synthesis, and the patterns we plan to lift. Per-donor deep-dive review notes live in [`reviews/`](reviews/).
 
-**License compatibility note**: Apple Core is being relicensed to GPL-3.0-or-later (queued; see [`BUILD_PLAN.md` §0 decision 4](BUILD_PLAN.md) and §4). Six of the seven donors are MIT — one-way compatible into GPL via composition; their LICENSE files will live in `THIRD_PARTY_LICENSES/` and per-file MIT headers stay intact on lifted files. The seventh (`apple-mail-mcp`) is GPL-3.0-or-later — fully compatible with our chosen license, lifted directly without clean-room overhead.
+**License compatibility note**: Apple Core is GPL-3.0-or-later (see [`BUILD_PLAN.md` §0 decision 4](BUILD_PLAN.md) and §4). Six of the seven donors are MIT, which is one-way compatible into GPL via composition; license copies for designs actually used by the implementation live in `THIRD_PARTY_LICENSES/`. The seventh (`apple-mail-mcp`) is GPL-3.0-or-later and is license-compatible with Apple Core.
 
 **De-duplication note**: `Dhravya/apple-mcp` and `supermemoryai/apple-mcp` are the same project republished under two GitHub orgs — Dhravya works at Supermemory. Two reviewers converged on this finding from independent reads (the `package.json` `repository` field on the supermemory copy still points at `Dhravya/apple-mcp`, the manifest author is Dhravya, the commit history is identical). They are listed separately below for completeness, but for code-lift purposes treat them as one donor.
 
@@ -25,7 +25,7 @@ This doc consolidates the seven upstream MCP servers that contributed code, patt
 
 - **App + CLI split.** The `App/` and `CLI/` folder layout. The CLI is bundled inside the `.app` and launched by MCP clients via stdio.
 - **Per-surface `Sources/<Surface>Service/` module structure.** One folder per surface registered with the MCP server via an actor-isolated tool dispatcher. Calendar, Reminders, Contacts, Location, Maps, Messages-read, Weather, Capture, Shortcuts all already exist.
-- **MenuBarExtra UI** (`MenuBarExtraAccess` package).
+- **Menu bar UI foundation.** Apple Core now uses AppKit `NSStatusItem` directly; the inherited `MenuBarExtraAccess` dependency was removed because no source imported it.
 - **Per-client approval gate** (`ConnectionApprovalView` + `@AppStorage("trustedClients")`).
 - **JSON-LD / Schema.org outputs via `Ontology`** package (Mattt's other project). Tool results encoded as `Person`, `Conversation`, `Event` instead of ad-hoc dictionaries.
 - **`madrid` package** (Mattt's typedstream decoder) for Messages `attributedBody` decoding.

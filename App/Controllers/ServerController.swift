@@ -158,6 +158,13 @@ enum ServiceRegistry {
                 service: ShortcutsService.shared,
                 binding: shortcutsEnabled
             ),
+            ServiceConfig(
+                name: "Utilities",
+                iconName: "waveform",
+                color: .secondary,
+                service: UtilitiesService.shared,
+                binding: utilitiesEnabled
+            ),
         ]
         #if WEATHERKIT_AVAILABLE
             configs.append(
@@ -455,6 +462,7 @@ final class ServerController: ObservableObject {
 // Manages a single MCP connection/session.
 actor MCPConnectionManager {
     private let connectionID: UUID
+    private let accessSurface: MCPAccessSurface
     private let transport: SSETransport
     private let server: MCP.Server
     private let parentManager: ServerNetworkManager
@@ -464,8 +472,9 @@ actor MCPConnectionManager {
     /// only ever talks to `transport`.
     nonisolated let sseSession: MCPSSESession
 
-    init(connectionID: UUID, parentManager: ServerNetworkManager) {
+    init(connectionID: UUID, accessSurface: MCPAccessSurface, parentManager: ServerNetworkManager) {
         self.connectionID = connectionID
+        self.accessSurface = accessSurface
         self.parentManager = parentManager
 
         let transport = SSETransport()
@@ -517,7 +526,11 @@ actor MCPConnectionManager {
     }
 
     private func registerHandlers() async {
-        await parentManager.registerHandlers(for: server, connectionID: connectionID)
+        await parentManager.registerHandlers(
+            for: server,
+            connectionID: connectionID,
+            accessSurface: accessSurface
+        )
     }
 
     func notifyToolListChanged() async {
@@ -550,6 +563,7 @@ actor ServerNetworkManager {
 
     private let services = ServiceRegistry.services
     private var serviceBindings: [String: Binding<Bool>] = [:]
+    private var servingConfig = AppleCoreServingConfig()
 
     func isRunning() -> Bool {
         isRunningState
@@ -565,10 +579,11 @@ actor ServerNetworkManager {
         isRunningState = true
 
         let servingConfig = Self.bootstrappedServingConfig()
+        self.servingConfig = servingConfig
         let httpServer = AppleCoreHTTPServer(config: servingConfig)
         self.httpServer = httpServer
 
-        await httpServer.setSessionFactory { [weak self] sessionID in
+        await httpServer.setSessionFactory { [weak self] sessionID, accessSurface in
             guard let self else {
                 // Should not happen: the HTTP server is owned by (and only
                 // ever started from) this actor. Fabricate a disconnected
@@ -576,7 +591,7 @@ actor ServerNetworkManager {
                 let orphanTransport = SSETransport()
                 return MCPSSESession(id: sessionID, transport: orphanTransport)
             }
-            return await self.handleNewConnection(sessionID: sessionID)
+            return await self.handleNewConnection(sessionID: sessionID, accessSurface: accessSurface)
         }
 
         await httpServer.setSessionCloseHandler { [weak self] sessionID in
@@ -664,12 +679,16 @@ actor ServerNetworkManager {
     // transport, kick off the approval/registration flow in the
     // background, and hand the session's HTTP-facing half back to
     // AppleCoreHTTPServer so it can plumb request/response bytes.
-    private func handleNewConnection(sessionID: String) async -> MCPSSESession {
+    private func handleNewConnection(
+        sessionID: String,
+        accessSurface: MCPAccessSurface
+    ) async -> MCPSSESession {
         let connectionID = UUID(uuidString: sessionID) ?? UUID()
         log.info("Handling new connection: \(connectionID)")
 
         let connectionManager = MCPConnectionManager(
             connectionID: connectionID,
+            accessSurface: accessSurface,
             parentManager: self
         )
 
@@ -720,7 +739,11 @@ actor ServerNetworkManager {
         return connectionManager.sseSession
     }
 
-    func registerHandlers(for server: MCP.Server, connectionID: UUID) async {
+    func registerHandlers(
+        for server: MCP.Server,
+        connectionID: UUID,
+        accessSurface: MCPAccessSurface
+    ) async {
         await server.withMethodHandler(ListPrompts.self) { _ in
             log.debug("Handling ListPrompts request for \(connectionID)")
             return ListPrompts.Result(prompts: [])
@@ -744,9 +767,7 @@ actor ServerNetworkManager {
                     let serviceId = String(describing: type(of: service))
 
                     // Read binding on the actor for consistency.
-                    if let isServiceEnabled = await self.serviceBindings[serviceId]?.wrappedValue,
-                        isServiceEnabled
-                    {
+                    if await self.isServiceAccessible(serviceId, surface: accessSurface) {
                         for tool in service.tools {
                             log.debug("Adding tool: \(tool.name)")
                             do {
@@ -755,7 +776,8 @@ actor ServerNetworkManager {
                                         name: tool.name,
                                         description: tool.description,
                                         inputSchema: try encodeSchemaAsValue(tool.inputSchema),
-                                        annotations: tool.annotations
+                                        annotations: tool.annotations,
+                                        outputSchema: try encodeSchemaAsValue(tool.outputSchema)
                                     )
                                 )
                             } catch {
@@ -800,9 +822,7 @@ actor ServerNetworkManager {
                 let serviceId = String(describing: type(of: service))
 
                 // Read binding on the actor for consistency.
-                if let isServiceEnabled = await self.serviceBindings[serviceId]?.wrappedValue,
-                    isServiceEnabled
-                {
+                if await self.isServiceAccessible(serviceId, surface: accessSurface) {
                     do {
                         guard
                             let value = try await service.call(
@@ -825,6 +845,7 @@ actor ServerNetworkManager {
                                         _meta: nil
                                     )
                                 ],
+                                structuredContent: .object(["result": value]),
                                 isError: false
                             )
                         case .data(let mimeType?, let data) where mimeType.hasPrefix("image/"):
@@ -837,6 +858,7 @@ actor ServerNetworkManager {
                                         _meta: nil
                                     )
                                 ],
+                                structuredContent: .object(["result": value]),
                                 isError: false
                             )
                         default:
@@ -850,6 +872,7 @@ actor ServerNetworkManager {
 
                             return CallTool.Result(
                                 content: [.text(text: text, annotations: nil, _meta: nil)],
+                                structuredContent: .object(["result": value]),
                                 isError: false
                             )
                         }
@@ -877,6 +900,16 @@ actor ServerNetworkManager {
                 isError: true
             )
         }
+    }
+
+    private func isServiceAccessible(_ serviceID: String, surface: MCPAccessSurface) -> Bool {
+        let isLocallyEnabled = serviceBindings[serviceID]?.wrappedValue ?? false
+        let isExposedRemotely = servingConfig.settings(forServiceID: serviceID).exposePublicly
+        return ServiceAccessPolicy.isAccessible(
+            isLocallyEnabled: isLocallyEnabled,
+            surface: surface,
+            isExposedRemotely: isExposedRemotely
+        )
     }
 
     // Update the enabled state and notify clients.

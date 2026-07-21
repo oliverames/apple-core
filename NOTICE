@@ -17,14 +17,23 @@ Bridgeport (https://github.com/oliverames/bridgeport), a separate
 personal project also authored by Oliver Ames. No third-party attribution
 applies to this code.
 
-Additional patterns and design research are drawn from a synthesis of
-six other Apple-related MCP server projects, documented in full in
-docs/planning/DONORS.md and docs/planning/SYNTHESIS.md. As of this
-writing, none of that donor code has been lifted into this repository —
-only the research and design decisions have been. When a future surface
-implementation (Mail, Notes, Reminders extensions, etc.) actually lifts
-code or a substantially-derived design from one of those projects, this
-file and THIRD_PARTY_LICENSES/ must be updated at that time to include:
+The Messages recipient-normalization behavior was designed from patterns
+documented by Dhravya Shah's apple-mcp project
+(https://github.com/supermemoryai/apple-mcp), licensed MIT, Copyright
+2025 Dhravya Shah. Its license is preserved at
+THIRD_PARTY_LICENSES/apple-mcp.LICENSE.
+
+The Messages send-via-Messages.app behavior was independently implemented
+after studying Carter Lasalle's mac_messages_mcp project
+(https://github.com/carterlasalle/mac_messages_mcp), licensed MIT,
+Copyright 2023 Carter Lasalle. Its license is preserved at
+THIRD_PARTY_LICENSES/mac_messages_mcp.LICENSE.
+
+Additional patterns and design research are drawn from the Apple-related
+MCP server synthesis documented in docs/planning/DONORS.md and
+docs/planning/SYNTHESIS.md. When another surface implementation actually
+lifts code or a substantially-derived design from one of those projects,
+this file and THIRD_PARTY_LICENSES/ must be updated to include:
 
   - The donor project's name, URL, and license
   - A copy of its license text in THIRD_PARTY_LICENSES/<project>.LICENSE

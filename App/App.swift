@@ -3,7 +3,7 @@
 // Menu bar lifecycle reworked to follow ping-warden's execution pattern
 // (ping-warden/PingWarden/PingWarden/PingWardenApp.swift): an
 // NSApplicationDelegate owns an NSStatusItem + NSMenu directly (no
-// MenuBarExtra/MenuBarExtraAccess), the SwiftUI Settings scene is a
+// menu-bar-only app, the SwiftUI Settings scene is a
 // phantom that only hosts the app-settings command, and the real
 // Settings window is AppKit-managed with activation-policy switching.
 
@@ -23,16 +23,15 @@ enum AppLaunchAgent {
 
     @MainActor
     static func installIfNeeded() {
-        // Only offer this for a build actually running from an installed
-        // .app bundle; a bare DerivedData/Xcode run still resolves to a
-        // ".app/Contents/MacOS/" path, so this covers normal development
-        // and installed builds alike, but not `swift run`-style bare
-        // binaries (which have no stable path to relaunch anyway).
+        // A keep-alive job must never point into DerivedData or another
+        // disposable build directory. Install the app first so updates and
+        // TCC consent remain attached to one stable bundle identity.
         guard let executablePath = Bundle.main.executablePath,
-            let stableExecutablePath = LaunchAgentManager.bundleExecutablePath(for: executablePath)
+            let stableExecutablePath = LaunchAgentManager.bundleExecutablePath(for: executablePath),
+            Bundle.main.bundleURL.standardizedFileURL.path.hasPrefix("/Applications/")
         else {
             Logger.server.info(
-                "AppLaunchAgent: not running from an .app bundle in place, skipping LaunchAgent registration"
+                "AppLaunchAgent: app is not installed in /Applications; skipping LaunchAgent registration"
             )
             return
         }
@@ -43,6 +42,17 @@ enum AppLaunchAgent {
         do {
             let logDirectory = AppleCoreServingPaths.configDirectory()
             try FileManager.default.createDirectory(at: logDirectory, withIntermediateDirectories: true)
+
+            let existingExecutablePath: String? = {
+                guard let data = try? Data(contentsOf: plistURL),
+                    let plist = try? PropertyListSerialization.propertyList(from: data, format: nil)
+                        as? [String: Any],
+                    let arguments = plist["ProgramArguments"] as? [String]
+                else {
+                    return nil
+                }
+                return arguments.first
+            }()
 
             let plistData = try LaunchAgentPlist.makeData(
                 label: label,
@@ -56,13 +66,21 @@ enum AppLaunchAgent {
                 try FileManager.default.createDirectory(at: plistDirectory, withIntermediateDirectories: true)
             }
             try plistData.write(to: plistURL, options: .atomic)
+            try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: plistURL.path)
 
             #if os(macOS)
                 let uid = getuid()
             #else
                 let uid: UInt32 = 0
             #endif
-            if !LaunchAgentManager.isLoaded(label: label, uid: uid) {
+            if LaunchAgentManager.isLoaded(label: label, uid: uid),
+                existingExecutablePath != stableExecutablePath
+            {
+                let result = LaunchAgentManager.restart(label: label, uid: uid, plistURL: plistURL)
+                if !result.succeeded {
+                    Logger.server.error("AppLaunchAgent: migration failed: \(result.stderr, privacy: .public)")
+                }
+            } else if !LaunchAgentManager.isLoaded(label: label, uid: uid) {
                 let result = LaunchAgentManager.bootstrap(label: label, uid: uid, plistURL: plistURL)
                 if !result.succeeded {
                     Logger.server.error("AppLaunchAgent: bootstrap failed: \(result.stderr, privacy: .public)")
@@ -123,6 +141,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         Task {
             await serverController.setEnabled(isEnabled)
+            if let result = await CloudflareManager.reconcilePersistedConfiguration() {
+                Logger.server.info(
+                    "Cloudflare startup reconciliation: \(result.status.message, privacy: .public)"
+                )
+            }
         }
     }
 

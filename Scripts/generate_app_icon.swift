@@ -1,11 +1,12 @@
 #!/usr/bin/env swift
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// Placeholder app icon generator: renders the menu bar's SF Symbol
+// Apple Core app icon generator: renders the menu bar's SF Symbol
 // (app.connected.to.app.below.fill) as a white glyph on a rounded-rect
 // gradient tile, replacing the inherited iMCP artwork. Run from the repo
 // root; writes the PNG sizes App/Assets.xcassets/AppIcon.appiconset's
-// Contents.json expects. Structure follows bridgeport's
+// Contents.json expects. This is the canonical, reproducible app artwork.
+// Structure follows bridgeport's
 // script/generate_app_icon.swift.
 
 import AppKit

@@ -2,16 +2,28 @@
 
 Apple Core uses two separate automation paths, mirrored from `bridgeport`:
 
-- **CI** (`.github/workflows/ci.yml`) runs on `main`, pull requests, manual dispatch, and as a reusable release gate. It lints (`swift format`), builds, and runs unit tests via `xcodebuild` on the GitHub-hosted `macos-26` image, and scans full Git history with Gitleaks. Integration tests gated behind `RUN_INTEGRATION_TESTS=1` (per `docs/planning/BUILD_PLAN.md` §3.x) require a real iCloud test account and run manually, not in CI.
-- **Release** (`.github/workflows/release.yml`) runs for `v*` tags or manual dispatch. It calls the CI workflow first, then creates the GitHub release. Signing and notarization remain local (per §0 decision #5, notarization is optional for v1) because their credentials, when used, are held in 1Password and the local Developer ID keychain — never in CI.
+- **CI** (`.github/workflows/ci.yml`) runs on `main`, pull requests, manual dispatch, and as a reusable release gate. It lints (`swift format`), builds, and runs unit tests via `xcodebuild` on the GitHub-hosted `macos-26` image, and scans full Git history with Gitleaks. Runtime Apple-account write tests require named disposable containers and run manually, not in CI.
+- **Release** (`.github/workflows/release.yml`) runs for `v*` tags or manual dispatch. It calls the CI workflow first, then creates the GitHub release. Developer ID signing and notarization happen locally because those credentials are held in 1Password and the local keychain, never in CI.
 
-## Public-Release Gate
+The runtime write harness is `Scripts/integration_test.py`. Its default mode only performs authenticated enumeration. `--writes` requires the exact `APPLE_CORE_INTEGRATION_ACK=I_AM_USING_DISPOSABLE_ACCOUNTS` acknowledgement. Calendar, Reminders, Notes, and Mail mailbox mutations run only when their corresponding `APPLE_CORE_TEST_*` disposable-container variable is set, and the harness cleans up every fixture it creates.
 
-Apple Core is licensed GPL-3.0-or-later (see `LICENSE.md`, `NOTICE`, and `docs/planning/BUILD_PLAN.md` §4 for the full attribution discipline). Before changing repository visibility from private:
+```bash
+APPLE_CORE_INTEGRATION_ACK=I_AM_USING_DISPOSABLE_ACCOUNTS \
+APPLE_CORE_TEST_CALENDAR="Apple Core Test" \
+APPLE_CORE_TEST_REMINDER_LIST="Apple Core Test" \
+APPLE_CORE_TEST_NOTES_ACCOUNT="Disposable iCloud" \
+APPLE_CORE_TEST_MAIL_ACCOUNT="Disposable Mail" \
+Scripts/integration_test.py --writes
+```
+
+## Release Gate
+
+Apple Core is licensed GPL-3.0-or-later (see `LICENSE.md`, `NOTICE`, and `docs/planning/BUILD_PLAN.md` §4 for the full attribution discipline). Before publishing a binary:
 
 - Confirm every donor whose code or substantially-derived design has actually been lifted into a surface implementation (not just researched) has a corresponding entry in `NOTICE` and a license copy in `THIRD_PARTY_LICENSES/`, per §4.2.
 - Confirm the current tree contains no private deployment values (API keys, personal iCloud account identifiers used in test fixtures, etc.).
-- Decide whether Git history needs a rewrite or a fresh public repo, given this repo's private history may reference personal setup details.
+- Confirm `security find-identity -v -p codesigning` sees the intended Developer ID Application identity and the Team ID matches the project.
+- Validate the exported app with `codesign`, `spctl`, `stapler`, and a clean-machine installation smoke test.
 
 ## Local Preflight
 
@@ -24,7 +36,7 @@ xcodebuild -project "Apple Core.xcodeproj" -scheme "Apple Core" -configuration D
 gitleaks git --redact
 ```
 
-## Build, Sign, Notarize (optional for v1), and Package
+## Build, Sign, Notarize, and Package
 
 Choose the next version, then run `Scripts/release.sh` (defaults to `APP_NAME`/`SCHEME` of "Apple Core"; override via env vars documented in `Scripts/release.sh help`):
 
@@ -36,7 +48,9 @@ VERSION=1.0.0 Scripts/release.sh export     # export Developer ID signed app (re
 VERSION=1.0.0 Scripts/release.sh package    # zip + sha256
 ```
 
-Notarization (`Scripts/release.sh notarize`, `staple`) requires `KEYCHAIN_PROFILE` pointing at App Store Connect credentials — skip entirely for personal-use, unnotarized builds per §0 decision #5; users on first run see standard Gatekeeper friction (right-click → Open) instead.
+`Scripts/release.sh all` requires `KEYCHAIN_PROFILE` and performs the complete signed, notarized, stapled, and validated local preparation. Individual subcommands remain available for diagnosis, but `commit` also refuses to tag an app that fails Developer ID, Gatekeeper, or stapler validation.
+
+Notarization (`Scripts/release.sh notarize`, `staple`) requires `KEYCHAIN_PROFILE` pointing at App Store Connect credentials. A public release must be Developer ID signed, notarized, stapled, and validated before packaging. Ad hoc or unnotarized builds are for local development only.
 
 ## Publish
 

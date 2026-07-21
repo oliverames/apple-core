@@ -1924,7 +1924,7 @@ final class MailService: Service {
             attachment = match
         }
 
-        let directory = try Self.validatedSaveDirectory(saveDir)
+        let directory = try AttachmentSaveDirectory.resolve(saveDir)
         let destination = Self.uniqueDestination(
             in: directory,
             fileName: Self.sanitizedFileName(attachment.name)
@@ -1938,31 +1938,6 @@ final class MailService: Service {
             timeout: 180
         )
         return MailSaveAttachmentResult(saved: destination.path, attachmentName: attachment.name)
-    }
-
-    /// Default: ~/Downloads. A caller-supplied directory must already
-    /// exist, resolve to a real directory, and live inside the user's
-    /// home so a tool call can't scatter files across the filesystem.
-    private static func validatedSaveDirectory(_ saveDir: String?) throws -> URL {
-        let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL
-        guard let saveDir, !saveDir.isEmpty else {
-            return home.appendingPathComponent("Downloads", isDirectory: true)
-        }
-
-        let expanded = (saveDir as NSString).expandingTildeInPath
-        let url = URL(fileURLWithPath: expanded).standardizedFileURL.resolvingSymlinksInPath()
-
-        var isDirectory: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
-            isDirectory.boolValue
-        else {
-            throw Self.error("save_dir must be an existing directory: \(saveDir)")
-        }
-        let homePrefix = home.resolvingSymlinksInPath().path + "/"
-        guard (url.path + "/").hasPrefix(homePrefix) else {
-            throw Self.error("save_dir must be inside the user's home directory")
-        }
-        return url
     }
 
     /// Strips path separators and control characters; an empty or

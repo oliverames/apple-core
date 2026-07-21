@@ -7,12 +7,15 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		AC000001000000000000000D /* ServiceAccessPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC000001000000000000000E /* ServiceAccessPolicy.swift */; };
+		AC000001000000000000000F /* ServiceAccessPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC000001000000000000000E /* ServiceAccessPolicy.swift */; };
+		AC0000010000000000000011 /* AttachmentSaveDirectory.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC0000010000000000000012 /* AttachmentSaveDirectory.swift */; };
+		AC0000010000000000000013 /* AttachmentSaveDirectory.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC0000010000000000000012 /* AttachmentSaveDirectory.swift */; };
 		F809556E2D7888920055B911 /* TypedStream in Frameworks */ = {isa = PBXBuildFile; productRef = F809556D2D7888920055B911 /* TypedStream */; };
 		F80955702D7888920055B911 /* iMessage in Frameworks */ = {isa = PBXBuildFile; productRef = F809556F2D7888920055B911 /* iMessage */; };
 		F825BDBF2D9AD00E0063ADD7 /* ServiceLifecycle in Frameworks */ = {isa = PBXBuildFile; productRef = F825BDBE2D9AD00E0063ADD7 /* ServiceLifecycle */; };
 		F825BDC12D9AD00E0063ADD7 /* UnixSignals in Frameworks */ = {isa = PBXBuildFile; productRef = F825BDC02D9AD00E0063ADD7 /* UnixSignals */; };
 		F873F48D2D712BCF0035CD0A /* Ontology in Frameworks */ = {isa = PBXBuildFile; productRef = F873F48C2D712BCF0035CD0A /* Ontology */; };
-		F87796FC2E0764AE00328CC6 /* MenuBarExtraAccess in Frameworks */ = {isa = PBXBuildFile; productRef = F87796FB2E0764AE00328CC6 /* MenuBarExtraAccess */; };
 		F88358372D64A085000317CD /* Logging in Frameworks */ = {isa = PBXBuildFile; productRef = F88358362D64A085000317CD /* Logging */; };
 		F885C6B82D66079100963B25 /* imcp-server in Copy Executables */ = {isa = PBXBuildFile; fileRef = F8F44EB62D5908D00075D79C /* imcp-server */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
 		F8A7DE3E2DCB76F700530587 /* MCP in Frameworks */ = {isa = PBXBuildFile; productRef = F8A7DE3D2DCB76F700530587 /* MCP */; };
@@ -51,6 +54,9 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		AC000001000000000000000E /* ServiceAccessPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServiceAccessPolicy.swift; sourceTree = "<group>"; };
+		AC0000010000000000000012 /* AttachmentSaveDirectory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachmentSaveDirectory.swift; sourceTree = "<group>"; };
+		AC0000010000000000000003 /* Apple CoreTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "Apple CoreTests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
 		F8F44E6D2D59038D0075D79C /* iMCP.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = iMCP.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		F8F44EB62D5908D00075D79C /* imcp-server */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = "imcp-server"; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -66,6 +72,13 @@
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
+		AC0000010000000000000004 /* Tests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+			);
+			path = Tests;
+			sourceTree = "<group>";
+		};
 		F8F44E6F2D59038D0075D79C /* App */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
@@ -84,12 +97,18 @@
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
+		AC0000010000000000000005 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		F8F44E6A2D59038D0075D79C /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
 				F809556E2D7888920055B911 /* TypedStream in Frameworks */,
-				F87796FC2E0764AE00328CC6 /* MenuBarExtraAccess in Frameworks */,
 				F873F48D2D712BCF0035CD0A /* Ontology in Frameworks */,
 				F8D7C31A2DCBD32100A4775F /* MCP in Frameworks */,
 				F8A7DE3E2DCB76F700530587 /* MCP in Frameworks */,
@@ -123,8 +142,19 @@
 			children = (
 				F8F44E6F2D59038D0075D79C /* App */,
 				F8F44EB72D5908D00075D79C /* CLI */,
+				AC0000010000000000000010 /* Shared */,
+				AC0000010000000000000004 /* Tests */,
 				F8F44E6E2D59038D0075D79C /* Products */,
 			);
+			sourceTree = "<group>";
+		};
+		AC0000010000000000000010 /* Shared */ = {
+			isa = PBXGroup;
+			children = (
+				AC0000010000000000000012 /* AttachmentSaveDirectory.swift */,
+				AC000001000000000000000E /* ServiceAccessPolicy.swift */,
+			);
+			path = Shared;
 			sourceTree = "<group>";
 		};
 		F8F44E6E2D59038D0075D79C /* Products */ = {
@@ -132,6 +162,7 @@
 			children = (
 				F8F44E6D2D59038D0075D79C /* iMCP.app */,
 				F8F44EB62D5908D00075D79C /* imcp-server */,
+				AC0000010000000000000003 /* Apple CoreTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -139,6 +170,28 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		AC0000010000000000000006 /* Apple CoreTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = AC0000010000000000000007 /* Build configuration list for PBXNativeTarget "Apple CoreTests" */;
+			buildPhases = (
+				AC0000010000000000000008 /* Sources */,
+				AC0000010000000000000005 /* Frameworks */,
+				AC0000010000000000000009 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				AC0000010000000000000004 /* Tests */,
+			);
+			name = "Apple CoreTests";
+			packageProductDependencies = (
+			);
+			productName = "Apple CoreTests";
+			productReference = AC0000010000000000000003 /* Apple CoreTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 		F8F44E6C2D59038D0075D79C /* Apple Core */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = F8F44E922D59038E0075D79C /* Build configuration list for PBXNativeTarget "Apple Core" */;
@@ -165,7 +218,6 @@
 				F8D7C3162DCBD30500A4775F /* MCP */,
 				F8D7C3192DCBD32100A4775F /* MCP */,
 				F8D8C48D2DCE0E6800369E5C /* JSONSchema */,
-				F87796FB2E0764AE00328CC6 /* MenuBarExtraAccess */,
 				FFAC00000000000000000002 /* FlyingFox */,
 				FFAC00000000000000000003 /* FlyingSocks */,
 				FFAC00000000000000000004 /* Logging */,
@@ -211,6 +263,10 @@
 				LastSwiftUpdateCheck = 1620;
 				LastUpgradeCheck = 2620;
 				TargetAttributes = {
+					AC0000010000000000000006 = {
+						CreatedOnToolsVersion = 26.2;
+						TestTargetID = F8F44E6C2D59038D0075D79C;
+					};
 					F8F44E6C2D59038D0075D79C = {
 						CreatedOnToolsVersion = 16.2;
 					};
@@ -235,7 +291,6 @@
 				F825BDBD2D9AD00E0063ADD7 /* XCRemoteSwiftPackageReference "swift-service-lifecycle" */,
 				F8D7C3182DCBD32100A4775F /* XCRemoteSwiftPackageReference "swift-sdk" */,
 				F8D8C48C2DCE0E6800369E5C /* XCRemoteSwiftPackageReference "JSONSchema" */,
-				F87796FA2E0764AE00328CC6 /* XCRemoteSwiftPackageReference "MenuBarExtraAccess" */,
 				FFAC00000000000000000001 /* XCRemoteSwiftPackageReference "FlyingFox" */,
 				FFAC00000000000000000010 /* XCRemoteSwiftPackageReference "Sparkle" */,
 			);
@@ -246,11 +301,19 @@
 			targets = (
 				F8F44E6C2D59038D0075D79C /* Apple Core */,
 				F8F44EB52D5908D00075D79C /* apple-core */,
+				AC0000010000000000000006 /* Apple CoreTests */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
+		AC0000010000000000000009 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		F8F44E6B2D59038D0075D79C /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -261,10 +324,21 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		AC0000010000000000000008 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				AC0000010000000000000013 /* AttachmentSaveDirectory.swift in Sources */,
+				AC000001000000000000000F /* ServiceAccessPolicy.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		F8F44E692D59038D0075D79C /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				AC0000010000000000000011 /* AttachmentSaveDirectory.swift in Sources */,
+				AC000001000000000000000D /* ServiceAccessPolicy.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -278,6 +352,34 @@
 /* End PBXSourcesBuildPhase section */
 
 /* Begin XCBuildConfiguration section */
+		AC000001000000000000000B /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGNING_ALLOWED = NO;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 15.1;
+				PRODUCT_BUNDLE_IDENTIFIER = com.oliverames.applecore.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_ENABLE_EXPLICIT_MODULES = NO;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		AC000001000000000000000C /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGNING_ALLOWED = NO;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 15.1;
+				PRODUCT_BUNDLE_IDENTIFIER = com.oliverames.applecore.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_ENABLE_EXPLICIT_MODULES = NO;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
 		F8F44E902D59038E0075D79C /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -412,10 +514,11 @@
 				CODE_SIGN_IDENTITY = "-";
 				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 10;
+				CURRENT_PROJECT_VERSION = 1;
 				DEAD_CODE_STRIPPING = YES;
+				DEFINES_MODULE = YES;
 				DEVELOPMENT_TEAM = "";
-				ENABLE_APP_SANDBOX = YES;
+				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_INCOMING_NETWORK_CONNECTIONS = YES;
 				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
@@ -454,7 +557,7 @@
 				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
 				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 15.1;
-				MARKETING_VERSION = 1.4.0;
+				MARKETING_VERSION = 1.0.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.oliverames.applecore;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
@@ -475,11 +578,15 @@
 				AUTOMATION_APPLE_EVENTS = YES;
 				CODE_SIGN_ENTITLEMENTS = App/App.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
-				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 10;
+				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Developer ID Application";
+				CODE_SIGN_INJECT_BASE_ENTITLEMENTS = NO;
+				CODE_SIGN_STYLE = Manual;
+				CURRENT_PROJECT_VERSION = 1;
 				DEAD_CODE_STRIPPING = YES;
-				DEVELOPMENT_TEAM = TTY35UM57S;
-				ENABLE_APP_SANDBOX = YES;
+				DEFINES_MODULE = YES;
+				DEVELOPMENT_TEAM = "";
+				"DEVELOPMENT_TEAM[sdk=macosx*]" = PV3W52NDZ3;
+				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_INCOMING_NETWORK_CONNECTIONS = YES;
 				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
@@ -522,14 +629,13 @@
 				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
 				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 15.1;
-				MARKETING_VERSION = 1.4.0;
+				MARKETING_VERSION = 1.0.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.oliverames.applecore;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				SDKROOT = auto;
 				SUPPORTED_PLATFORMS = macosx;
 				SUPPORTS_MACCATALYST = NO;
-				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "WEATHERKIT_AVAILABLE $(inherited)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
 				XROS_DEPLOYMENT_TARGET = 2.2;
@@ -542,7 +648,7 @@
 				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "-";
 				CODE_SIGN_STYLE = Automatic;
 				DEAD_CODE_STRIPPING = YES;
-				DEVELOPMENT_TEAM = R7AYS6Z734;
+				DEVELOPMENT_TEAM = "";
 				MACOSX_DEPLOYMENT_TARGET = 15.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.oliverames.applecore.cli;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -559,7 +665,8 @@
 				CODE_SIGN_STYLE = Manual;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = "";
-				"DEVELOPMENT_TEAM[sdk=macosx*]" = R7AYS6Z734;
+				"DEVELOPMENT_TEAM[sdk=macosx*]" = PV3W52NDZ3;
+				ENABLE_HARDENED_RUNTIME = YES;
 				MACOSX_DEPLOYMENT_TARGET = 15.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.oliverames.applecore.cli;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -573,6 +680,15 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		AC0000010000000000000007 /* Build configuration list for PBXNativeTarget "Apple CoreTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AC000001000000000000000B /* Debug */,
+				AC000001000000000000000C /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 		F8F44E682D59038D0075D79C /* Build configuration list for PBXProject "iMCP" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
@@ -602,6 +718,7 @@
 		};
 /* End XCConfigurationList section */
 
+
 /* Begin XCRemoteSwiftPackageReference section */
 		F809556C2D7888920055B911 /* XCRemoteSwiftPackageReference "madrid" */ = {
 			isa = XCRemoteSwiftPackageReference;
@@ -625,14 +742,6 @@
 			requirement = {
 				kind = upToNextMajorVersion;
 				minimumVersion = 0.8.0;
-			};
-		};
-		F87796FA2E0764AE00328CC6 /* XCRemoteSwiftPackageReference "MenuBarExtraAccess" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/orchetect/MenuBarExtraAccess";
-			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 1.2.1;
 			};
 		};
 		F88358352D64A085000317CD /* XCRemoteSwiftPackageReference "swift-log" */ = {
@@ -702,11 +811,6 @@
 			isa = XCSwiftPackageProductDependency;
 			package = F873F48B2D712BCF0035CD0A /* XCRemoteSwiftPackageReference "Ontology" */;
 			productName = Ontology;
-		};
-		F87796FB2E0764AE00328CC6 /* MenuBarExtraAccess */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = F87796FA2E0764AE00328CC6 /* XCRemoteSwiftPackageReference "MenuBarExtraAccess" */;
-			productName = MenuBarExtraAccess;
 		};
 		F88358362D64A085000317CD /* Logging */ = {
 			isa = XCSwiftPackageProductDependency;

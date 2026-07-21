@@ -45,11 +45,11 @@ jobs:
             - name: Build
               run: xcodebuild -quiet -project "Apple Core.xcodeproj" -scheme "Apple Core" -configuration Debug -destination "platform=macOS" build
 
-            # TODO: re-add an `xcodebuild test` step once the project gains a test
-            # target (the MockEventStore unit tests are queued per
-            # docs/planning/BUILD_PLAN.md §3.2 — the iMCP fork shipped without one).
-            # Integration tests gated behind RUN_INTEGRATION_TESTS=1 require a real
-            # iCloud test account and are run manually, never in CI.
+            - name: Test
+              run: xcodebuild -quiet -project "Apple Core.xcodeproj" -scheme "Apple Core" -configuration Debug -destination "platform=macOS" test
+
+            # Scripts/integration_test.py write checks require named disposable
+            # Apple containers and are run manually, never in CI.
 
     secrets:
         name: Scan full history for secrets

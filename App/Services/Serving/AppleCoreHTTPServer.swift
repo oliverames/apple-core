@@ -31,12 +31,13 @@ public actor AppleCoreHTTPServer {
     /// to plumb SSE bytes in and out; everything upstream of it (the
     /// `MCP.Server` instance, approval flow, `registerHandlers`) is owned by
     /// ServerNetworkManager.
-    public typealias SessionFactory = @Sendable (_ id: String) async -> MCPSSESession
+    public typealias SessionFactory = @Sendable (_ id: String, _ surface: MCPAccessSurface) async -> MCPSSESession
 
     private let config: AppleCoreServingConfig
     private let oauthStore: OAuthTokenStore
     private var server: HTTPServer?
     private var sessions: [String: MCPSSESession] = [:]
+    private var sessionSurfaces: [String: MCPAccessSurface] = [:]
     private var sessionFactory: SessionFactory?
     private var sessionCloseHandler: (@Sendable (String) -> Void)?
 
@@ -187,6 +188,7 @@ public actor AppleCoreHTTPServer {
             sessionCloseHandler?(id)
         }
         sessions.removeAll()
+        sessionSurfaces.removeAll()
     }
 
     private func reapIdleSessions() async {
@@ -194,6 +196,7 @@ public actor AppleCoreHTTPServer {
             guard await session.isIdle(olderThan: Self.sessionIdleTimeout) else { continue }
             logMessage("AppleCoreHTTPServer: Closing idle session \(id)")
             sessions.removeValue(forKey: id)
+            sessionSurfaces.removeValue(forKey: id)
             await session.close(callOnClose: false)
             sessionCloseHandler?(id)
         }
@@ -484,10 +487,10 @@ public actor AppleCoreHTTPServer {
 
     private func openLegacySSE(_ request: HTTPRequest) async -> HTTPResponse {
         do {
-            let session = try await makeSession()
+            let (session, surface) = try await makeSession(for: request)
             let endpointEvent = "event: endpoint\ndata: /message?sessionId=\(session.id)\n\n"
             let (_, stream) = await session.addPersistentStream(initialEvents: [endpointEvent])
-            registerSession(session)
+            registerSession(session, surface: surface)
             return sseResponse(stream: stream, sessionId: session.id)
         } catch AppleCoreHTTPServerError.tooManySessions {
             return Self.sessionCapacityResponse()
@@ -506,6 +509,9 @@ public actor AppleCoreHTTPServer {
 
         guard let session = sessions[sessionId] else {
             return Self.textResponse(.notFound, "Session not found\n")
+        }
+        guard sessionSurfaces[sessionId] == requestSurface(for: request) else {
+            return Self.textResponse(.forbidden, "Session access surface changed\n")
         }
 
         do {
@@ -531,15 +537,19 @@ public actor AppleCoreHTTPServer {
     private func openStreamableHTTP(_ request: HTTPRequest) async -> HTTPResponse {
         do {
             let session: MCPSSESession
+            let surface: MCPAccessSurface
             switch resolveSession(request) {
             case .notFound:
                 return Self.textResponse(.notFound, "Session not found\n")
-            case .existing(let existing):
+            case .scopeMismatch:
+                return Self.textResponse(.forbidden, "Session access surface changed\n")
+            case .existing(let existing, let existingSurface):
                 session = existing
-            case .new:
-                session = try await makeSession()
+                surface = existingSurface
+            case .new(let newSurface):
+                (session, surface) = try await makeSession(surface: newSurface)
             }
-            registerSession(session)
+            registerSession(session, surface: surface)
             let (_, stream) = await session.addPersistentStream()
             return sseResponse(stream: stream, sessionId: session.id)
         } catch AppleCoreHTTPServerError.tooManySessions {
@@ -564,15 +574,19 @@ public actor AppleCoreHTTPServer {
             }
 
             let session: MCPSSESession
+            let surface: MCPAccessSurface
             switch resolveSession(request) {
             case .notFound:
                 return Self.textResponse(.notFound, "Session not found\n")
-            case .existing(let existing):
+            case .scopeMismatch:
+                return Self.textResponse(.forbidden, "Session access surface changed\n")
+            case .existing(let existing, let existingSurface):
                 session = existing
-            case .new:
-                session = try await makeSession()
+                surface = existingSurface
+            case .new(let newSurface):
+                (session, surface) = try await makeSession(surface: newSurface)
             }
-            registerSession(session)
+            registerSession(session, surface: surface)
 
             guard let requestId = MCPSSESession.jsonRPCID(from: bodyString) else {
                 await session.writeToServer(bodyString)
@@ -598,7 +612,11 @@ public actor AppleCoreHTTPServer {
         else {
             return Self.textResponse(.notFound, "Session not found\n")
         }
+        guard sessionSurfaces[sessionId] == requestSurface(for: request) else {
+            return Self.textResponse(.forbidden, "Session access surface changed\n")
+        }
         sessions.removeValue(forKey: sessionId)
+        sessionSurfaces.removeValue(forKey: sessionId)
         await session.close(callOnClose: false)
         sessionCloseHandler?(sessionId)
         return HTTPResponse(statusCode: .accepted)
@@ -635,11 +653,16 @@ public actor AppleCoreHTTPServer {
         )
     }
 
-    private func registerSession(_ session: MCPSSESession) {
+    private func registerSession(_ session: MCPSSESession, surface: MCPAccessSurface) {
         sessions[session.id] = session
+        sessionSurfaces[session.id] = surface
     }
 
-    private func makeSession() async throws -> MCPSSESession {
+    private func makeSession(for request: HTTPRequest) async throws -> (MCPSSESession, MCPAccessSurface) {
+        try await makeSession(surface: requestSurface(for: request))
+    }
+
+    private func makeSession(surface: MCPAccessSurface) async throws -> (MCPSSESession, MCPAccessSurface) {
         guard let sessionFactory else {
             throw AppleCoreHTTPServerError.sessionFactoryNotConfigured
         }
@@ -648,13 +671,14 @@ public actor AppleCoreHTTPServer {
         }
 
         let id = UUID().uuidString.lowercased()
-        let session = await sessionFactory(id)
-        return session
+        let session = await sessionFactory(id, surface)
+        return (session, surface)
     }
 
     private enum SessionResolution {
-        case new
-        case existing(MCPSSESession)
+        case new(MCPAccessSurface)
+        case existing(MCPSSESession, MCPAccessSurface)
+        case scopeMismatch
         case notFound
     }
 
@@ -662,13 +686,25 @@ public actor AppleCoreHTTPServer {
     /// request with one must reference a live session; otherwise the client
     /// gets 404 and re-initializes per the Streamable HTTP spec.
     private func resolveSession(_ request: HTTPRequest) -> SessionResolution {
+        let surface = requestSurface(for: request)
         guard let sessionId = request.headers[Self.sessionHeader], !sessionId.isEmpty else {
-            return .new
+            return .new(surface)
         }
-        guard let session = sessions[sessionId] else {
+        guard let session = sessions[sessionId], let originalSurface = sessionSurfaces[sessionId] else {
             return .notFound
         }
-        return .existing(session)
+        guard originalSurface == surface else {
+            return .scopeMismatch
+        }
+        return .existing(session, originalSurface)
+    }
+
+    private func requestSurface(for request: HTTPRequest) -> MCPAccessSurface {
+        RequestAccessClassifier.surface(
+            hostHeader: request.headers[Self.hostHeader],
+            forwardedForHeader: request.headers[Self.forwardedForHeader],
+            connectingIPHeader: request.headers[Self.connectingIPHeader]
+        )
     }
 
     // MARK: - Shared helpers
@@ -952,6 +988,9 @@ public actor AppleCoreHTTPServer {
     }
 
     private static let sessionHeader = HTTPHeader("Mcp-Session-Id")
+    private static let hostHeader = HTTPHeader("Host")
+    private static let forwardedForHeader = HTTPHeader("X-Forwarded-For")
+    private static let connectingIPHeader = HTTPHeader("CF-Connecting-IP")
     private static let originHeader = HTTPHeader("Origin")
     private static let maxSessions = 64
     private static let maxRequestBodyBytes = 1_048_576

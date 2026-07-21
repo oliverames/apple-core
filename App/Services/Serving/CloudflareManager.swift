@@ -27,8 +27,6 @@ public struct CloudflareSettings: Codable, Sendable, Equatable {
     public var cloudflaredPath: String
     public var launchAgentLabel: String
     public var routeMode: String
-    public var apiTokenEnvVar: String
-    public var apiTokenOPReference: String
     public var createdByAppleCore: Bool
 
     public init(
@@ -45,8 +43,6 @@ public struct CloudflareSettings: Codable, Sendable, Equatable {
         cloudflaredPath: String = "",
         launchAgentLabel: String = "com.oliverames.applecore.cloudflared",
         routeMode: String = "single-hostname-path-routing",
-        apiTokenEnvVar: String = "CLOUDFLARE_API_TOKEN",
-        apiTokenOPReference: String = "",
         createdByAppleCore: Bool = false
     ) {
         self.enabled = enabled
@@ -62,8 +58,6 @@ public struct CloudflareSettings: Codable, Sendable, Equatable {
         self.cloudflaredPath = cloudflaredPath
         self.launchAgentLabel = launchAgentLabel
         self.routeMode = routeMode
-        self.apiTokenEnvVar = apiTokenEnvVar
-        self.apiTokenOPReference = apiTokenOPReference
         self.createdByAppleCore = createdByAppleCore
     }
 
@@ -102,12 +96,6 @@ public struct CloudflareSettings: Codable, Sendable, Equatable {
             ?? defaults.launchAgentLabel
         routeMode =
             try container.decodeIfPresent(String.self, forKey: .routeMode) ?? defaults.routeMode
-        apiTokenEnvVar =
-            try container.decodeIfPresent(String.self, forKey: .apiTokenEnvVar)
-            ?? defaults.apiTokenEnvVar
-        apiTokenOPReference =
-            try container.decodeIfPresent(String.self, forKey: .apiTokenOPReference)
-            ?? defaults.apiTokenOPReference
         createdByAppleCore =
             try container.decodeIfPresent(Bool.self, forKey: .createdByAppleCore)
             ?? defaults.createdByAppleCore
@@ -208,6 +196,26 @@ public actor CloudflareManager {
         status(messageOverride: nil, forcedState: nil)
     }
 
+    public static func reconcilePersistedConfiguration() async -> CloudflareOperationResult? {
+        var config = ServingConfigManager.load()
+        guard let settings = config.cloudflare else { return nil }
+
+        let manager = CloudflareManager(
+            settings: settings,
+            port: config.port ?? 8756,
+            bindHost: config.bindHost ?? "127.0.0.1"
+        )
+        let result = await manager.reconcileTunnel()
+        config.cloudflare = result.settings
+        config.publicBaseURL = CloudflareManager.publicBaseURL(for: result.settings)
+        ServingConfigManager.save(config)
+        return result
+    }
+
+    public func reconcileTunnel() -> CloudflareOperationResult {
+        settings.enabled ? bootstrapTunnel() : disableTunnel()
+    }
+
     public func prepareLocalConfiguration() -> CloudflareOperationResult {
         let before = settings
         writeCloudflaredConfigIfPossible()
@@ -286,7 +294,10 @@ public actor CloudflareManager {
     }
 
     @discardableResult
-    public func stopTunnel() -> CloudflareTunnelStatus {
+    public func disableTunnel() -> CloudflareOperationResult {
+        let before = settings
+        settings.enabled = false
+
         if isLaunchAgentRunning() {
             let result = LaunchAgentManager.bootout(
                 label: settings.launchAgentLabel,
@@ -294,13 +305,41 @@ public actor CloudflareManager {
                 plistURL: launchAgentURL
             )
             if result.status != 0 {
-                return status(
-                    messageOverride: "Cloudflare tunnel failed to stop: \(sanitized(result.stderr))",
+                let tunnelStatus = status(
+                    messageOverride: "Cloudflare tunnel failed to disable: \(sanitized(result.stderr))",
                     forcedState: .error
+                )
+                return CloudflareOperationResult(
+                    settings: settings,
+                    status: tunnelStatus,
+                    didChangeSettings: before != settings
                 )
             }
         }
-        return status(messageOverride: "Cloudflare tunnel stopped.", forcedState: .stopped)
+
+        do {
+            if fileManager.fileExists(atPath: launchAgentURL.path) {
+                try fileManager.removeItem(at: launchAgentURL)
+            }
+        } catch {
+            let tunnelStatus = status(
+                messageOverride:
+                    "Cloudflare tunnel stopped, but its LaunchAgent could not be removed: \(error.localizedDescription)",
+                forcedState: .error
+            )
+            return CloudflareOperationResult(
+                settings: settings,
+                status: tunnelStatus,
+                didChangeSettings: before != settings
+            )
+        }
+
+        let tunnelStatus = status(messageOverride: "Cloudflare tunnel disabled.", forcedState: .disabled)
+        return CloudflareOperationResult(
+            settings: settings,
+            status: tunnelStatus,
+            didChangeSettings: before != settings
+        )
     }
 
     @discardableResult
@@ -370,9 +409,6 @@ public actor CloudflareManager {
         }
         if normalized.routeMode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             normalized.routeMode = "single-hostname-path-routing"
-        }
-        if normalized.apiTokenEnvVar.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            normalized.apiTokenEnvVar = "CLOUDFLARE_API_TOKEN"
         }
         return normalized
     }
@@ -687,7 +723,6 @@ public actor CloudflareManager {
     private func sanitized(_ value: String) -> String {
         var sanitized = value
         for key in [
-            settings.apiTokenEnvVar,
             "TUNNEL_TOKEN",
             "TUNNEL_CRED_CONTENTS",
             "CLOUDFLARE_API_TOKEN",

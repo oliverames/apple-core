@@ -28,7 +28,7 @@ print_usage() {
 Usage: Scripts/release.sh [command]
 
 Commands:
-  all         Build check, bump, archive, export, package, notarize, staple, commit/tag, release, upload (default)
+  all         Prepare a signed local release: check, bump, archive, export, notarize/staple, package, appcast
   check       Quick release build check
   bump        Bump version/build numbers
   archive     Create an Xcode archive for direct distribution
@@ -39,6 +39,7 @@ Commands:
   staple      Staple the notarization ticket to the app bundle
   appcast     Sign the release zip (Sparkle EdDSA) and add an item to appcast.xml
   commit      Commit version bump and create release tag
+  push-tags   Push the requested release tag to origin (asks for confirmation)
   release     Create a GitHub release (no assets)
   upload      Upload the release asset to GitHub
   help        Show this help
@@ -46,7 +47,7 @@ Commands:
 Environment:
   APP_NAME          App name (default: Apple Core)
   APP_BUNDLE        App bundle path (default: ${APP_NAME}.app)
-  KEYCHAIN_PROFILE  Required for notarize
+  KEYCHAIN_PROFILE  Enables notarize/staple during all; required for notarize
   VERSION           Required for bumping, commit, release, and upload
   BUILD_NUMBER      Optional; used when bumping build number
   SCHEME            Xcode scheme for build check (default: Apple Core)
@@ -106,13 +107,23 @@ require_version() {
     echo "VERSION is required for releases." >&2
     exit 1
   fi
+  VERSION="${VERSION#v}"
+  if [[ ! "${VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+    echo "VERSION must be a semantic version such as 1.0.0 or 1.0.0-beta.1." >&2
+    exit 1
+  fi
 }
 
 require_clean_tree() {
-  if ! git diff --quiet || ! git diff --cached --quiet; then
+  if [[ -n "$(git status --porcelain --untracked-files=normal)" ]]; then
     echo "Working tree is dirty. Commit or stash changes first." >&2
     exit 1
   fi
+}
+
+release_tag() {
+  require_version
+  printf 'v%s' "${VERSION}"
 }
 
 ensure_dist_dir() {
@@ -126,14 +137,13 @@ resolve_bundle_id() {
   if [[ ! -f "${PROJECT_FILE}" ]]; then
     return 1
   fi
-  while IFS= read -r line; do
-    if [[ "${line}" == *"PRODUCT_BUNDLE_IDENTIFIER ="* && "${line}" != *"imcp-server"* ]]; then
-      BUNDLE_ID="${line#*PRODUCT_BUNDLE_IDENTIFIER = }"
-      BUNDLE_ID="${BUNDLE_ID%;}"
-      return 0
-    fi
-  done < "${PROJECT_FILE}"
-  return 1
+  local project_path="${PROJECT_FILE%/project.pbxproj}"
+  BUNDLE_ID="$(
+    xcodebuild -quiet -project "${project_path}" -target "${APP_NAME}" \
+      -configuration "${CONFIGURATION}" -showBuildSettings \
+      | awk -F ' = ' '/^[[:space:]]*PRODUCT_BUNDLE_IDENTIFIER = / {print $2; exit}'
+  )"
+  [[ -n "${BUNDLE_ID}" ]]
 }
 
 list_profiles() {
@@ -260,7 +270,8 @@ build_zip() {
 
 build_check() {
   echo "Checking release build (scheme: ${SCHEME}, configuration: ${CONFIGURATION})"
-  xcodebuild -quiet -scheme "${SCHEME}" -configuration "${CONFIGURATION}" -destination "${DESTINATION}" build
+  xcodebuild -quiet -scheme "${SCHEME}" -configuration "${CONFIGURATION}" \
+    -destination "${DESTINATION}" CODE_SIGNING_ALLOWED=NO build
   resolve_app_bundle
 }
 
@@ -356,6 +367,15 @@ validate_staple() {
   xcrun stapler validate "${APP_BUNDLE}"
 }
 
+validate_distribution_app() {
+  require_app_bundle
+  echo "Validating Developer ID signature"
+  codesign --verify --deep --strict --verbose=2 "${APP_BUNDLE}"
+  echo "Validating Gatekeeper acceptance"
+  spctl --assess --type execute --verbose=2 "${APP_BUNDLE}"
+  validate_staple
+}
+
 # Locate Sparkle's sign_update tool from the resolved SPM artifacts.
 find_sign_update() {
   local candidate
@@ -378,7 +398,8 @@ find_sign_update() {
 # RELEASING.md); the app's SUFeedURL points at GitHub Pages.
 update_appcast() {
   require_version
-  local release_zip_path sign_update signature notes_html pub_date length
+  require_app_bundle
+  local release_zip_path sign_update signature notes_html pub_date length build_number
   release_zip_path="$(release_zip)"
   if [[ ! -f "${release_zip_path}" ]]; then
     echo "Missing release asset: ${release_zip_path}. Run package first." >&2
@@ -390,23 +411,18 @@ update_appcast() {
   length="$(stat -f%z "${release_zip_path}")"
   notes_html="$("$(dirname "${BASH_SOURCE[0]}")/render_release_notes.sh" "${VERSION}")"
   pub_date="$(LC_ALL=en_US.UTF-8 date -u '+%a, %d %b %Y %H:%M:%S +0000')"
+  build_number="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "${APP_BUNDLE}/Contents/Info.plist")"
 
-  VERSION="${VERSION}" SIGNATURE="${signature}" LENGTH="${length}" \
+  VERSION="${VERSION#v}" BUILD_NUMBER="${build_number}" SIGNATURE="${signature}" LENGTH="${length}" \
   NOTES_HTML="${notes_html}" PUB_DATE="${pub_date}" python3 - <<'PYEOF'
 import os, re, sys
 
 version = os.environ["VERSION"]
+build_number = os.environ["BUILD_NUMBER"]
 signature = os.environ["SIGNATURE"].strip()
 length = os.environ["LENGTH"]
 notes = os.environ["NOTES_HTML"]
 pub_date = os.environ["PUB_DATE"]
-
-# sparkle:version must be a monotonically increasing build number; derive
-# it from the semantic version the same way ping-warden does (3.0.0 -> 30000).
-parts = [int(p) for p in version.split(".")]
-while len(parts) < 3:
-    parts.append(0)
-numeric = parts[0] * 10000 + parts[1] * 100 + parts[2]
 
 url = (
     "https://github.com/oliverames/apple-core/releases/download/"
@@ -416,7 +432,7 @@ url = (
 item = f"""    <item>
       <title>Version {version}</title>
       <link>https://github.com/oliverames/apple-core/releases/tag/v{version}</link>
-      <sparkle:version>{numeric}</sparkle:version>
+      <sparkle:version>{build_number}</sparkle:version>
       <sparkle:shortVersionString>{version}</sparkle:shortVersionString>
       <description><![CDATA[
 {notes}
@@ -426,7 +442,7 @@ item = f"""    <item>
                  length="{length}"
                  type="application/octet-stream"
                  {signature} />
-      <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+      <sparkle:minimumSystemVersion>15.1</sparkle:minimumSystemVersion>
     </item>
 """
 
@@ -455,33 +471,42 @@ PYEOF
 
 commit_and_tag() {
   require_version
-  local release_zip_path
+  local release_zip_path tag
   release_zip_path="$(release_zip)"
+  tag="$(release_tag)"
   if [[ ! -f "${release_zip_path}" ]]; then
     echo "Missing release asset: ${release_zip_path}" >&2
     exit 1
   fi
-  # Ensure the stapled build exists before tagging a release.
-  validate_staple
-  if git rev-parse --verify "refs/tags/${VERSION}" >/dev/null 2>&1; then
-    echo "Tag already exists: ${VERSION}" >&2
+  validate_distribution_app
+  if git rev-parse --verify "refs/tags/${tag}" >/dev/null 2>&1; then
+    echo "Tag already exists: ${tag}" >&2
+    exit 1
+  fi
+  if ! git diff --cached --quiet; then
+    echo "The index already contains staged changes. Commit or unstage them before release preparation." >&2
     exit 1
   fi
   echo "Committing version bump"
-  git add -A
+  git add -- "${PROJECT_FILE}" appcast.xml
+  if [[ -f "docs/release-notes/${tag}.md" ]]; then
+    git add -- "docs/release-notes/${tag}.md"
+  fi
   if git diff --cached --quiet; then
     echo "No changes to commit."
   else
     git commit -m "Release ${VERSION}"
   fi
-  echo "Tagging release ${VERSION}"
-  git tag -a "${VERSION}" -m "Release ${VERSION}"
+  echo "Tagging release ${tag}"
+  git tag -a "${tag}" -m "Release ${VERSION#v}"
 }
 
 push_tags() {
   require_version
-  if ! git rev-parse --verify "refs/tags/${VERSION}" >/dev/null 2>&1; then
-    echo "Missing tag: ${VERSION}" >&2
+  local tag
+  tag="$(release_tag)"
+  if ! git rev-parse --verify "refs/tags/${tag}" >/dev/null 2>&1; then
+    echo "Missing tag: ${tag}" >&2
     exit 1
   fi
   local response=""
@@ -490,46 +515,45 @@ push_tags() {
     echo "Tag push cancelled."
     exit 1
   fi
-  git push --tags
+  git push origin "${tag}"
 }
 
 create_release() {
   require_version
-  echo "Creating GitHub release ${VERSION}"
-  gh release create "${VERSION}" --generate-notes
+  local tag
+  tag="$(release_tag)"
+  echo "Creating GitHub release ${tag}"
+  gh release create "${tag}" --generate-notes
 }
 
 upload_asset() {
   require_version
-  local release_zip_path
+  local release_zip_path tag
   release_zip_path="$(release_zip)"
+  tag="$(release_tag)"
   if [[ ! -f "${release_zip_path}" ]]; then
     echo "Missing release asset: ${release_zip_path}" >&2
     exit 1
   fi
-  local upload_path="${DIST_DIR}/${APP_NAME}.zip"
-  if [[ "${release_zip_path}" != "${upload_path}" ]]; then
-    cp -f "${release_zip_path}" "${upload_path}"
-  fi
-  echo "Uploading release asset ${upload_path}"
-  gh release upload "${VERSION}" "${upload_path}" --clobber
-  gh release view --web "${VERSION}"
+  echo "Uploading release asset ${release_zip_path}"
+  gh release upload "${tag}" "${release_zip_path}" --clobber
+  gh release view --web "${tag}"
 }
 
 all() {
-  # Full release flow with strict gating at each step.
-  build_check
+  # Prepare verified local artifacts. Publishing remains a separate,
+  # explicitly-invoked operation.
   require_clean_tree
+  require_keychain_profile
+  build_check
   bump_version
   archive_app
   export_app
-  package_release
   notarize
   staple
-  commit_and_tag
-  push_tags
-  create_release
-  upload_asset
+  validate_distribution_app
+  package_release
+  update_appcast
 }
 
 release() {
@@ -540,7 +564,7 @@ upload() {
   upload_asset
 }
 
-COMMAND="${1:-all}"
+COMMAND="${1:-help}"
 case "${COMMAND}" in
   all)
     all

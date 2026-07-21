@@ -1195,7 +1195,8 @@ final class NotesService: Service {
                             "Attachment id, exact name, or numeric index (from notes_list_attachments)"
                     ),
                     "directory": .string(
-                        description: "Destination directory; ~/Downloads if omitted"
+                        description:
+                            "Existing destination directory inside the user's home; ~/Downloads if omitted"
                     ),
                 ],
                 required: ["id", "attachment"],
@@ -1225,11 +1226,7 @@ final class NotesService: Service {
                     ]
                 )
             }
-            let directory = Self.resolvedSaveDirectory(arguments["directory"]?.stringValue)
-            try FileManager.default.createDirectory(
-                at: directory,
-                withIntermediateDirectories: true
-            )
+            let directory = try AttachmentSaveDirectory.resolve(arguments["directory"]?.stringValue)
             let path = Self.unusedPath(
                 in: directory,
                 filename: Self.sanitizedFilename(attachment.name)
@@ -1413,14 +1410,6 @@ final class NotesService: Service {
             return attachments.first(where: { $0.index == index })
         }
         return nil
-    }
-
-    private static func resolvedSaveDirectory(_ requested: String?) -> URL {
-        guard let requested, !requested.isEmpty else {
-            return FileManager.default.homeDirectoryForCurrentUser
-                .appendingPathComponent("Downloads")
-        }
-        return URL(fileURLWithPath: (requested as NSString).expandingTildeInPath)
     }
 
     /// Strips path separators and control characters so an attachment name
