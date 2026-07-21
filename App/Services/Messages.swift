@@ -9,6 +9,82 @@ private let messagesDatabasePath = "/Users/\(NSUserName())/Library/Messages/chat
 private let messagesDatabaseBookmarkKey: String = "me.mattt.iMCP.messagesDatabaseBookmark"
 private let defaultLimit = 30
 
+/// AppleScript sources for sending via Messages.app. Constant source; all
+/// user-supplied values arrive through argv (see AppleScriptRunner), so
+/// untrusted text is never interpolated into script source.
+///
+/// The `service`/`buddy` terminology is the compatibility vocabulary that
+/// Messages.app still honors on modern macOS (same approach as
+/// carterlasalle/mac_messages_mcp, reimplemented independently).
+private let sendToBuddyScript = """
+    on run argv
+        set recipientAddress to item 1 of argv
+        set messageBody to item 2 of argv
+        set preferredService to item 3 of argv
+        tell application "Messages"
+            if preferredService is "SMS" then
+                set targetService to 1st service whose service type = SMS
+            else
+                set targetService to 1st service whose service type = iMessage
+            end if
+            set targetBuddy to buddy recipientAddress of targetService
+            send messageBody to targetBuddy
+        end tell
+        return "sent"
+    end run
+    """
+
+private let sendToChatScript = """
+    on run argv
+        set chatGuid to item 1 of argv
+        set messageBody to item 2 of argv
+        tell application "Messages"
+            set targetChat to a reference to chat id chatGuid
+            send messageBody to targetChat
+        end tell
+        return "sent"
+    end run
+    """
+
+/// Produces candidate handle formats for a phone number, per the pattern
+/// documented in docs/planning/DONORS.md (Dhravya) and BUILD_PLAN.md §3.6:
+/// Messages may store the same buddy as "+14155551234", "14155551234",
+/// or "4155551234". Emails pass through lowercased.
+func messagesRecipientCandidates(for recipient: String) -> [String] {
+    let trimmed = recipient.trimmingCharacters(in: .whitespacesAndNewlines)
+    if trimmed.contains("@") {
+        return [trimmed.lowercased()]
+    }
+
+    let digits = trimmed.filter(\.isNumber)
+    guard !digits.isEmpty else { return [trimmed] }
+
+    var candidates: [String] = []
+    func add(_ candidate: String) {
+        if !candidates.contains(candidate) {
+            candidates.append(candidate)
+        }
+    }
+
+    if trimmed.hasPrefix("+") {
+        add("+\(digits)")
+        add(digits)
+    } else if digits.count == 10 {
+        // Bare US/CA number: try E.164 first, then prefixed and bare forms.
+        add("+1\(digits)")
+        add("1\(digits)")
+        add(digits)
+    } else if digits.count == 11 && digits.hasPrefix("1") {
+        add("+\(digits)")
+        add(digits)
+        add(String(digits.dropFirst()))
+    } else {
+        add("+\(digits)")
+        add(digits)
+    }
+    return candidates
+}
+
 final class MessageService: NSObject, Service, NSOpenSavePanelDelegate {
     static let shared = MessageService()
 
@@ -168,6 +244,167 @@ final class MessageService: NSObject, Service, NSOpenSavePanelDelegate {
                 "hasPart": Value.array(messages.map({ .object($0) })),
             ]
         }
+
+        Tool(
+            name: "messages_list_chats",
+            description:
+                "List recent conversations from the Messages app, including each chat's GUID (usable as chat_id in messages_send), display name, and participants. Group chats have more than one participant.",
+            inputSchema: .object(
+                properties: [
+                    "limit": .integer(
+                        description: "Maximum chats to return",
+                        default: .int(defaultLimit)
+                    )
+                ],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "List Chats",
+                readOnlyHint: true,
+                openWorldHint: false
+            )
+        ) { arguments in
+            try await self.activate()
+
+            let limit = max(arguments["limit"]?.intValue ?? defaultLimit, 1)
+            let db = try self.createDatabaseConnection()
+
+            let chats: [[String: Value]] = try db.fetchChats(limit: limit).map { chat in
+                var entry: [String: Value] = [
+                    "@id": .string(chat.id.rawValue),
+                    "participants": .array(
+                        chat.participants.map { .string($0.rawValue) }
+                    ),
+                    "isGroup": .bool(chat.participants.count > 1),
+                ]
+                if let displayName = chat.displayName, !displayName.isEmpty {
+                    entry["name"] = .string(displayName)
+                }
+                if let lastMessageDate = chat.lastMessageDate {
+                    entry["lastMessageAt"] = .string(
+                        lastMessageDate.formatted(.iso8601)
+                    )
+                }
+                return entry
+            }
+
+            log.debug("Listed \(chats.count) chats")
+            return [
+                "@context": "https://schema.org",
+                "@type": "ItemList",
+                "itemListElement": Value.array(chats.map { .object($0) }),
+            ]
+        }
+
+        Tool(
+            name: "messages_send",
+            description:
+                "Send a message via the Messages app. Provide either `recipient` (a phone number or email address) for a direct message, or `chat_id` (a chat GUID from messages_list_chats) to send to an existing conversation, including group chats.",
+            inputSchema: .object(
+                properties: [
+                    "recipient": .string(
+                        description:
+                            "Phone number or email address of the recipient. Phone numbers are normalized and matched against known conversation participants where possible."
+                    ),
+                    "chat_id": .string(
+                        description:
+                            "GUID of an existing chat (from messages_list_chats). Required for group chats; takes precedence over recipient."
+                    ),
+                    "body": .string(
+                        description: "The message text to send"
+                    ),
+                    "service": .string(
+                        description:
+                            "Messaging service to use for direct sends. Defaults to iMessage. Ignored when chat_id is provided (the chat's existing service is used).",
+                        enum: ["iMessage", "SMS"]
+                    ),
+                ],
+                required: ["body"],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Send Message",
+                readOnlyHint: false,
+                idempotentHint: false,
+                openWorldHint: true
+            )
+        ) { arguments in
+            guard let body = arguments["body"]?.stringValue,
+                !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            else {
+                throw SendError.emptyBody
+            }
+
+            let chatId = arguments["chat_id"]?.stringValue?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let recipient = arguments["recipient"]?.stringValue?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+
+            if let chatId, !chatId.isEmpty {
+                log.debug("Sending message to chat \(chatId)")
+                _ = try await AppleScriptRunner.shared.run(
+                    .appleScript,
+                    script: sendToChatScript,
+                    arguments: [chatId, body]
+                )
+                return [
+                    "sent": Value.bool(true),
+                    "chatId": .string(chatId),
+                ]
+            }
+
+            guard let recipient, !recipient.isEmpty else {
+                throw SendError.missingRecipient
+            }
+
+            let service = arguments["service"]?.stringValue ?? "iMessage"
+            let address = self.resolveRecipientAddress(for: recipient)
+
+            log.debug("Sending \(service) message to \(address)")
+            _ = try await AppleScriptRunner.shared.run(
+                .appleScript,
+                script: sendToBuddyScript,
+                arguments: [address, body, service]
+            )
+            return [
+                "sent": Value.bool(true),
+                "recipient": .string(address),
+                "service": .string(service),
+            ]
+        }
+    }
+
+    private enum SendError: LocalizedError {
+        case emptyBody
+        case missingRecipient
+
+        var errorDescription: String? {
+            switch self {
+            case .emptyBody:
+                return "Message body must not be empty"
+            case .missingRecipient:
+                return "Provide either `recipient` (phone/email) or `chat_id` (chat GUID)"
+            }
+        }
+    }
+
+    /// Resolves the address to hand to Messages.app: generates normalized
+    /// candidate formats for the recipient and prefers one that matches an
+    /// existing handle in chat.db (so we address the buddy exactly as
+    /// Messages knows them). Falls back to the best-guess candidate when
+    /// the database is unavailable or nothing matches — Messages.app can
+    /// still start a fresh conversation with a well-formed address.
+    private func resolveRecipientAddress(for recipient: String) -> String {
+        let candidates = messagesRecipientCandidates(for: recipient)
+
+        if let db = try? createDatabaseConnection(),
+            let match = try? db.fetchParticipant(matching: candidates).first
+        {
+            log.debug("Matched recipient to existing handle \(match.rawValue)")
+            return match.rawValue
+        }
+
+        return candidates.first ?? recipient
     }
 
     private var canAccessDatabaseAtDefaultPath: Bool {

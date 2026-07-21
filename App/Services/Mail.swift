@@ -8,6 +8,8 @@ private let log = Logger.service("mail")
 
 private let defaultMessageLimit = 20
 private let maximumMessageLimit = 100
+private let maximumBatchSize = 50
+private let maximumRecipients = 50
 
 // MARK: - Output models
 
@@ -29,6 +31,30 @@ private struct MailMessageSummary: Codable, Sendable {
     let sender: String
     let dateReceived: String?
     let isRead: Bool
+}
+
+private struct MailBatchItemResult: Codable, Sendable {
+    let id: Int
+    let success: Bool
+    let error: String?
+}
+
+private struct MailBatchResult: Codable, Sendable {
+    let requested: Int
+    let succeeded: Int
+    let failed: Int
+    let results: [MailBatchItemResult]
+}
+
+private struct MailComposeResult: Codable, Sendable {
+    let status: String
+    let subject: String
+    let to: [String]
+}
+
+private struct MailReplyResult: Codable, Sendable {
+    let status: String
+    let messageId: Int
 }
 
 private struct MailMessageDetail: Codable, Sendable {
@@ -209,16 +235,227 @@ private let searchMessagesScript = """
     }
     """
 
+// Shared JXA helper source, prepended to the write scripts below.
+// Resolves an account + mailbox pair or throws NOT_FOUND.
+private let resolveMailboxHelper = """
+    function resolveMailbox(Mail, accountName, mailboxName) {
+        const accounts = Mail.accounts.whose({ name: accountName })();
+        if (accounts.length === 0) {
+            throw new Error('NOT_FOUND: no account named ' + accountName);
+        }
+        const mailboxes = accounts[0].mailboxes.whose({ name: mailboxName })();
+        if (mailboxes.length === 0) {
+            throw new Error('NOT_FOUND: no mailbox named ' + mailboxName + ' in ' + accountName);
+        }
+        return mailboxes[0];
+    }
+    """
+
+// Applies one mutation per message id, collecting per-id success/failure
+// rather than aborting the whole batch on the first bad id.
+private let batchMutationRunner = """
+    function runBatch(mailbox, ids, mutate) {
+        const results = [];
+        for (const messageId of ids) {
+            try {
+                const matches = mailbox.messages.whose({ id: messageId })();
+                if (matches.length === 0) {
+                    throw new Error('no message with id ' + messageId);
+                }
+                mutate(matches[0]);
+                results.push({ id: messageId, success: true, error: null });
+            } catch (error) {
+                results.push({
+                    id: messageId,
+                    success: false,
+                    error: String(error && error.message ? error.message : error),
+                });
+            }
+        }
+        return JSON.stringify(results);
+    }
+    """
+
+private let setReadScript =
+    resolveMailboxHelper + "\n" + batchMutationRunner + "\n"
+        + """
+        function run(argv) {
+            const accountName = argv[0];
+            const mailboxName = argv[1];
+            const ids = JSON.parse(argv[2]);
+            const read = argv[3] === 'true';
+            const Mail = Application('Mail');
+            const mailbox = resolveMailbox(Mail, accountName, mailboxName);
+            return runBatch(mailbox, ids, message => {
+                message.readStatus = read;
+            });
+        }
+        """
+
+private let setFlaggedScript =
+    resolveMailboxHelper + "\n" + batchMutationRunner + "\n"
+        + """
+        function run(argv) {
+            const accountName = argv[0];
+            const mailboxName = argv[1];
+            const ids = JSON.parse(argv[2]);
+            const flagged = argv[3] === 'true';
+            const Mail = Application('Mail');
+            const mailbox = resolveMailbox(Mail, accountName, mailboxName);
+            return runBatch(mailbox, ids, message => {
+                message.flaggedStatus = flagged;
+            });
+        }
+        """
+
+private let moveMessagesScript =
+    resolveMailboxHelper + "\n" + batchMutationRunner + "\n"
+        + """
+        function run(argv) {
+            const accountName = argv[0];
+            const mailboxName = argv[1];
+            const ids = JSON.parse(argv[2]);
+            const targetAccountName = argv[3] === '' ? accountName : argv[3];
+            const targetMailboxName = argv[4];
+            const Mail = Application('Mail');
+            const mailbox = resolveMailbox(Mail, accountName, mailboxName);
+            const target = resolveMailbox(Mail, targetAccountName, targetMailboxName);
+            return runBatch(mailbox, ids, message => {
+                Mail.move(message, { to: target });
+            });
+        }
+        """
+
+private let deleteMessagesScript =
+    resolveMailboxHelper + "\n" + batchMutationRunner + "\n"
+        + """
+        function run(argv) {
+            const accountName = argv[0];
+            const mailboxName = argv[1];
+            const ids = JSON.parse(argv[2]);
+            const Mail = Application('Mail');
+            const mailbox = resolveMailbox(Mail, accountName, mailboxName);
+            return runBatch(mailbox, ids, message => {
+                Mail.delete(message);
+            });
+        }
+        """
+
+// Compose payload travels as one JSON argv string:
+// { to, cc, bcc, subject, body, account }. argv[1] selects the action.
+private let composeScript = """
+    function run(argv) {
+        const payload = JSON.parse(argv[0]);
+        const action = argv[1];
+        const Mail = Application('Mail');
+
+        const message = Mail.OutgoingMessage({
+            subject: payload.subject,
+            content: payload.body,
+            visible: false,
+        });
+        if (payload.account) {
+            const accounts = Mail.accounts.whose({ name: payload.account })();
+            if (accounts.length === 0) {
+                throw new Error('NOT_FOUND: no account named ' + payload.account);
+            }
+            const addresses = accounts[0].emailAddresses();
+            if (addresses && addresses.length > 0) {
+                message.sender = addresses[0];
+            }
+        }
+        Mail.outgoingMessages.push(message);
+        for (const address of payload.to) {
+            message.toRecipients.push(Mail.Recipient({ address: address }));
+        }
+        for (const address of payload.cc) {
+            message.ccRecipients.push(Mail.Recipient({ address: address }));
+        }
+        for (const address of payload.bcc) {
+            message.bccRecipients.push(Mail.Recipient({ address: address }));
+        }
+
+        if (action === 'send') {
+            message.send();
+            return JSON.stringify({ status: 'sent', subject: payload.subject, to: payload.to });
+        }
+        message.save();
+        return JSON.stringify({ status: 'draft_saved', subject: payload.subject, to: payload.to });
+    }
+    """
+
+private let replyScript =
+    resolveMailboxHelper + "\n"
+        + """
+        function run(argv) {
+            const accountName = argv[0];
+            const mailboxName = argv[1];
+            const messageId = parseInt(argv[2], 10);
+            const body = argv[3];
+            const replyAll = argv[4] === 'true';
+            const Mail = Application('Mail');
+            const mailbox = resolveMailbox(Mail, accountName, mailboxName);
+
+            const matches = mailbox.messages.whose({ id: messageId })();
+            if (matches.length === 0) {
+                throw new Error('NOT_FOUND: no message with id ' + messageId);
+            }
+            const outgoing = Mail.reply(matches[0], {
+                openingWindow: false,
+                replyToAll: replyAll,
+            });
+            try {
+                outgoing.content = body + '\\n\\n' + outgoing.content();
+            } catch (error) {
+                outgoing.content = body;
+            }
+            outgoing.send();
+            return JSON.stringify({ status: 'sent', messageId: messageId });
+        }
+        """
+
+private let forwardScript =
+    resolveMailboxHelper + "\n"
+        + """
+        function run(argv) {
+            const accountName = argv[0];
+            const mailboxName = argv[1];
+            const messageId = parseInt(argv[2], 10);
+            const recipients = JSON.parse(argv[3]);
+            const body = argv[4];
+            const Mail = Application('Mail');
+            const mailbox = resolveMailbox(Mail, accountName, mailboxName);
+
+            const matches = mailbox.messages.whose({ id: messageId })();
+            if (matches.length === 0) {
+                throw new Error('NOT_FOUND: no message with id ' + messageId);
+            }
+            const outgoing = Mail.forward(matches[0], { openingWindow: false });
+            for (const address of recipients) {
+                outgoing.toRecipients.push(Mail.Recipient({ address: address }));
+            }
+            if (body !== '') {
+                try {
+                    outgoing.content = body + '\\n\\n' + outgoing.content();
+                } catch (error) {
+                    outgoing.content = body;
+                }
+            }
+            outgoing.send();
+            return JSON.stringify({ status: 'sent', messageId: messageId });
+        }
+        """
+
 // MARK: - Service
 
-/// Apple Mail access — first slice only.
+/// Apple Mail access — AppleScript/JXA slice.
 ///
-/// This is a read-only AppleScript/JXA slice against Mail.app via the
-/// shared AppleScriptRunner. The full design in
-/// docs/planning/BUILD_PLAN.md §3.1 (disk-first .emlx parsing with an
-/// FTS5 index for fast search across the whole store) is explicitly
-/// multi-week future work; this file is the scaffold it will grow into.
-/// No send/delete/move in this pass.
+/// Reads plus triage writes (read/flag/move/delete, batched) and compose
+/// (send/reply/forward/draft), all against Mail.app via the shared
+/// AppleScriptRunner. The full design in docs/planning/BUILD_PLAN.md §3.1
+/// (disk-first .emlx parsing with an FTS5 index for fast search across
+/// the whole store) is explicitly multi-week future work; this file is
+/// the scaffold it will grow into.
 final class MailService: Service {
     static let shared = MailService()
 
@@ -401,6 +638,305 @@ final class MailService: Service {
                 timeout: 120
             )
         }
+
+        Tool(
+            name: "mail_set_read",
+            description:
+                "Mark messages read or unread. Accepts up to \(maximumBatchSize) message ids and reports per-id success/failure",
+            inputSchema: .object(
+                properties: [
+                    "account": .string(
+                        description: "Account name (from mail_list_accounts)"
+                    ),
+                    "mailbox": .string(
+                        description: "Mailbox name containing the messages"
+                    ),
+                    "ids": .array(
+                        description:
+                            "Message ids (from mail_list_messages or mail_search); max \(maximumBatchSize)",
+                        items: .integer()
+                    ),
+                    "read": .boolean(
+                        description: "true to mark read, false to mark unread",
+                        default: true
+                    ),
+                ],
+                required: ["account", "mailbox", "ids"],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Mark Read/Unread",
+                readOnlyHint: false,
+                destructiveHint: false,
+                idempotentHint: true,
+                openWorldHint: false
+            )
+        ) { arguments in
+            let account = try Self.requiredString("account", from: arguments)
+            let mailbox = try Self.requiredString("mailbox", from: arguments)
+            let ids = try Self.requiredIDs(from: arguments)
+            let read = arguments["read"]?.boolValue ?? true
+            return try await Self.runBatch(
+                script: setReadScript,
+                arguments: [account, mailbox, try Self.encodeJSON(ids), read ? "true" : "false"]
+            )
+        }
+
+        Tool(
+            name: "mail_set_flagged",
+            description:
+                "Flag or unflag messages. Accepts up to \(maximumBatchSize) message ids and reports per-id success/failure",
+            inputSchema: .object(
+                properties: [
+                    "account": .string(
+                        description: "Account name (from mail_list_accounts)"
+                    ),
+                    "mailbox": .string(
+                        description: "Mailbox name containing the messages"
+                    ),
+                    "ids": .array(
+                        description:
+                            "Message ids (from mail_list_messages or mail_search); max \(maximumBatchSize)",
+                        items: .integer()
+                    ),
+                    "flagged": .boolean(
+                        description: "true to flag, false to unflag",
+                        default: true
+                    ),
+                ],
+                required: ["account", "mailbox", "ids"],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Flag/Unflag Messages",
+                readOnlyHint: false,
+                destructiveHint: false,
+                idempotentHint: true,
+                openWorldHint: false
+            )
+        ) { arguments in
+            let account = try Self.requiredString("account", from: arguments)
+            let mailbox = try Self.requiredString("mailbox", from: arguments)
+            let ids = try Self.requiredIDs(from: arguments)
+            let flagged = arguments["flagged"]?.boolValue ?? true
+            return try await Self.runBatch(
+                script: setFlaggedScript,
+                arguments: [account, mailbox, try Self.encodeJSON(ids), flagged ? "true" : "false"]
+            )
+        }
+
+        Tool(
+            name: "mail_move_message",
+            description:
+                "Move messages to another mailbox (optionally in another account). Accepts up to \(maximumBatchSize) message ids and reports per-id success/failure",
+            inputSchema: .object(
+                properties: [
+                    "account": .string(
+                        description: "Source account name (from mail_list_accounts)"
+                    ),
+                    "mailbox": .string(
+                        description: "Source mailbox name containing the messages"
+                    ),
+                    "ids": .array(
+                        description:
+                            "Message ids (from mail_list_messages or mail_search); max \(maximumBatchSize)",
+                        items: .integer()
+                    ),
+                    "to_mailbox": .string(
+                        description: "Destination mailbox name"
+                    ),
+                    "to_account": .string(
+                        description: "Destination account name; source account if omitted"
+                    ),
+                ],
+                required: ["account", "mailbox", "ids", "to_mailbox"],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Move Messages",
+                readOnlyHint: false,
+                destructiveHint: true,
+                idempotentHint: false,
+                openWorldHint: false
+            )
+        ) { arguments in
+            let account = try Self.requiredString("account", from: arguments)
+            let mailbox = try Self.requiredString("mailbox", from: arguments)
+            let ids = try Self.requiredIDs(from: arguments)
+            let toMailbox = try Self.requiredString("to_mailbox", from: arguments)
+            let toAccount = arguments["to_account"]?.stringValue ?? ""
+            return try await Self.runBatch(
+                script: moveMessagesScript,
+                arguments: [account, mailbox, try Self.encodeJSON(ids), toAccount, toMailbox],
+                timeout: 180
+            )
+        }
+
+        Tool(
+            name: "mail_delete_message",
+            description:
+                "Delete messages (moves them to the account's Trash). Accepts up to \(maximumBatchSize) message ids and reports per-id success/failure",
+            inputSchema: .object(
+                properties: [
+                    "account": .string(
+                        description: "Account name (from mail_list_accounts)"
+                    ),
+                    "mailbox": .string(
+                        description: "Mailbox name containing the messages"
+                    ),
+                    "ids": .array(
+                        description:
+                            "Message ids (from mail_list_messages or mail_search); max \(maximumBatchSize)",
+                        items: .integer()
+                    ),
+                ],
+                required: ["account", "mailbox", "ids"],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Delete Messages",
+                readOnlyHint: false,
+                destructiveHint: true,
+                idempotentHint: false,
+                openWorldHint: false
+            )
+        ) { arguments in
+            let account = try Self.requiredString("account", from: arguments)
+            let mailbox = try Self.requiredString("mailbox", from: arguments)
+            let ids = try Self.requiredIDs(from: arguments)
+            return try await Self.runBatch(
+                script: deleteMessagesScript,
+                arguments: [account, mailbox, try Self.encodeJSON(ids)],
+                timeout: 180
+            )
+        }
+
+        Tool(
+            name: "mail_send",
+            description: "Compose and send an email via Mail.app",
+            inputSchema: Self.composeSchema(requireTo: true),
+            annotations: .init(
+                title: "Send Email",
+                readOnlyHint: false,
+                destructiveHint: false,
+                idempotentHint: false,
+                openWorldHint: true
+            )
+        ) { arguments in
+            try await Self.runCompose(action: "send", arguments: arguments)
+        }
+
+        Tool(
+            name: "mail_create_draft",
+            description:
+                "Compose an email and save it to Drafts without sending",
+            inputSchema: Self.composeSchema(requireTo: false),
+            annotations: .init(
+                title: "Create Draft",
+                readOnlyHint: false,
+                destructiveHint: false,
+                idempotentHint: false,
+                openWorldHint: false
+            )
+        ) { arguments in
+            try await Self.runCompose(action: "draft", arguments: arguments)
+        }
+
+        Tool(
+            name: "mail_reply",
+            description:
+                "Reply to a message and send the reply immediately. The reply body is prepended above the quoted original",
+            inputSchema: .object(
+                properties: [
+                    "account": .string(
+                        description: "Account name (from mail_list_accounts)"
+                    ),
+                    "mailbox": .string(
+                        description: "Mailbox name containing the message"
+                    ),
+                    "id": .integer(
+                        description: "Message id (from mail_list_messages or mail_search)"
+                    ),
+                    "body": .string(
+                        description: "Plain-text reply body"
+                    ),
+                    "reply_all": .boolean(
+                        description: "Reply to all recipients instead of only the sender",
+                        default: false
+                    ),
+                ],
+                required: ["account", "mailbox", "id", "body"],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Reply to Message",
+                readOnlyHint: false,
+                destructiveHint: false,
+                idempotentHint: false,
+                openWorldHint: true
+            )
+        ) { arguments in
+            let account = try Self.requiredString("account", from: arguments)
+            let mailbox = try Self.requiredString("mailbox", from: arguments)
+            let id = try Self.requiredID(from: arguments)
+            let body = try Self.requiredString("body", from: arguments)
+            let replyAll = arguments["reply_all"]?.boolValue ?? false
+            return try await AppleScriptRunner.shared.runJSON(
+                .jxa,
+                script: replyScript,
+                arguments: [account, mailbox, String(id), body, replyAll ? "true" : "false"],
+                as: MailReplyResult.self,
+                timeout: 120
+            )
+        }
+
+        Tool(
+            name: "mail_forward",
+            description:
+                "Forward a message to new recipients and send it immediately",
+            inputSchema: .object(
+                properties: [
+                    "account": .string(
+                        description: "Account name (from mail_list_accounts)"
+                    ),
+                    "mailbox": .string(
+                        description: "Mailbox name containing the message"
+                    ),
+                    "id": .integer(
+                        description: "Message id (from mail_list_messages or mail_search)"
+                    ),
+                    "to": .array(
+                        description: "Recipient email addresses; max \(maximumRecipients)",
+                        items: .string()
+                    ),
+                    "body": .string(
+                        description: "Optional note prepended above the forwarded content"
+                    ),
+                ],
+                required: ["account", "mailbox", "id", "to"],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Forward Message",
+                readOnlyHint: false,
+                destructiveHint: false,
+                idempotentHint: false,
+                openWorldHint: true
+            )
+        ) { arguments in
+            let account = try Self.requiredString("account", from: arguments)
+            let mailbox = try Self.requiredString("mailbox", from: arguments)
+            let id = try Self.requiredID(from: arguments)
+            let to = try Self.requiredAddresses("to", from: arguments)
+            let body = arguments["body"]?.stringValue ?? ""
+            return try await AppleScriptRunner.shared.runJSON(
+                .jxa,
+                script: forwardScript,
+                arguments: [account, mailbox, String(id), try Self.encodeJSON(to), body],
+                as: MailReplyResult.self,
+                timeout: 120
+            )
+        }
     }
 
     // MARK: - Helpers
@@ -421,5 +957,157 @@ final class MailService: Service {
 
     private static func clampedLimit(_ requested: Int?) -> Int {
         min(max(requested ?? defaultMessageLimit, 1), maximumMessageLimit)
+    }
+
+    private static func requiredID(from arguments: [String: Value]) throws -> Int {
+        guard let id = arguments["id"]?.intValue else {
+            throw Self.error("id is required")
+        }
+        return id
+    }
+
+    private static func requiredIDs(from arguments: [String: Value]) throws -> [Int] {
+        guard let values = arguments["ids"]?.arrayValue, !values.isEmpty else {
+            throw Self.error("ids is required and must be a non-empty array")
+        }
+        guard values.count <= maximumBatchSize else {
+            throw Self.error("ids exceeds the batch limit of \(maximumBatchSize)")
+        }
+        return try values.map { value in
+            guard let id = value.intValue else {
+                throw Self.error("ids must contain only integers")
+            }
+            return id
+        }
+    }
+
+    private static func requiredAddresses(
+        _ key: String,
+        from arguments: [String: Value]
+    ) throws -> [String] {
+        let addresses = Self.addresses(key, from: arguments)
+        guard !addresses.isEmpty else {
+            throw Self.error("\(key) is required and must be a non-empty array")
+        }
+        return addresses
+    }
+
+    private static func addresses(
+        _ key: String,
+        from arguments: [String: Value]
+    ) -> [String] {
+        arguments[key]?.arrayValue?.compactMap { $0.stringValue } ?? []
+    }
+
+    private static func encodeJSON<T: Encodable>(_ value: T) throws -> String {
+        let data = try JSONEncoder().encode(value)
+        guard let string = String(data: data, encoding: .utf8) else {
+            throw Self.error("failed to encode arguments")
+        }
+        return string
+    }
+
+    private static func error(_ message: String) -> NSError {
+        NSError(
+            domain: "MailError",
+            code: 1,
+            userInfo: [NSLocalizedDescriptionKey: message]
+        )
+    }
+
+    /// Runs a batch mutation script and folds the per-id rows into a summary.
+    private static func runBatch(
+        script: String,
+        arguments: [String],
+        timeout: TimeInterval = 120
+    ) async throws -> MailBatchResult {
+        let results = try await AppleScriptRunner.shared.runJSON(
+            .jxa,
+            script: script,
+            arguments: arguments,
+            as: [MailBatchItemResult].self,
+            timeout: timeout
+        )
+        let succeeded = results.count(where: { $0.success })
+        return MailBatchResult(
+            requested: results.count,
+            succeeded: succeeded,
+            failed: results.count - succeeded,
+            results: results
+        )
+    }
+
+    private static func composeSchema(requireTo: Bool) -> JSONSchema {
+        .object(
+            properties: [
+                "to": .array(
+                    description: "Recipient email addresses; max \(maximumRecipients)",
+                    items: .string()
+                ),
+                "cc": .array(
+                    description: "Cc email addresses",
+                    items: .string()
+                ),
+                "bcc": .array(
+                    description: "Bcc email addresses",
+                    items: .string()
+                ),
+                "subject": .string(
+                    description: "Message subject"
+                ),
+                "body": .string(
+                    description: "Plain-text message body"
+                ),
+                "account": .string(
+                    description:
+                        "Account name to send from (from mail_list_accounts); Mail's default if omitted"
+                ),
+            ],
+            required: requireTo ? ["to", "subject", "body"] : ["subject", "body"],
+            additionalProperties: false
+        )
+    }
+
+    private static func runCompose(
+        action: String,
+        arguments: [String: Value]
+    ) async throws -> MailComposeResult {
+        let to =
+            action == "send"
+            ? try Self.requiredAddresses("to", from: arguments)
+            : Self.addresses("to", from: arguments)
+        let cc = Self.addresses("cc", from: arguments)
+        let bcc = Self.addresses("bcc", from: arguments)
+        guard to.count + cc.count + bcc.count <= maximumRecipients else {
+            throw Self.error("recipient count exceeds the limit of \(maximumRecipients)")
+        }
+        let subject = try Self.requiredString("subject", from: arguments)
+        let body = try Self.requiredString("body", from: arguments)
+        let account = arguments["account"]?.stringValue
+
+        let payload = ComposePayload(
+            to: to,
+            cc: cc,
+            bcc: bcc,
+            subject: subject,
+            body: body,
+            account: account
+        )
+        return try await AppleScriptRunner.shared.runJSON(
+            .jxa,
+            script: composeScript,
+            arguments: [try Self.encodeJSON(payload), action],
+            as: MailComposeResult.self,
+            timeout: 120
+        )
+    }
+
+    private struct ComposePayload: Encodable {
+        let to: [String]
+        let cc: [String]
+        let bcc: [String]
+        let subject: String
+        let body: String
+        let account: String?
     }
 }

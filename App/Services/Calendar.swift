@@ -22,6 +22,161 @@ final class CalendarService: Service {
         try await eventStore.requestFullAccessToEvents()
     }
 
+    /// Resolves an event by identifier, optionally disambiguating a specific
+    /// occurrence of a recurring event by its occurrence date.
+    private func resolveEvent(withIdentifier id: String, occurrenceDate: Date?) throws -> EKEvent {
+        if let occurrenceDate = occurrenceDate {
+            // `event(withIdentifier:)` returns the first occurrence of a recurring
+            // event, so search a window around the occurrence date instead and
+            // match on the identifier.
+            let windowStart = occurrenceDate.addingTimeInterval(-86400)
+            let windowEnd = occurrenceDate.addingTimeInterval(2 * 86400)
+            let predicate = eventStore.predicateForEvents(
+                withStart: windowStart,
+                end: windowEnd,
+                calendars: nil
+            )
+            let occurrences = eventStore.events(matching: predicate)
+                .filter { $0.eventIdentifier == id }
+            guard
+                let match = occurrences.min(by: {
+                    abs($0.startDate.timeIntervalSince(occurrenceDate))
+                        < abs($1.startDate.timeIntervalSince(occurrenceDate))
+                })
+            else {
+                throw NSError(
+                    domain: "CalendarError",
+                    code: 4,
+                    userInfo: [
+                        NSLocalizedDescriptionKey:
+                            "No occurrence of event \(id) found near the given occurrence date"
+                    ]
+                )
+            }
+            return match
+        }
+
+        guard let event = eventStore.event(withIdentifier: id) else {
+            throw NSError(
+                domain: "CalendarError",
+                code: 4,
+                userInfo: [NSLocalizedDescriptionKey: "No event found with identifier \(id)"]
+            )
+        }
+        return event
+    }
+
+    /// Rejects writes to calendars that cannot be modified (birthday calendars,
+    /// subscribed calendars, and anything else EventKit marks immutable).
+    private func requireWritable(_ calendar: EKCalendar) throws {
+        guard calendar.allowsContentModifications, calendar.type != .birthday,
+            calendar.type != .subscription, !calendar.isSubscribed
+        else {
+            throw NSError(
+                domain: "CalendarReadOnlyError",
+                code: 5,
+                userInfo: [
+                    NSLocalizedDescriptionKey:
+                        "Calendar \"\(calendar.title)\" is read-only and cannot be modified"
+                ]
+            )
+        }
+    }
+
+    /// Parses the shared alarm configuration schema into `EKAlarm`s, throwing
+    /// on invalid configurations (including absolute alarms in the past, which
+    /// macOS would otherwise reject silently).
+    private func parseAlarms(_ alarmConfigs: [Value]) throws -> [EKAlarm] {
+        var alarms: [EKAlarm] = []
+
+        for alarmConfig in alarmConfigs {
+            guard case .object(let config) = alarmConfig else { continue }
+
+            var alarm: EKAlarm?
+
+            let alarmType = config["type"]?.stringValue ?? "relative"
+            switch alarmType {
+            case "relative":
+                if case .int(let minutes) = config["minutes"] {
+                    alarm = EKAlarm(relativeOffset: TimeInterval(-minutes * 60))
+                }
+
+            case "absolute":
+                guard case .string(let datetimeStr) = config["datetime"],
+                    !ISO8601DateFormatter.isDateOnlyISO8601String(datetimeStr),
+                    let absoluteDate = ISO8601DateFormatter.lenientDate(
+                        fromISO8601String: datetimeStr
+                    )
+                else {
+                    throw NSError(
+                        domain: "CalendarError",
+                        code: 6,
+                        userInfo: [
+                            NSLocalizedDescriptionKey:
+                                "Absolute alarm datetime must be a valid ISO 8601 date/time with a time component"
+                        ]
+                    )
+                }
+                guard absoluteDate > Date() else {
+                    throw NSError(
+                        domain: "CalendarError",
+                        code: 6,
+                        userInfo: [
+                            NSLocalizedDescriptionKey:
+                                "Absolute alarm date \(datetimeStr) is in the past; macOS rejects past alarms silently, so it was not set"
+                        ]
+                    )
+                }
+                alarm = EKAlarm(absoluteDate: absoluteDate)
+
+            case "proximity":
+                if case .string(let locationTitle) = config["locationTitle"],
+                    case .double(let latitude) = config["latitude"],
+                    case .double(let longitude) = config["longitude"]
+                {
+                    let proximityAlarm = EKAlarm()
+
+                    let structuredLocation = EKStructuredLocation(title: locationTitle)
+                    structuredLocation.geoLocation = CLLocation(
+                        latitude: latitude,
+                        longitude: longitude
+                    )
+
+                    if case .double(let radius) = config["radius"] {
+                        structuredLocation.radius = radius
+                    } else if case .int(let radiusInt) = config["radius"] {
+                        structuredLocation.radius = Double(radiusInt)
+                    }
+
+                    let proximityType = config["proximity"]?.stringValue ?? "enter"
+                    proximityAlarm.proximity = proximityType == "enter" ? .enter : .leave
+                    proximityAlarm.structuredLocation = structuredLocation
+                    alarm = proximityAlarm
+                }
+
+            default:
+                log.error("Unexpected alarm type encountered: \(alarmType, privacy: .public)")
+                continue
+            }
+
+            guard let alarm = alarm else { continue }
+
+            if case .string(let soundName) = config["sound"],
+                Sound(rawValue: soundName) != nil
+            {
+                alarm.soundName = soundName
+            }
+
+            if case .string(let email) = config["emailAddress"], !email.isEmpty {
+                alarm.emailAddress = email
+            }
+
+            alarms.append(alarm)
+        }
+
+        return alarms
+    }
+
     var tools: [Tool] {
         Tool(
             name: "calendars_list",
@@ -534,6 +689,370 @@ final class CalendarService: Service {
             try self.eventStore.save(event, span: .thisEvent)
 
             return Event(event)
+        }
+
+        Tool(
+            name: "events_update",
+            description:
+                "Update an existing calendar event. For recurring events, use occurrence_date to target a specific occurrence and span to choose whether the change applies to that occurrence only or to it and all future occurrences.",
+            inputSchema: .object(
+                properties: [
+                    "id": .string(
+                        description: "Event identifier (from events_fetch)"
+                    ),
+                    "occurrence_date": .string(
+                        description:
+                            "Start date/time of the specific occurrence to modify, for recurring events. If omitted, the first occurrence is targeted.",
+                        format: .dateTime
+                    ),
+                    "span": .string(
+                        description:
+                            "Scope of the change for recurring events: this occurrence only, or this and all future occurrences",
+                        default: "this-event",
+                        enum: ["this-event", "future-events"]
+                    ),
+                    "title": .string(),
+                    "start": .string(
+                        description:
+                            "New start date/time. If timezone is omitted, local time is assumed. Date-only uses local midnight.",
+                        format: .dateTime
+                    ),
+                    "end": .string(
+                        description:
+                            "New end date/time. If timezone is omitted, local time is assumed. Date-only uses local midnight.",
+                        format: .dateTime
+                    ),
+                    "calendar": .string(
+                        description: "Name of the calendar to move the event to"
+                    ),
+                    "location": .string(),
+                    "notes": .string(),
+                    "url": .string(
+                        format: .uri
+                    ),
+                    "isAllDay": .boolean(),
+                    "availability": .string(
+                        description: "Availability status",
+                        enum: EKEventAvailability.allCases.map { .string($0.stringValue) }
+                    ),
+                    "alarms": .array(
+                        description:
+                            "Alarm configurations; replaces any existing alarms on the event",
+                        items: .anyOf(
+                            [
+                                .object(
+                                    properties: [
+                                        "type": .string(
+                                            const: "relative",
+                                        ),
+                                        "minutes": .integer(
+                                            description:
+                                                "Minutes offset from event start (negative for before, positive for after)"
+                                        ),
+                                        "sound": .string(
+                                            description: "Sound name to play when alarm triggers",
+                                            enum: Sound.allCases.map { .string($0.rawValue) }
+                                        ),
+                                        "emailAddress": .string(
+                                            description: "Email address to send notification to"
+                                        ),
+                                    ],
+                                    required: ["minutes"],
+                                    additionalProperties: false
+                                ),
+                                .object(
+                                    properties: [
+                                        "type": .string(
+                                            const: "absolute",
+                                        ),
+                                        "datetime": .string(
+                                            description:
+                                                "Alarm date/time; must be in the future. If timezone is omitted, local time is assumed.",
+                                            format: .dateTime
+                                        ),
+                                        "sound": .string(
+                                            description: "Sound name to play when alarm triggers",
+                                            enum: Sound.allCases.map { .string($0.rawValue) }
+                                        ),
+                                        "emailAddress": .string(
+                                            description: "Email address to send notification to"
+                                        ),
+                                    ],
+                                    required: ["datetime"],
+                                    additionalProperties: false
+                                ),
+                                .object(
+                                    properties: [
+                                        "type": .string(
+                                            const: "proximity",
+                                        ),
+                                        "proximity": .string(
+                                            description: "Proximity trigger type",
+                                            default: "enter",
+                                            enum: ["enter", "leave"]
+                                        ),
+                                        "locationTitle": .string(),
+                                        "latitude": .number(),
+                                        "longitude": .number(),
+                                        "radius": .number(
+                                            description: "Radius in meters",
+                                            default: .int(200)
+                                        ),
+                                        "sound": .string(
+                                            description: "Sound name to play when alarm triggers",
+                                            enum: Sound.allCases.map { .string($0.rawValue) }
+                                        ),
+                                        "emailAddress": .string(
+                                            description: "Email address to send notification to"
+                                        ),
+                                    ],
+                                    required: ["locationTitle", "latitude", "longitude"],
+                                    additionalProperties: false
+                                ),
+                            ]
+                        )
+                    ),
+                ],
+                required: ["id"],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Update Event",
+                destructiveHint: true,
+                openWorldHint: false
+            )
+        ) { arguments in
+            try await self.activate()
+
+            guard EKEventStore.authorizationStatus(for: .event) == .fullAccess else {
+                log.error("Calendar access not authorized")
+                throw NSError(
+                    domain: "CalendarError",
+                    code: 1,
+                    userInfo: [NSLocalizedDescriptionKey: "Calendar access not authorized"]
+                )
+            }
+
+            guard case .string(let id) = arguments["id"] else {
+                throw NSError(
+                    domain: "CalendarError",
+                    code: 2,
+                    userInfo: [NSLocalizedDescriptionKey: "Event id is required"]
+                )
+            }
+
+            var occurrenceDate: Date? = nil
+            if case .string(let occurrenceDateStr) = arguments["occurrence_date"] {
+                guard
+                    let parsedOccurrence = ISO8601DateFormatter.parsedLenientISO8601Date(
+                        fromISO8601String: occurrenceDateStr
+                    )
+                else {
+                    throw NSError(
+                        domain: "CalendarError",
+                        code: 2,
+                        userInfo: [
+                            NSLocalizedDescriptionKey:
+                                "Invalid occurrence_date format. Expected ISO 8601 format."
+                        ]
+                    )
+                }
+                occurrenceDate = parsedOccurrence.date
+            }
+
+            let span: EKSpan
+            switch arguments["span"]?.stringValue ?? "this-event" {
+            case "future-events":
+                span = .futureEvents
+            default:
+                span = .thisEvent
+            }
+
+            let event = try self.resolveEvent(withIdentifier: id, occurrenceDate: occurrenceDate)
+            try self.requireWritable(event.calendar)
+
+            // Apply provided changes
+            if case .string(let title) = arguments["title"] {
+                event.title = title
+            }
+
+            let calendar = Calendar.current
+
+            if case .string(let startDateStr) = arguments["start"] {
+                guard
+                    let parsedStart = ISO8601DateFormatter.parsedLenientISO8601Date(
+                        fromISO8601String: startDateStr
+                    )
+                else {
+                    throw NSError(
+                        domain: "CalendarError",
+                        code: 2,
+                        userInfo: [
+                            NSLocalizedDescriptionKey:
+                                "Invalid start date format. Expected ISO 8601 format."
+                        ]
+                    )
+                }
+                event.startDate = calendar.normalizedStartDate(
+                    from: parsedStart.date,
+                    isDateOnly: parsedStart.isDateOnly
+                )
+            }
+
+            if case .string(let endDateStr) = arguments["end"] {
+                guard
+                    let parsedEnd = ISO8601DateFormatter.parsedLenientISO8601Date(
+                        fromISO8601String: endDateStr
+                    )
+                else {
+                    throw NSError(
+                        domain: "CalendarError",
+                        code: 2,
+                        userInfo: [
+                            NSLocalizedDescriptionKey:
+                                "Invalid end date format. Expected ISO 8601 format."
+                        ]
+                    )
+                }
+                event.endDate = calendar.normalizedStartDate(
+                    from: parsedEnd.date,
+                    isDateOnly: parsedEnd.isDateOnly
+                )
+            }
+
+            if case .string(let calendarName) = arguments["calendar"] {
+                guard
+                    let targetCalendar = self.eventStore.calendars(for: .event)
+                        .first(where: { $0.title.lowercased() == calendarName.lowercased() })
+                else {
+                    throw NSError(
+                        domain: "CalendarError",
+                        code: 4,
+                        userInfo: [
+                            NSLocalizedDescriptionKey:
+                                "No calendar found with name \(calendarName)"
+                        ]
+                    )
+                }
+                try self.requireWritable(targetCalendar)
+                event.calendar = targetCalendar
+            }
+
+            if case .string(let location) = arguments["location"] {
+                event.location = location
+            }
+
+            if case .string(let notes) = arguments["notes"] {
+                event.notes = notes
+            }
+
+            if case .string(let urlString) = arguments["url"],
+                let url = URL(string: urlString)
+            {
+                event.url = url
+            }
+
+            if case .bool(let isAllDay) = arguments["isAllDay"] {
+                event.isAllDay = isAllDay
+            }
+
+            if case .string(let availability) = arguments["availability"] {
+                event.availability = EKEventAvailability(availability)
+            }
+
+            if case .array(let alarmConfigs) = arguments["alarms"] {
+                event.alarms = try self.parseAlarms(alarmConfigs)
+            }
+
+            // Save the changes. With span "this-event" on a recurring series,
+            // EventKit detaches this occurrence from the series.
+            try self.eventStore.save(event, span: span)
+
+            return Event(event)
+        }
+
+        Tool(
+            name: "events_delete",
+            description:
+                "Delete a calendar event. For recurring events, use occurrence_date to target a specific occurrence and span to choose whether to delete that occurrence only or it and all future occurrences.",
+            inputSchema: .object(
+                properties: [
+                    "id": .string(
+                        description: "Event identifier (from events_fetch)"
+                    ),
+                    "occurrence_date": .string(
+                        description:
+                            "Start date/time of the specific occurrence to delete, for recurring events. If omitted, the first occurrence is targeted.",
+                        format: .dateTime
+                    ),
+                    "span": .string(
+                        description:
+                            "Scope of the deletion for recurring events: this occurrence only, or this and all future occurrences",
+                        default: "this-event",
+                        enum: ["this-event", "future-events"]
+                    ),
+                ],
+                required: ["id"],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Delete Event",
+                destructiveHint: true,
+                openWorldHint: false
+            )
+        ) { arguments in
+            try await self.activate()
+
+            guard EKEventStore.authorizationStatus(for: .event) == .fullAccess else {
+                log.error("Calendar access not authorized")
+                throw NSError(
+                    domain: "CalendarError",
+                    code: 1,
+                    userInfo: [NSLocalizedDescriptionKey: "Calendar access not authorized"]
+                )
+            }
+
+            guard case .string(let id) = arguments["id"] else {
+                throw NSError(
+                    domain: "CalendarError",
+                    code: 2,
+                    userInfo: [NSLocalizedDescriptionKey: "Event id is required"]
+                )
+            }
+
+            var occurrenceDate: Date? = nil
+            if case .string(let occurrenceDateStr) = arguments["occurrence_date"] {
+                guard
+                    let parsedOccurrence = ISO8601DateFormatter.parsedLenientISO8601Date(
+                        fromISO8601String: occurrenceDateStr
+                    )
+                else {
+                    throw NSError(
+                        domain: "CalendarError",
+                        code: 2,
+                        userInfo: [
+                            NSLocalizedDescriptionKey:
+                                "Invalid occurrence_date format. Expected ISO 8601 format."
+                        ]
+                    )
+                }
+                occurrenceDate = parsedOccurrence.date
+            }
+
+            let span: EKSpan
+            switch arguments["span"]?.stringValue ?? "this-event" {
+            case "future-events":
+                span = .futureEvents
+            default:
+                span = .thisEvent
+            }
+
+            let event = try self.resolveEvent(withIdentifier: id, occurrenceDate: occurrenceDate)
+            try self.requireWritable(event.calendar)
+
+            try self.eventStore.remove(event, span: span)
+
+            return Value.object(["deleted": .bool(true)])
         }
     }
 }
