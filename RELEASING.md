@@ -78,7 +78,7 @@ Apple Core ships Sparkle 2 (mirroring ping-warden's setup): `SPUStandardUpdaterC
 VERSION=1.0.0 Scripts/release.sh appcast   # signs dist/Apple Core-1.0.0.zip, prepends an item to appcast.xml
 ```
 
-  The item's release notes come from `docs/release-notes/v<version>.md`, rendered to HTML by `Scripts/render_release_notes.sh` — write that file first. The enclosure URL points at the GitHub release asset, so `upload` must publish the same zip that was signed.
+  The item's release notes come from `docs/release-notes/v<version>.md`, rendered to HTML by `Scripts/render_release_notes.sh`; write that file first. The enclosure URL points at the GitHub release asset, so `upload` must publish the same zip that was signed. `SURequireSignedFeed` also requires a signature over the complete appcast XML. The script adds and verifies that feed signature after every edit.
 
 - **Publish the appcast** by copying the updated `appcast.xml` to the `gh-pages` branch and pushing (Pages serves that branch, matching ping-warden):
 

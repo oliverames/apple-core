@@ -484,6 +484,10 @@ with open("appcast.xml", "w") as f:
 print(f"Added {version} to appcast.xml")
 PYEOF
 
+  echo "Signing and verifying appcast.xml"
+  "${sign_update}" appcast.xml
+  "${sign_update}" --verify appcast.xml
+
   echo "Next: publish appcast.xml to the gh-pages branch (see RELEASING.md)."
 }
 
