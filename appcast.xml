@@ -6,6 +6,70 @@
     <description>Updates for Apple Core - a native macOS MCP server for Apple services</description>
     <language>en</language>
     <item>
+      <title>Version 1.0.1</title>
+      <link>https://github.com/oliverames/apple-core/releases/tag/v1.0.1</link>
+      <sparkle:version>2</sparkle:version>
+      <sparkle:shortVersionString>1.0.1</sparkle:shortVersionString>
+      <description><![CDATA[
+<style>
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Helvetica, Arial, sans-serif;
+    font-size: 13px;
+    line-height: 1.55;
+    color: #1d1d1f;
+    margin: 0;
+    padding: 0;
+}
+h1, h2, h3 { color: #000; font-weight: 600; }
+h1 { font-size: 18px; margin: 0 0 10px 0; }
+h2 {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    color: #6e6e73;
+    margin: 18px 0 6px 0;
+}
+h3 { font-size: 13px; margin: 14px 0 6px 0; }
+p { margin: 0 0 10px 0; }
+ul, ol { padding-left: 20px; margin: 0 0 10px 0; }
+li { margin-bottom: 5px; }
+li > strong:first-child { color: #000; }
+code {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    background: #f2f2f7;
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-size: 12px;
+}
+a { color: #0071e3; text-decoration: none; }
+a:hover { text-decoration: underline; }
+hr { border: 0; border-top: 1px solid #e5e5ea; margin: 16px 0; }
+@media (prefers-color-scheme: dark) {
+    body { color: #f5f5f7; }
+    h1, h2, h3, li > strong:first-child { color: #fff; }
+    h2 { color: #98989d; }
+    code { background: #2c2c2e; }
+    hr { border-top-color: #38383a; }
+}
+</style>
+<h1>Apple Core 1.0.1</h1>
+<p>Apple Core 1.0.1 keeps remote MCP clients signed in after their 12-hour access token expires.</p>
+<h2>OAuth refresh tokens</h2>
+<ul>
+<li>OAuth clients now receive a refresh token with each access token. Apple Core rotates the refresh token every time it is used.</li>
+<li>Refresh tokens are bound to the client and MCP resource that received them. A token cannot be reused after rotation.</li>
+<li>Existing token files remain readable. Connections created before this release need one new sign-in because their saved records do not contain a refresh token.</li>
+</ul>
+<p>This release also adds direct tests for refresh-token rotation, persistence, client and resource binding, and private token-file permissions.</p>
+      ]]></description>
+      <pubDate>Wed, 22 Jul 2026 14:01:58 +0000</pubDate>
+      <enclosure url="https://github.com/oliverames/apple-core/releases/download/v1.0.1/Apple.Core-1.0.1.zip"
+                 length="8673895"
+                 type="application/octet-stream"
+                 sparkle:edSignature="g95yQBoco0zrtzBUusJA9LSwNVAain2wYVTnvehTecjD/aWZcwQuugo9fyjc98tmUAdbsDWftkOelgBJo5NoDw==" />
+      <sparkle:minimumSystemVersion>15.1</sparkle:minimumSystemVersion>
+    </item>
+    <item>
       <title>Version 1.0.0</title>
       <link>https://github.com/oliverames/apple-core/releases/tag/v1.0.0</link>
       <sparkle:version>1</sparkle:version>
