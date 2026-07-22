@@ -1,5 +1,19 @@
 # Apple Core worklog
 
+## 2026-07-22 - OAuth refresh recovery, 1.0.1, and signed appcast
+
+**What changed**: Added rotating OAuth refresh tokens and released Apple Core 1.0.1 so remote MCP clients can renew expired access tokens without repeating authorization. Corrected the Sparkle publication path after confirming Apple Core opts into `SURequireSignedFeed`: `Scripts/release.sh` now signs and verifies the complete appcast after every XML mutation, separately from the release archive signature. The signed feed was published to GitHub Pages.
+
+**Decisions made**: Kept signed-feed enforcement and pre-extraction update verification enabled. The appcast-only correction did not require another application build or release tag because installed 1.0.1 clients read the corrected public feed.
+
+**Verification**: The full `xcodebuild` test run succeeded, including both OAuth refresh-token tests. GitHub release `v1.0.1` is public with `Apple.Core-1.0.1.zip`. Sparkle's `sign_update --verify` accepts the exact public GitHub Pages appcast.
+
+**Left off at**: Version 1.0.1 is live. Commits `9a5f975`, `34ab904`, and `f2116a7` are pushed to `main`; signed feed commit `640ab28` is published on `gh-pages`.
+
+**Open questions**: **NEW:** none for this release. Broader product backlog remains in `docs/planning/`.
+
+---
+
 ## 2026-07-21 — Public release posture, Sparkle, full parity backlog
 
 - **Oliver authorized the 1.0 public release cut.** The final gate includes a full-history secret and PII audit, a clean first-run configuration probe, inspection of the signed app bundle and zip for local Cloudflare credentials or Apple data, notarization and Gatekeeper validation, and a fresh public-clone audit. Personal runtime configuration remains outside the repository and app bundle under `~/.config/apple-core/`.
