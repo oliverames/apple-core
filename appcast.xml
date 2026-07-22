@@ -1,5 +1,6 @@
-<?xml version="1.0" encoding="utf-8"?>
-<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" xmlns:dc="http://purl.org/dc/elements/1.1/">
+<?xml version="1.0" encoding="utf-8" standalone="yes"?><!-- sparkle-sign-warning:
+IMPORTANT: This file was signed by Sparkle. Any modifications to this file requires re-signing this file with generate_appcast or sign_update! The signed signature will be embedded at the end of this file.
+--><rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" xmlns:dc="http://purl.org/dc/elements/1.1/" version="2.0">
   <channel>
     <title>Apple Core Updates</title>
     <link>https://oliverames.github.io/apple-core/appcast.xml</link>
@@ -63,10 +64,7 @@ hr { border: 0; border-top: 1px solid #e5e5ea; margin: 16px 0; }
 <p>This release also adds direct tests for refresh-token rotation, persistence, client and resource binding, and private token-file permissions.</p>
       ]]></description>
       <pubDate>Wed, 22 Jul 2026 14:01:58 +0000</pubDate>
-      <enclosure url="https://github.com/oliverames/apple-core/releases/download/v1.0.1/Apple.Core-1.0.1.zip"
-                 length="8673895"
-                 type="application/octet-stream"
-                 sparkle:edSignature="g95yQBoco0zrtzBUusJA9LSwNVAain2wYVTnvehTecjD/aWZcwQuugo9fyjc98tmUAdbsDWftkOelgBJo5NoDw==" />
+      <enclosure url="https://github.com/oliverames/apple-core/releases/download/v1.0.1/Apple.Core-1.0.1.zip" length="8673895" type="application/octet-stream" sparkle:edSignature="g95yQBoco0zrtzBUusJA9LSwNVAain2wYVTnvehTecjD/aWZcwQuugo9fyjc98tmUAdbsDWftkOelgBJo5NoDw=="></enclosure>
       <sparkle:minimumSystemVersion>15.1</sparkle:minimumSystemVersion>
     </item>
     <item>
@@ -123,12 +121,12 @@ hr { border: 0; border-top: 1px solid #e5e5ea; margin: 16px 0; }
 <p>Version 1.0 is signed with a Developer ID certificate, notarized by Apple, and distributed through a signed Sparkle update feed.</p>
       ]]></description>
       <pubDate>Tue, 21 Jul 2026 20:30:20 +0000</pubDate>
-      <enclosure url="https://github.com/oliverames/apple-core/releases/download/v1.0.0/Apple.Core-1.0.0.zip"
-                 length="8659081"
-                 type="application/octet-stream"
-                 sparkle:edSignature="d42F4wLicsek+rLDJi7tyjLKX9UmyXhPmhYDuodv/MYIrQTRahXrc4Z8rKTd6RfVqSBEvQ9kd06JgJmVWfuzBg==" />
+      <enclosure url="https://github.com/oliverames/apple-core/releases/download/v1.0.0/Apple.Core-1.0.0.zip" length="8659081" type="application/octet-stream" sparkle:edSignature="d42F4wLicsek+rLDJi7tyjLKX9UmyXhPmhYDuodv/MYIrQTRahXrc4Z8rKTd6RfVqSBEvQ9kd06JgJmVWfuzBg=="></enclosure>
       <sparkle:minimumSystemVersion>15.1</sparkle:minimumSystemVersion>
     </item>
     <!-- `Scripts/release.sh appcast` prepends signed release entries here. -->
   </channel>
-</rss>
+</rss><!-- sparkle-signatures:
+edSignature: nlL1HFvqYiPC/wB+6JoJ1rOuiBo/9JwO1KqRtQY+/t7yMzmBNjE9PugNKPy4+Qw3oCHDGxQxbSTNHnjzwt9JCQ==
+length: 6373
+-->
