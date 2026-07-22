@@ -10,6 +10,7 @@
 
 import CryptoKit
 import Foundation
+import Security
 
 public struct OAuthRegisteredClient: Codable, Sendable {
     public let clientID: String
@@ -24,10 +25,34 @@ private struct PersistedOAuthClientRegistry: Codable {
 
 private struct PersistedOAuthAccessTokens: Codable {
     let tokens: [PersistedOAuthAccessToken]
+    let refreshTokens: [PersistedOAuthRefreshToken]
+
+    private enum CodingKeys: String, CodingKey {
+        case tokens
+        case refreshTokens
+    }
+
+    init(tokens: [PersistedOAuthAccessToken], refreshTokens: [PersistedOAuthRefreshToken]) {
+        self.tokens = tokens
+        self.refreshTokens = refreshTokens
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        tokens = try container.decode([PersistedOAuthAccessToken].self, forKey: .tokens)
+        refreshTokens = try container.decodeIfPresent([PersistedOAuthRefreshToken].self, forKey: .refreshTokens) ?? []
+    }
 }
 
 private struct PersistedOAuthAccessToken: Codable {
     let token: String
+    let resource: String
+    let expiresAt: Date
+}
+
+private struct PersistedOAuthRefreshToken: Codable {
+    let token: String
+    let clientID: String
     let resource: String
     let expiresAt: Date
 }
@@ -47,26 +72,43 @@ private struct OAuthAccessToken: Sendable {
     let expiresAt: Date
 }
 
+private struct OAuthRefreshToken: Sendable {
+    let token: String
+    let clientID: String
+    let resource: String
+    let expiresAt: Date
+}
+
+public struct OAuthTokenPair: Sendable, Equatable {
+    public let accessToken: String
+    public let refreshToken: String
+}
+
 public actor OAuthTokenStore {
     private static let maxPersistedClients = 256
+    public static let accessTokenLifetime: TimeInterval = 12 * 60 * 60
+    private static let refreshTokenLifetime: TimeInterval = 30 * 24 * 60 * 60
 
     private let clientRegistryURL: URL?
     private let accessTokenStoreURL: URL?
     private var clients: [String: OAuthRegisteredClient]
     private var authorizationCodes: [String: OAuthAuthorizationCode] = [:]
     private var accessTokens: [String: OAuthAccessToken]
+    private var refreshTokens: [String: OAuthRefreshToken]
 
     public init(clientRegistryURL: URL? = nil, accessTokenStoreURL: URL? = nil) {
         self.clientRegistryURL = clientRegistryURL
         self.accessTokenStoreURL = accessTokenStoreURL
         self.clients = Self.loadClients(from: clientRegistryURL)
-        self.accessTokens = Self.loadAccessTokens(from: accessTokenStoreURL)
+        let persistedTokens = Self.loadTokens(from: accessTokenStoreURL)
+        self.accessTokens = persistedTokens.accessTokens
+        self.refreshTokens = persistedTokens.refreshTokens
     }
 
     public func registerClient(clientName: String, redirectURIs: [String], now: Date = Date()) -> OAuthRegisteredClient
     {
         let client = OAuthRegisteredClient(
-            clientID: ServingConfigManager.generateSecureToken(),
+            clientID: OAuthSupport.generateSecureToken(),
             clientName: clientName,
             redirectURIs: redirectURIs,
             issuedAt: Int(now.timeIntervalSince1970)
@@ -118,7 +160,7 @@ public actor OAuthTokenStore {
             return nil
         }
 
-        let code = ServingConfigManager.generateSecureToken()
+        let code = OAuthSupport.generateSecureToken()
         authorizationCodes[code] = OAuthAuthorizationCode(
             code: code,
             clientID: clientID,
@@ -136,7 +178,7 @@ public actor OAuthTokenStore {
         redirectURI: String,
         codeVerifier: String,
         now: Date = Date()
-    ) -> String? {
+    ) -> OAuthTokenPair? {
         cleanup(now: now)
         guard let pending = authorizationCodes.removeValue(forKey: code),
             pending.clientID == clientID,
@@ -146,14 +188,29 @@ public actor OAuthTokenStore {
             return nil
         }
 
-        let token = ServingConfigManager.generateSecureToken()
-        accessTokens[token] = OAuthAccessToken(
-            token: token,
-            resource: pending.resource,
-            expiresAt: now.addingTimeInterval(12 * 60 * 60)
-        )
+        let tokenPair = issueTokenPair(clientID: clientID, resource: pending.resource, now: now)
         persistAccessTokens()
-        return token
+        return tokenPair
+    }
+
+    public func redeemRefreshToken(
+        _ token: String,
+        clientID: String,
+        resource: String? = nil,
+        now: Date = Date()
+    ) -> OAuthTokenPair? {
+        cleanup(now: now)
+        guard let pending = refreshTokens[token],
+            OAuthSupport.constantTimeEquals(pending.clientID, clientID),
+            resource.map({ OAuthSupport.constantTimeEquals(pending.resource, $0) }) ?? true
+        else {
+            return nil
+        }
+
+        refreshTokens.removeValue(forKey: token)
+        let tokenPair = issueTokenPair(clientID: pending.clientID, resource: pending.resource, now: now)
+        persistAccessTokens()
+        return tokenPair
     }
 
     public func isValidAccessToken(_ token: String, resource: String, now: Date = Date()) -> Bool {
@@ -170,10 +227,29 @@ public actor OAuthTokenStore {
     private func cleanup(now: Date) {
         authorizationCodes = authorizationCodes.filter { $0.value.expiresAt > now }
         let liveTokens = accessTokens.filter { $0.value.expiresAt > now }
-        if liveTokens.count != accessTokens.count {
+        let liveRefreshTokens = refreshTokens.filter { $0.value.expiresAt > now }
+        if liveTokens.count != accessTokens.count || liveRefreshTokens.count != refreshTokens.count {
             accessTokens = liveTokens
+            refreshTokens = liveRefreshTokens
             persistAccessTokens()
         }
+    }
+
+    private func issueTokenPair(clientID: String, resource: String, now: Date) -> OAuthTokenPair {
+        let accessToken = OAuthSupport.generateSecureToken()
+        let refreshToken = OAuthSupport.generateSecureToken()
+        accessTokens[accessToken] = OAuthAccessToken(
+            token: accessToken,
+            resource: resource,
+            expiresAt: now.addingTimeInterval(Self.accessTokenLifetime)
+        )
+        refreshTokens[refreshToken] = OAuthRefreshToken(
+            token: refreshToken,
+            clientID: clientID,
+            resource: resource,
+            expiresAt: now.addingTimeInterval(Self.refreshTokenLifetime)
+        )
+        return OAuthTokenPair(accessToken: accessToken, refreshToken: refreshToken)
     }
 
     private func pruneClientsIfNeeded() {
@@ -195,23 +271,35 @@ public actor OAuthTokenStore {
         return Dictionary(uniqueKeysWithValues: registry.clients.map { ($0.clientID, $0) })
     }
 
-    private static func loadAccessTokens(from url: URL?, now: Date = Date()) -> [String: OAuthAccessToken] {
+    private static func loadTokens(
+        from url: URL?,
+        now: Date = Date()
+    ) -> (accessTokens: [String: OAuthAccessToken], refreshTokens: [String: OAuthRefreshToken]) {
         guard let url,
             let data = try? Data(contentsOf: url),
             let persisted = try? JSONDecoder().decode(PersistedOAuthAccessTokens.self, from: data)
         else {
-            return [:]
+            return ([:], [:])
         }
 
-        var tokens: [String: OAuthAccessToken] = [:]
+        var accessTokens: [String: OAuthAccessToken] = [:]
         for entry in persisted.tokens where entry.expiresAt > now {
-            tokens[entry.token] = OAuthAccessToken(
+            accessTokens[entry.token] = OAuthAccessToken(
                 token: entry.token,
                 resource: entry.resource,
                 expiresAt: entry.expiresAt
             )
         }
-        return tokens
+        var refreshTokens: [String: OAuthRefreshToken] = [:]
+        for entry in persisted.refreshTokens where entry.expiresAt > now {
+            refreshTokens[entry.token] = OAuthRefreshToken(
+                token: entry.token,
+                clientID: entry.clientID,
+                resource: entry.resource,
+                expiresAt: entry.expiresAt
+            )
+        }
+        return (accessTokens, refreshTokens)
     }
 
     private func persistClients() {
@@ -231,7 +319,17 @@ public actor OAuthTokenStore {
         let persisted = PersistedOAuthAccessTokens(
             tokens: accessTokens.values
                 .sorted { $0.token < $1.token }
-                .map { PersistedOAuthAccessToken(token: $0.token, resource: $0.resource, expiresAt: $0.expiresAt) }
+                .map { PersistedOAuthAccessToken(token: $0.token, resource: $0.resource, expiresAt: $0.expiresAt) },
+            refreshTokens: refreshTokens.values
+                .sorted { $0.token < $1.token }
+                .map {
+                    PersistedOAuthRefreshToken(
+                        token: $0.token,
+                        clientID: $0.clientID,
+                        resource: $0.resource,
+                        expiresAt: $0.expiresAt
+                    )
+                }
         )
         Self.writePrivateJSON(persisted, to: accessTokenStoreURL, label: "OAuth access tokens")
     }
@@ -250,12 +348,21 @@ public actor OAuthTokenStore {
             try data.write(to: url, options: .atomic)
             try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
         } catch {
-            logMessage("OAuthTokenStore: Failed to persist \(label): \(error)")
+            NSLog("OAuthTokenStore: Failed to persist %@: %@", label, String(describing: error))
         }
     }
 }
 
 public enum OAuthSupport {
+    public static func generateSecureToken() -> String {
+        var randomBytes = [UInt8](repeating: 0, count: 32)
+        let status = SecRandomCopyBytes(kSecRandomDefault, randomBytes.count, &randomBytes)
+        if status == errSecSuccess {
+            return "ames_" + base64URLEncoded(Data(randomBytes))
+        }
+        return "ames_" + UUID().uuidString.replacingOccurrences(of: "-", with: "")
+    }
+
     public static func pkceS256Challenge(for verifier: String) -> String {
         let digest = SHA256.hash(data: Data(verifier.utf8))
         return base64URLEncoded(Data(digest))
@@ -336,6 +443,16 @@ public enum OAuthSupport {
     }
 
     public static func constantTimeEquals(_ lhs: String, _ rhs: String) -> Bool {
-        AppleCoreHTTPServer.constantTimeEquals(lhs, rhs)
+        let lhsBytes = Array(lhs.utf8)
+        let rhsBytes = Array(rhs.utf8)
+        let maxCount = max(lhsBytes.count, rhsBytes.count)
+        var difference = lhsBytes.count ^ rhsBytes.count
+
+        for index in 0 ..< maxCount {
+            let lhsByte = index < lhsBytes.count ? lhsBytes[index] : 0
+            let rhsByte = index < rhsBytes.count ? rhsBytes[index] : 0
+            difference |= Int(lhsByte ^ rhsByte)
+        }
+        return difference == 0
     }
 }

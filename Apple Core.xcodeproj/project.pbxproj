@@ -11,6 +11,7 @@
 		AC000001000000000000000F /* ServiceAccessPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC000001000000000000000E /* ServiceAccessPolicy.swift */; };
 		AC0000010000000000000011 /* AttachmentSaveDirectory.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC0000010000000000000012 /* AttachmentSaveDirectory.swift */; };
 		AC0000010000000000000013 /* AttachmentSaveDirectory.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC0000010000000000000012 /* AttachmentSaveDirectory.swift */; };
+		AC0000010000000000000016 /* OAuthSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC0000010000000000000017 /* OAuthSupport.swift */; };
 		F809556E2D7888920055B911 /* TypedStream in Frameworks */ = {isa = PBXBuildFile; productRef = F809556D2D7888920055B911 /* TypedStream */; };
 		F80955702D7888920055B911 /* iMessage in Frameworks */ = {isa = PBXBuildFile; productRef = F809556F2D7888920055B911 /* iMessage */; };
 		F825BDBF2D9AD00E0063ADD7 /* ServiceLifecycle in Frameworks */ = {isa = PBXBuildFile; productRef = F825BDBE2D9AD00E0063ADD7 /* ServiceLifecycle */; };
@@ -56,6 +57,7 @@
 /* Begin PBXFileReference section */
 		AC000001000000000000000E /* ServiceAccessPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServiceAccessPolicy.swift; sourceTree = "<group>"; };
 		AC0000010000000000000012 /* AttachmentSaveDirectory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachmentSaveDirectory.swift; sourceTree = "<group>"; };
+		AC0000010000000000000017 /* OAuthSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = OAuthSupport.swift; path = App/Services/Serving/OAuthSupport.swift; sourceTree = SOURCE_ROOT; };
 		AC0000010000000000000003 /* Apple CoreTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "Apple CoreTests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
 		F8F44E6D2D59038D0075D79C /* iMCP.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = iMCP.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		F8F44EB62D5908D00075D79C /* imcp-server */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = "imcp-server"; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -143,6 +145,7 @@
 				F8F44E6F2D59038D0075D79C /* App */,
 				F8F44EB72D5908D00075D79C /* CLI */,
 				AC0000010000000000000010 /* Shared */,
+				AC0000010000000000000017 /* OAuthSupport.swift */,
 				AC0000010000000000000004 /* Tests */,
 				F8F44E6E2D59038D0075D79C /* Products */,
 			);
@@ -329,6 +332,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				AC0000010000000000000013 /* AttachmentSaveDirectory.swift in Sources */,
+				AC0000010000000000000016 /* OAuthSupport.swift in Sources */,
 				AC000001000000000000000F /* ServiceAccessPolicy.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

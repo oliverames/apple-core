@@ -244,7 +244,7 @@ public actor AppleCoreHTTPServer {
                 "token_endpoint": "\(oauthIssuer)/oauth/token",
                 "registration_endpoint": "\(oauthIssuer)/oauth/register",
                 "response_types_supported": ["code"],
-                "grant_types_supported": ["authorization_code"],
+                "grant_types_supported": ["authorization_code", "refresh_token"],
                 "code_challenge_methods_supported": ["S256"],
                 "token_endpoint_auth_methods_supported": ["none"],
                 "scopes_supported": ["mcp"],
@@ -305,7 +305,7 @@ public actor AppleCoreHTTPServer {
                     "client_id_issued_at": client.issuedAt,
                     "client_name": client.clientName,
                     "redirect_uris": client.redirectURIs,
-                    "grant_types": ["authorization_code"],
+                    "grant_types": ["authorization_code", "refresh_token"],
                     "response_types": ["code"],
                     "token_endpoint_auth_method": "none",
                 ],
@@ -432,28 +432,40 @@ public actor AppleCoreHTTPServer {
             }
 
             let form = OAuthSupport.parseFormURLEncoded(data)
-            guard form["grant_type"] == "authorization_code",
+            let grantType = form["grant_type"]
+            let tokenPair: OAuthTokenPair?
+
+            if grantType == "authorization_code",
                 let code = form["code"],
                 let clientID = form["client_id"],
                 let redirectURI = form["redirect_uri"],
                 let verifier = form["code_verifier"]
-            else {
-                return Self.oauthErrorResponse(
-                    .badRequest,
-                    "invalid_request",
-                    "Expected authorization_code token exchange with PKCE.",
-                    request: request
-                )
-            }
-
-            guard
-                let accessToken = await oauthStore.redeemAuthorizationCode(
+            {
+                tokenPair = await oauthStore.redeemAuthorizationCode(
                     code: code,
                     clientID: clientID,
                     redirectURI: redirectURI,
                     codeVerifier: verifier
                 )
-            else {
+            } else if grantType == "refresh_token",
+                let refreshToken = form["refresh_token"],
+                let clientID = form["client_id"]
+            {
+                tokenPair = await oauthStore.redeemRefreshToken(
+                    refreshToken,
+                    clientID: clientID,
+                    resource: form["resource"]
+                )
+            } else {
+                return Self.oauthErrorResponse(
+                    .badRequest,
+                    "invalid_request",
+                    "Expected authorization_code with PKCE or refresh_token grant.",
+                    request: request
+                )
+            }
+
+            guard let tokenPair else {
                 return Self.oauthErrorResponse(
                     .badRequest,
                     "invalid_grant",
@@ -465,9 +477,10 @@ public actor AppleCoreHTTPServer {
             return Self.jsonResponse(
                 .ok,
                 [
-                    "access_token": accessToken,
+                    "access_token": tokenPair.accessToken,
+                    "refresh_token": tokenPair.refreshToken,
                     "token_type": "Bearer",
-                    "expires_in": 43_200,
+                    "expires_in": Int(OAuthTokenStore.accessTokenLifetime),
                     "scope": "mcp",
                 ],
                 request: request,
