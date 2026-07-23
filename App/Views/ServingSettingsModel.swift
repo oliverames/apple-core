@@ -26,6 +26,7 @@ final class ServingSettingsModel: ObservableObject {
     @Published var lastStatusMessage = "Ready"
 
     @AppStorage("runAsLaunchAgent") var runAsLaunchAgent = true
+    @AppStorage("showDockIcon") var showDockIcon = false
 
     private weak var serverController: ServerController?
 

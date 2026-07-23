@@ -649,6 +649,27 @@ struct SettingsView: View {
                             .foregroundStyle(.secondary)
                     }
                 }
+
+                Divider()
+
+                Toggle(
+                    isOn: Binding(
+                        get: { model.showDockIcon },
+                        set: { newValue in
+                            model.showDockIcon = newValue
+                            if let delegate = NSApp.delegate as? AppDelegate {
+                                delegate.setShowDockIcon(newValue)
+                            }
+                        }
+                    )
+                ) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Show Dock Icon")
+                        Text("Display the Apple Core icon in the Dock while the app is running. When off, Apple Core lives entirely in the menu bar.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
 
             SettingsGroup(title: "LaunchAgent") {
@@ -759,6 +780,8 @@ private struct ServiceRow: View {
                     set: { newValue in
                         config.binding.wrappedValue = newValue
                         if newValue {
+                            // Front the app so TCC shows the permission prompt.
+                            NSApp.activate(ignoringOtherApps: true)
                             Task {
                                 do {
                                     try await config.service.activate()

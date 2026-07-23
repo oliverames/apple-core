@@ -15,9 +15,10 @@ import SwiftUI
 /// Registers Apple Core as a per-user LaunchAgent so it keeps running (and
 /// relaunches at login) like a background daemon, mirroring Bridgeport's
 /// LaunchAgentManager-based daemon lifecycle. Unlike Bridgeport, there is no
-/// separate daemon binary here -- the LaunchAgent simply relaunches this
-/// same app bundle's executable in place, which is required for TCC to keep
-/// recognizing it (see LaunchAgentManager.bundleExecutablePath).
+/// separate daemon binary here -- the LaunchAgent uses `open -W` to launch
+/// the app bundle through LaunchServices, which deduplicates instances (so
+/// you never get two menu bar items) and keeps TCC consent attached to the
+/// signed bundle identity.
 enum AppLaunchAgent {
     static let label = "com.oliverames.applecore.launchagent"
 
@@ -26,15 +27,18 @@ enum AppLaunchAgent {
         // A keep-alive job must never point into DerivedData or another
         // disposable build directory. Install the app first so updates and
         // TCC consent remain attached to one stable bundle identity.
-        guard let executablePath = Bundle.main.executablePath,
-            let stableExecutablePath = LaunchAgentManager.bundleExecutablePath(for: executablePath),
-            Bundle.main.bundleURL.standardizedFileURL.path.hasPrefix("/Applications/")
+        // The LaunchAgent launches the app through `open -W` so LaunchServices
+        // manages the process, deduplicates instances, and TCC attributes are
+        // correctly associated with the signed bundle.
+        guard Bundle.main.bundleURL.standardizedFileURL.path.hasPrefix("/Applications/")
         else {
             Logger.server.info(
                 "AppLaunchAgent: app is not installed in /Applications; skipping LaunchAgent registration"
             )
             return
         }
+
+        let appBundlePath = Bundle.main.bundleURL.standardizedFileURL.path
 
         let plistURL = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/LaunchAgents/\(label).plist")
@@ -43,7 +47,10 @@ enum AppLaunchAgent {
             let logDirectory = AppleCoreServingPaths.configDirectory()
             try FileManager.default.createDirectory(at: logDirectory, withIntermediateDirectories: true)
 
-            let existingExecutablePath: String? = {
+            // Check the existing plist's ProgramArguments so we know whether the
+            // currently-loaded job is using the old bare-executable format or
+            // the new `open -W` format and can restart if needed.
+            let existingAppPath: String? = {
                 guard let data = try? Data(contentsOf: plistURL),
                     let plist = try? PropertyListSerialization.propertyList(from: data, format: nil)
                         as? [String: Any],
@@ -51,12 +58,17 @@ enum AppLaunchAgent {
                 else {
                     return nil
                 }
+                // The old format was [executablePath]; the new format is
+                // ["/usr/bin/open", "-W", "-a", appBundlePath].
+                if arguments.first == "/usr/bin/open" {
+                    return arguments.last
+                }
                 return arguments.first
             }()
 
             let plistData = try LaunchAgentPlist.makeData(
                 label: label,
-                executablePath: stableExecutablePath,
+                appBundlePath: appBundlePath,
                 stdoutPath: logDirectory.appendingPathComponent("applecore_stdout.log").path,
                 stderrPath: logDirectory.appendingPathComponent("applecore_stderr.log").path
             )
@@ -74,7 +86,7 @@ enum AppLaunchAgent {
                 let uid: UInt32 = 0
             #endif
             if LaunchAgentManager.isLoaded(label: label, uid: uid),
-                existingExecutablePath != stableExecutablePath
+                existingAppPath != appBundlePath
             {
                 let result = LaunchAgentManager.restart(label: label, uid: uid, plistURL: plistURL)
                 if !result.succeeded {
@@ -120,6 +132,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         UserDefaults.standard.object(forKey: "runAsLaunchAgent") as? Bool ?? true
     }
 
+    private var showDockIcon: Bool {
+        get { UserDefaults.standard.object(forKey: "showDockIcon") as? Bool ?? false }
+        set { UserDefaults.standard.set(newValue, forKey: "showDockIcon") }
+    }
+
     private var isEnabled: Bool {
         get { UserDefaults.standard.object(forKey: "isEnabled") as? Bool ?? true }
         set { UserDefaults.standard.set(newValue, forKey: "isEnabled") }
@@ -128,6 +145,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         if runAsLaunchAgent {
             AppLaunchAgent.installIfNeeded()
+        }
+
+        // LSUIElement=true makes the app an accessory (no Dock icon) by
+        // default. When the user opts into showing the Dock icon, switch
+        // to .regular; otherwise stay .accessory. The Settings window
+        // temporarily flips to .regular when open unless the user has
+        // explicitly opted into the Dock icon.
+        if showDockIcon {
+            NSApp.setActivationPolicy(.regular)
         }
 
         updaterController = SPUStandardUpdaterController(
@@ -333,6 +359,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         config.binding.wrappedValue.toggle()
 
         if config.binding.wrappedValue {
+            // Front the app so macOS TCC shows the permission prompt.
+            // Without this, a background-only (accessory) app that was
+            // launched by launchd can have its TCC requests silently denied
+            // with no visible prompt, especially on a new machine where no
+            // prior consent exists.
+            NSApp.activate(ignoringOtherApps: true)
+
             Task {
                 do {
                     try await config.service.activate()
@@ -412,6 +445,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         aboutWindowController?.showWindow(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    // MARK: - Dock Icon Visibility
+
+    func setShowDockIcon(_ visible: Bool) {
+        showDockIcon = visible
+        if visible {
+            NSApp.setActivationPolicy(.regular)
+        } else {
+            // Only go back to accessory if the Settings window isn't open;
+            // SettingsWindowController manages the policy while its window
+            // is visible so the app can receive focus.
+            if settingsWindowController?.isWindowVisible != true {
+                NSApp.setActivationPolicy(.accessory)
+            }
+        }
     }
 }
 

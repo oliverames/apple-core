@@ -14,7 +14,12 @@ import SwiftUI
 final class SettingsWindowController: NSObject, NSWindowDelegate {
     private let serverController: ServerController
     private let model: ServingSettingsModel
+    private var dockIconWasVisible = false
     private var window: NSWindow?
+
+    var isWindowVisible: Bool {
+        window?.isVisible ?? false
+    }
 
     init(serverController: ServerController) {
         self.serverController = serverController
@@ -23,7 +28,10 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     }
 
     func show() {
-        NSApp.setActivationPolicy(.regular)
+        dockIconWasVisible = UserDefaults.standard.object(forKey: "showDockIcon") as? Bool ?? false
+        if !dockIconWasVisible {
+            NSApp.setActivationPolicy(.regular)
+        }
 
         if window == nil {
             let initialSize = NSSize(width: 980, height: 680)
@@ -57,6 +65,12 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
-        NSApp.setActivationPolicy(.accessory)
+        // If the user has explicitly opted into showing the Dock icon,
+        // keep it visible; otherwise go back to accessory (menu bar only).
+        if dockIconWasVisible {
+            NSApp.setActivationPolicy(.regular)
+        } else {
+            NSApp.setActivationPolicy(.accessory)
+        }
     }
 }

@@ -10,14 +10,17 @@ import Foundation
 public enum LaunchAgentPlist {
     public static func makeData(
         label: String,
-        executablePath: String,
+        appBundlePath: String,
         stdoutPath: String,
         stderrPath: String
     ) throws -> Data {
         let plist: [String: Any] = [
             "Label": label,
             "ProgramArguments": [
-                executablePath
+                "/usr/bin/open",
+                "-W",
+                "-a",
+                appBundlePath,
             ],
             "KeepAlive": true,
             "RunAtLoad": true,

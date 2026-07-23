@@ -4,6 +4,8 @@
 <dict>
 	<key>LSMultipleInstancesProhibited</key>
 	<true/>
+	<key>LSUIElement</key>
+	<true/>
 	<key>NSAppleEventsUsageDescription</key>
 	<string>Apple Core uses Apple Events to read and manage your Notes and Mail on your behalf when those services are enabled.</string>
 	<key>SUEnableInstallerLauncherService</key>
