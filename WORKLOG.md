@@ -1,5 +1,19 @@
 # Apple Core worklog
 
+## 2026-07-23 - Fix duplicate menu bar, broken toggles, Dock icon toggle, release 1.0.2
+
+**What changed**: Fixed three issues affecting new-machine setup and added Dock icon visibility control. The LaunchAgent now launches via `open -W -a <bundle>` through LaunchServices instead of running the bare executable directly, which deduplicates instances and prevents two menu bar items. `NSApp.activate(ignoringOtherApps:)` is now called before `service.activate()` in both the menu bar and Settings UI toggle paths, so TCC shows the permission prompt instead of silently denying from a background-only accessory app. Added `LSUIElement=true` to Info.plist (menu-bar-only by default) plus a "Show Dock Icon" toggle in Settings > Server > General. Released Apple Core 1.0.2 (notarized, stapled, signed appcast published).
+
+**Decisions made**: Kept `LSUIElement=true` as the default rather than `.accessory` activation policy alone, so the app starts as a proper accessory app even before `applicationDidFinishLaunching` runs. The Settings window temporarily flips to `.regular` when open, then restores the user's Dock icon preference on close. The `bundleExecutablePath` helper in `LaunchAgentManager` is no longer referenced by `AppLaunchAgent` but kept as public API for potential external use.
+
+**Verification**: `xcodebuild build` and `xcodebuild test` both pass. Notarization submission `faff6b85-288d-444d-92d1-8e710ddd6713` accepted. Developer ID signature, Gatekeeper, and stapler validation all pass. `sign_update --verify` accepts the local appcast. GitHub release `v1.0.2` is public with `Apple.Core-1.0.2.zip`. The signed appcast is published on `gh-pages` (raw content confirmed; CDN cache may need a few minutes to refresh).
+
+**Left off at**: Version 1.0.2 is live. Commits `f409a59` (fixes) and `bdc473f` (release) are pushed to `main`; appcast commit `fe3a998` is published on `gh-pages`.
+
+**Open questions**: **NEW:** none for this release. Broader product backlog remains in `docs/planning/`.
+
+---
+
 ## 2026-07-22 - OAuth refresh recovery, 1.0.1, and signed appcast
 
 **What changed**: Added rotating OAuth refresh tokens and released Apple Core 1.0.1 so remote MCP clients can renew expired access tokens without repeating authorization. Corrected the Sparkle publication path after confirming Apple Core opts into `SURequireSignedFeed`: `Scripts/release.sh` now signs and verifies the complete appcast after every XML mutation, separately from the release archive signature. The signed feed was published to GitHub Pages.
