@@ -7,6 +7,73 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <description>Updates for Apple Core - a native macOS MCP server for Apple services</description>
     <language>en</language>
     <item>
+      <title>Version 1.0.2</title>
+      <link>https://github.com/oliverames/apple-core/releases/tag/v1.0.2</link>
+      <sparkle:version>3</sparkle:version>
+      <sparkle:shortVersionString>1.0.2</sparkle:shortVersionString>
+      <description><![CDATA[
+<style>
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Helvetica, Arial, sans-serif;
+    font-size: 13px;
+    line-height: 1.55;
+    color: #1d1d1f;
+    margin: 0;
+    padding: 0;
+}
+h1, h2, h3 { color: #000; font-weight: 600; }
+h1 { font-size: 18px; margin: 0 0 10px 0; }
+h2 {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    color: #6e6e73;
+    margin: 18px 0 6px 0;
+}
+h3 { font-size: 13px; margin: 14px 0 6px 0; }
+p { margin: 0 0 10px 0; }
+ul, ol { padding-left: 20px; margin: 0 0 10px 0; }
+li { margin-bottom: 5px; }
+li > strong:first-child { color: #000; }
+code {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    background: #f2f2f7;
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-size: 12px;
+}
+a { color: #0071e3; text-decoration: none; }
+a:hover { text-decoration: underline; }
+hr { border: 0; border-top: 1px solid #e5e5ea; margin: 16px 0; }
+@media (prefers-color-scheme: dark) {
+    body { color: #f5f5f7; }
+    h1, h2, h3, li > strong:first-child { color: #fff; }
+    h2 { color: #98989d; }
+    code { background: #2c2c2e; }
+    hr { border-top-color: #38383a; }
+}
+</style>
+<h1>Apple Core 1.0.2</h1>
+<p>Apple Core 1.0.2 fixes three issues that affected new-machine setup and adds control over the Dock icon.</p>
+<h2>Fixes</h2>
+<ul>
+<li><strong>Duplicate menu bar items</strong>: the LaunchAgent now launches the app through <code class="notranslate">open -W</code> via LaunchServices instead of running the bare executable directly. LaunchServices deduplicates instances, so the LaunchAgent and a manual app open no longer produce two menu bar icons.</li>
+<li><strong>Service toggles not working on a new computer</strong>: the app now fronts itself before requesting macOS privacy permissions. Without this, TCC silently denied permission requests from a background-only accessory app with no visible prompt, so toggling Calendar, Contacts, Reminders, or other services did nothing.</li>
+<li><strong>Sparkle update feed error</strong>: the signed appcast was already corrected in 1.0.1; this release confirms the fix by shipping with the corrected feed configuration.</li>
+</ul>
+<h2>New</h2>
+<ul>
+<li><strong>Show Dock Icon toggle</strong>: Apple Core is now a menu-bar-only app by default (no Dock icon). A new toggle in Settings &gt; Server &gt; General lets you opt into showing the Dock icon when the app is running.</li>
+</ul>
+      ]]></description>
+      <pubDate>Thu, 23 Jul 2026 17:44:27 +0000</pubDate>
+      <enclosure url="https://github.com/oliverames/apple-core/releases/download/v1.0.2/Apple.Core-1.0.2.zip"
+                 length="8676965"
+                 type="application/octet-stream"
+                 sparkle:edSignature="Z0ACspYgbsZCYCZowbKISRF35BiB14XvewSPW2LrrkWiFAZB03vl/zzMxzrhHjaYXXQOpxr3OJjTcUrOYIRMAA==" />
+      <sparkle:minimumSystemVersion>15.1</sparkle:minimumSystemVersion>
+    </item>
+    <item>
       <title>Version 1.0.1</title>
       <link>https://github.com/oliverames/apple-core/releases/tag/v1.0.1</link>
       <sparkle:version>2</sparkle:version>
@@ -127,6 +194,6 @@ hr { border: 0; border-top: 1px solid #e5e5ea; margin: 16px 0; }
     <!-- `Scripts/release.sh appcast` prepends signed release entries here. -->
   </channel>
 </rss><!-- sparkle-signatures:
-edSignature: nlL1HFvqYiPC/wB+6JoJ1rOuiBo/9JwO1KqRtQY+/t7yMzmBNjE9PugNKPy4+Qw3oCHDGxQxbSTNHnjzwt9JCQ==
-length: 6373
+edSignature: G19Nb109IAA1P7w3DSf66Zid2cuGxA3M4nXs4G5DStDpJ86niTFlyDxP0mypt454TkXP7rx0OLogVjMhlyLqCQ==
+length: 9558
 -->
