@@ -36,7 +36,14 @@ final class RemindersService: Service {
     }
 
     func activate() async throws {
-        try await eventStore.requestFullAccessToReminders()
+        let granted = try await eventStore.requestFullAccessToReminders()
+        guard granted else {
+            throw NSError(
+                domain: "RemindersError",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Reminders access was denied"]
+            )
+        }
     }
 
     /// Resolves a reminder by its calendar item identifier.

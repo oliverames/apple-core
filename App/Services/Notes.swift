@@ -7,6 +7,13 @@ import OSLog
 
 private let log = Logger.service("notes")
 
+private let notesPermissionProbeScript = """
+    function run(argv) {
+        const Notes = Application('Notes');
+        return Notes.name();
+    }
+    """
+
 // Deliberately excluded tool surface (vs sweetrb/apple-notes-mcp):
 // - get-checklist-state / sync status: not exposed by Notes' scripting
 //   dictionary or its HTML bodies.
@@ -623,6 +630,13 @@ private let saveAttachmentScript = """
 /// Design: docs/planning/BUILD_PLAN.md §3.5.
 final class NotesService: Service {
     static let shared = NotesService()
+
+    func activate() async throws {
+        _ = try await AppleScriptRunner.shared.run(
+            .jxa,
+            script: notesPermissionProbeScript
+        )
+    }
 
     var tools: [Tool] {
         Tool(

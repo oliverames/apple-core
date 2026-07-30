@@ -33,6 +33,26 @@ Full architecture rationale, per-surface deep dives, and the build sequence are 
 
 The standard build exposes 77 tools: Calendar (5), Reminders (6), Contacts (4), Location (3), Maps (5), Messages (3), Capture (3), Shortcuts (2), Notes (19), Mail (26), and Utilities (1). Four WeatherKit tools remain entitlement-gated and are not part of the standard release build.
 
+## macOS permissions
+
+Enabling a service from the menu bar or Settings requests the access that service needs. Apple Core temporarily becomes a regular foreground app before it calls macOS, because Tahoe can refuse a background permission request without displaying a prompt.
+
+| Service | Access requested when enabled |
+| --- | --- |
+| Calendar | Calendar full access |
+| Capture | Camera, Microphone, and Screen Recording |
+| Contacts | Contacts |
+| Location | Location Services |
+| Mail | Automation for Mail |
+| Maps | Location Services |
+| Messages | Automation for Messages, followed by the `chat.db` picker when direct database access is unavailable |
+| Notes | Automation for Notes |
+| Reminders | Reminders full access |
+| Shortcuts | No macOS privacy grant required |
+| Utilities | No macOS privacy grant required |
+
+If you deny a request, Apple Core turns that service back off. You can change the decision later in System Settings > Privacy & Security and try again.
+
 ## Build
 
 ```bash

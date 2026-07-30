@@ -9,6 +9,10 @@ private let messagesDatabasePath = "/Users/\(NSUserName())/Library/Messages/chat
 private let messagesDatabaseBookmarkKey: String = "me.mattt.iMCP.messagesDatabaseBookmark"
 private let defaultLimit = 30
 
+private let messagesPermissionProbeScript = """
+    tell application "Messages" to return name
+    """
+
 /// AppleScript sources for sending via Messages.app. Constant source; all
 /// user-supplied values arrive through argv (see AppleScriptRunner), so
 /// untrusted text is never interpolated into script source.
@@ -90,6 +94,11 @@ final class MessageService: NSObject, Service, NSOpenSavePanelDelegate {
 
     func activate() async throws {
         log.debug("Starting message service activation")
+
+        _ = try await AppleScriptRunner.shared.run(
+            .appleScript,
+            script: messagesPermissionProbeScript
+        )
 
         if canAccessDatabaseAtDefaultPath {
             log.debug("Successfully activated using default database path")

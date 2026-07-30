@@ -357,30 +357,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         else { return }
 
         config.binding.wrappedValue.toggle()
+        let isEnabling = config.binding.wrappedValue
+        refreshMenuState()
 
-        if config.binding.wrappedValue {
-            // Front the app so macOS TCC shows the permission prompt.
-            // Without this, a background-only (accessory) app that was
-            // launched by launchd can have its TCC requests silently denied
-            // with no visible prompt, especially on a new machine where no
-            // prior consent exists.
-            NSApp.activate(ignoringOtherApps: true)
-
-            Task {
+        Task { @MainActor in
+            if isEnabling {
                 do {
-                    try await config.service.activate()
+                    try await ServicePermissionCoordinator.activate(
+                        config.service,
+                        requirements: config.permissionRequirements
+                    )
                 } catch {
                     config.binding.wrappedValue = false
-                    self.refreshMenuState()
+                    presentServiceActivationError(error, service: config.name)
                 }
             }
-        }
 
-        refreshMenuState()
-        let bindings = serviceBindings()
-        Task {
-            await serverController.updateServiceBindings(bindings)
+            await serverController.updateServiceBindings(serviceBindings())
+            refreshMenuState()
         }
+    }
+
+    private func presentServiceActivationError(_ error: Error, service: String) {
+        // A visible Settings window gives the user a stable foreground place
+        // to retry after changing a privacy choice in System Settings.
+        openSettings()
+
+        let alert = NSAlert()
+        alert.messageText = "Could Not Enable \(service)"
+        alert.informativeText = error.localizedDescription
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
     }
 
     @objc private func checkForUpdates() {

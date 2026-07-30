@@ -6,6 +6,13 @@ import OSLog
 
 private let log = Logger.service("mail")
 
+private let mailPermissionProbeScript = """
+    function run(argv) {
+        const Mail = Application('Mail');
+        return Mail.name();
+    }
+    """
+
 private let defaultMessageLimit = 20
 private let maximumMessageLimit = 100
 private let maximumBatchSize = 50
@@ -792,6 +799,13 @@ private let deleteMailboxScript =
 ///   the AppleScript-feasible ceiling.
 final class MailService: Service {
     static let shared = MailService()
+
+    func activate() async throws {
+        _ = try await AppleScriptRunner.shared.run(
+            .jxa,
+            script: mailPermissionProbeScript
+        )
+    }
 
     var tools: [Tool] {
         Tool(

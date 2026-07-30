@@ -118,7 +118,14 @@ final class ContactsService: Service {
             )
         case .notDetermined:
             log.debug("Requesting contacts access")
-            _ = try await contactStore.requestAccess(for: .contacts)
+            let granted = try await contactStore.requestAccess(for: .contacts)
+            guard granted else {
+                throw NSError(
+                    domain: "ContactsService",
+                    code: 1,
+                    userInfo: [NSLocalizedDescriptionKey: "Contacts access was denied"]
+                )
+            }
         @unknown default:
             log.error("Unknown contacts authorization status")
             throw NSError(

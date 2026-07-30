@@ -28,6 +28,7 @@ struct ServiceConfig: Identifiable {
     let iconName: String
     let color: Color
     let service: any Service
+    let permissionRequirements: [ServicePermissionRequirement]
     let binding: Binding<Bool>
 
     var isActivated: Bool {
@@ -43,11 +44,20 @@ struct ServiceConfig: Identifiable {
         service: any Service,
         binding: Binding<Bool>
     ) {
-        self.id = String(describing: type(of: service))
+        let serviceTypeName = String(describing: type(of: service))
+        guard
+            let permissionRequirements = ServicePermissionInventory.requirements(
+                forServiceTypeName: serviceTypeName
+            )
+        else {
+            preconditionFailure("Missing permission inventory for \(serviceTypeName)")
+        }
+        self.id = serviceTypeName
         self.name = name
         self.iconName = iconName
         self.color = color
         self.service = service
+        self.permissionRequirements = permissionRequirements
         self.binding = binding
     }
 }

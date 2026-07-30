@@ -39,9 +39,31 @@ final class CaptureService: NSObject, Service {
     }
 
     func activate() async throws {
-        try await requestPermission(for: .video)
-        try await requestPermission(for: .audio)
-        try await requestScreenRecordingPermission()
+        var failures: [String] = []
+
+        do {
+            try await requestPermission(for: .video)
+        } catch {
+            failures.append(error.localizedDescription)
+        }
+        do {
+            try await requestPermission(for: .audio)
+        } catch {
+            failures.append(error.localizedDescription)
+        }
+        do {
+            try await requestScreenRecordingPermission()
+        } catch {
+            failures.append(error.localizedDescription)
+        }
+
+        guard failures.isEmpty else {
+            throw NSError(
+                domain: "CaptureServiceError",
+                code: 11,
+                userInfo: [NSLocalizedDescriptionKey: failures.joined(separator: "; ")]
+            )
+        }
     }
 
     private func requestPermission(for mediaType: AVMediaType) async throws {
