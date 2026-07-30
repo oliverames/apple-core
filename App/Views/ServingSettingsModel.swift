@@ -179,6 +179,11 @@ final class ServingSettingsModel: ObservableObject {
     }
 
     func bootstrapCloudflareTunnel() async {
+        // Text fields only commit on Return, so a hostname that was typed and
+        // then clicked away from was still absent from disk when the tunnel
+        // was set up. Normalize and persist what is on screen first.
+        normalizeCloudflareHostFields()
+        save(restartServer: false)
         let result = await cloudflareManager().bootstrapTunnel()
         applyCloudflareResult(result)
     }
@@ -194,6 +199,26 @@ final class ServingSettingsModel: ObservableObject {
 
     func startCloudflareTunnel() async {
         cloudflareStatus = await cloudflareManager().startTunnel()
+    }
+
+    func logInToCloudflare() async {
+        cloudflareStatus = await cloudflareManager().logInToCloudflare()
+    }
+
+    /// Cleans up whatever was typed into Domain or Hostname the moment the
+    /// field is committed, so the pane shows the value cloudflared will
+    /// actually receive rather than silently rejecting it later.
+    func normalizeCloudflareHostFields() {
+        var settings = cloudflare
+        settings.domain = CloudflareManager.normalizedHostname(settings.domain)
+        settings.hostname = CloudflareManager.normalizedHostname(settings.hostname)
+        if settings.hostname.isEmpty, !settings.domain.isEmpty {
+            settings.hostname = "mcp.\(settings.domain)"
+        }
+        if settings != cloudflare {
+            cloudflare = settings
+        }
+        config.publicBaseURL = CloudflareManager.publicBaseURL(for: settings)
     }
 
     func stopCloudflareTunnel() async {

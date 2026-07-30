@@ -305,6 +305,55 @@ struct SettingsView: View {
                     "Create and run a named Cloudflare Tunnel owned by Apple Core, with explicit per-service remote access."
             )
 
+            SettingsGroup(title: "Before You Start") {
+                let cloudflaredInstalled = model.cloudflareStatus?.cloudflaredInstalled ?? false
+                let loggedIn = model.cloudflareStatus?.loggedIn ?? false
+
+                setupStep(
+                    done: cloudflaredInstalled,
+                    title: "cloudflared installed",
+                    detail: cloudflaredInstalled
+                        ? model.cloudflareStatus?.cloudflaredPath ?? ""
+                        : "Install it with: brew install cloudflared"
+                )
+
+                Divider()
+
+                VStack(alignment: .leading, spacing: 8) {
+                    setupStep(
+                        done: loggedIn,
+                        title: "Signed in to Cloudflare",
+                        detail: loggedIn
+                            ? "Account certificate found at \(model.cloudflareStatus?.originCertificatePath ?? "")"
+                            : "Apple Core needs a one-time browser sign-in to create tunnels and DNS records in your account."
+                    )
+
+                    if !loggedIn {
+                        HStack(spacing: 10) {
+                            Button {
+                                Task { await model.logInToCloudflare() }
+                            } label: {
+                                Label("Log In to Cloudflare", systemImage: "person.badge.key")
+                            }
+                            .disabled(!cloudflaredInstalled)
+
+                            Button("Check Login") {
+                                Task { await model.refreshCloudflareStatus() }
+                            }
+                        }
+                    }
+                }
+
+                Divider()
+
+                Text(
+                    "Then set a Domain and Hostname below and choose Set Up & Start. Apple Core creates the tunnel, points the hostname at this Mac in DNS, and keeps cloudflared running."
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+
             SettingsGroup(title: "Status") {
                 LabeledContent("Tunnel") {
                     StatusValue(
@@ -357,16 +406,36 @@ struct SettingsView: View {
                 Divider()
 
                 SettingsField(label: "Profile") {
-                    cloudflareTextField("Personal tunnel", keyPath: \.profileName)
+                    cloudflareFieldStack(
+                        placeholder: "Personal tunnel",
+                        keyPath: \.profileName,
+                        help: "A label for your own reference. Cloudflare never sees it."
+                    )
                 }
                 SettingsField(label: "Domain") {
-                    cloudflareTextField("example.com", keyPath: \.domain)
+                    cloudflareFieldStack(
+                        placeholder: "example.com",
+                        keyPath: \.domain,
+                        help: "A domain already in your Cloudflare account. Filling this in suggests a hostname below.",
+                        normalizesHost: true
+                    )
                 }
                 SettingsField(label: "Hostname") {
-                    cloudflareTextField("mcp.example.com", keyPath: \.hostname)
+                    cloudflareFieldStack(
+                        placeholder: "mcp.example.com",
+                        keyPath: \.hostname,
+                        help:
+                            "The address Cloudflare will route to this Mac. Host only — no https:// and no /mcp path.",
+                        normalizesHost: true,
+                        error: model.cloudflareStatus?.hostnameError
+                    )
                 }
                 SettingsField(label: "Tunnel Name") {
-                    cloudflareTextField("apple-core", keyPath: \.tunnelName)
+                    cloudflareFieldStack(
+                        placeholder: "apple-core",
+                        keyPath: \.tunnelName,
+                        help: "Name of the named tunnel in your Cloudflare account. Apple Core reuses it if it exists."
+                    )
                 }
 
                 DisclosureGroup(isExpanded: $isCloudflareAdvancedExpanded) {
@@ -420,6 +489,13 @@ struct SettingsView: View {
                             Task { await model.restartCloudflareTunnel() }
                         }
                         .disabled(!model.cloudflare.enabled || model.cloudflareStatus?.state == .needsTunnel)
+
+                        // Loads the LaunchAgent without touching DNS. Only
+                        // useful once routing is already correct.
+                        Button("Start Tunnel Only") {
+                            Task { await model.startCloudflareTunnel() }
+                        }
+                        .disabled(!model.cloudflare.enabled)
                     } label: {
                         Label("Tunnel Actions", systemImage: "ellipsis.circle")
                     }
@@ -430,15 +506,21 @@ struct SettingsView: View {
                             Task { await model.stopCloudflareTunnel() }
                         } label: {
                             Label("Stop Tunnel", systemImage: "stop.circle")
-                                .frame(width: 130)
+                                .frame(width: 150)
                         }
                     } else {
+                        // The primary action runs the whole sequence: find or
+                        // create the tunnel, route the hostname in DNS, write
+                        // the config and LaunchAgent, then start. Plain "Start
+                        // Tunnel" skipped DNS routing, which made a tunnel that
+                        // came up but resolved nowhere the default outcome.
                         Button {
-                            Task { await model.startCloudflareTunnel() }
+                            Task { await model.bootstrapCloudflareTunnel() }
                         } label: {
-                            Label("Start Tunnel", systemImage: "play.circle")
-                                .frame(width: 130)
+                            Label("Set Up & Start", systemImage: "play.circle")
+                                .frame(width: 150)
                         }
+                        .keyboardShortcut(.defaultAction)
                         .disabled(!model.cloudflare.enabled)
                     }
                 }
@@ -471,7 +553,8 @@ struct SettingsView: View {
 
     private func cloudflareTextField(
         _ placeholder: String,
-        keyPath: WritableKeyPath<CloudflareSettings, String>
+        keyPath: WritableKeyPath<CloudflareSettings, String>,
+        normalizesHost: Bool = false
     ) -> some View {
         TextField(
             placeholder,
@@ -482,7 +565,40 @@ struct SettingsView: View {
         )
         .textFieldStyle(.roundedBorder)
         .frame(maxWidth: 340, alignment: .leading)
-        .onSubmit { model.save(restartServer: false) }
+        .onSubmit {
+            if normalizesHost {
+                model.normalizeCloudflareHostFields()
+            }
+            model.save(restartServer: false)
+            Task { await model.refreshCloudflareStatus() }
+        }
+    }
+
+    /// A Cloudflare field with the one-line explanation of what it is for, and
+    /// an inline reason when the value cannot work. These used to be bare text
+    /// fields whose rejection surfaced only in the log.
+    private func cloudflareFieldStack(
+        placeholder: String,
+        keyPath: WritableKeyPath<CloudflareSettings, String>,
+        help: String,
+        normalizesHost: Bool = false,
+        error: String? = nil
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            cloudflareTextField(placeholder, keyPath: keyPath, normalizesHost: normalizesHost)
+            if let error, !error.isEmpty {
+                Label(error, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                Text(help)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .frame(maxWidth: 340, alignment: .leading)
     }
 
     private var humanizedRouteMode: String {
@@ -492,12 +608,33 @@ struct SettingsView: View {
         }
     }
 
+    /// One line of the Cloudflare prerequisite checklist: satisfied or not,
+    /// with the specific next action when it is not.
+    private func setupStep(done: Bool, title: String, detail: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: done ? "checkmark.circle.fill" : "circle")
+                .foregroundStyle(done ? Color.green : Color.secondary)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                if !detail.isEmpty {
+                    Text(detail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            Spacer()
+        }
+    }
+
     private var cloudflareStatusText: String {
         guard let status = model.cloudflareStatus else { return "Checking…" }
         switch status.state {
         case .running: return "Running"
         case .stopped: return "Stopped"
         case .disabled: return "Disabled"
+        case .needsLogin: return "Needs Cloudflare Login"
         case .needsTunnel: return "Needs Tunnel"
         case .needsConfig: return "Needs Config"
         case .missingCloudflared: return "cloudflared Missing"
@@ -509,7 +646,7 @@ struct SettingsView: View {
         switch model.cloudflareStatus?.state {
         case .running: .green
         case .error, .missingCloudflared: .red
-        case .needsTunnel, .needsConfig: .orange
+        case .needsLogin, .needsTunnel, .needsConfig: .orange
         case .disabled, .stopped, .none: .secondary
         }
     }
@@ -519,6 +656,7 @@ struct SettingsView: View {
         case .running: "checkmark.circle.fill"
         case .error: "exclamationmark.triangle.fill"
         case .missingCloudflared: "questionmark.circle"
+        case .needsLogin: "person.badge.key"
         case .needsTunnel, .needsConfig: "wrench.and.screwdriver"
         case .stopped: "stop.circle"
         case .disabled, .none: "pause.circle"
@@ -665,9 +803,11 @@ struct SettingsView: View {
                 ) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Show Dock Icon")
-                        Text("Display the Apple Core icon in the Dock while the app is running. When off, Apple Core lives entirely in the menu bar.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                        Text(
+                            "Display the Apple Core icon in the Dock while the app is running. When off, Apple Core lives entirely in the menu bar."
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                     }
                 }
             }

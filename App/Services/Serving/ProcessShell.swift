@@ -50,3 +50,24 @@ func runShell(_ executable: String, _ arguments: [String]) -> (status: Int32, st
         return (-1, "", error.localizedDescription)
     }
 }
+
+/// Starts a child process without waiting for it to exit. Used for
+/// `cloudflared tunnel login`, which opens a browser and blocks until the
+/// person finishes authorizing — waiting on that inside an actor would hang
+/// the Settings window for as long as the browser stayed open. Returns an
+/// error description when the process could not be started at all.
+@discardableResult
+func runShellDetached(_ executable: String, _ arguments: [String]) -> String? {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: executable)
+    process.arguments = arguments
+    process.standardOutput = FileHandle.nullDevice
+    process.standardError = FileHandle.nullDevice
+
+    do {
+        try process.run()
+        return nil
+    } catch {
+        return error.localizedDescription
+    }
+}

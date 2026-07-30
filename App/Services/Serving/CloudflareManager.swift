@@ -3,9 +3,13 @@
 // Ported from Bridgeport's CloudflareManager.swift with rebranding only:
 // com.oliverames.bridgeport.* -> com.oliverames.applecore.*, default tunnel
 // name "bridgeport" -> "apple-core", and BridgeportPaths/ConfigManager
-// references retargeted at AppleCoreServingPaths/ServingConfigManager. The
-// tunnel-management logic (cloudflared CLI invocations, DNS routing,
-// LaunchAgent lifecycle) is otherwise unchanged.
+// references retargeted at AppleCoreServingPaths/ServingConfigManager.
+//
+// Diverged from Bridgeport in 1.0.3: hostname normalization and validation,
+// origin-certificate (login) detection with `logInToCloudflare`, DNS routing
+// failures returned to the caller instead of logged and discarded, and
+// LaunchAgent start verified rather than assumed. The underlying cloudflared
+// CLI invocations and LaunchAgent lifecycle are otherwise as ported.
 
 import Foundation
 
@@ -105,6 +109,7 @@ public struct CloudflareSettings: Codable, Sendable, Equatable {
 public enum CloudflareTunnelState: String, Codable, Sendable {
     case disabled
     case missingCloudflared
+    case needsLogin
     case needsTunnel
     case needsConfig
     case stopped
@@ -129,6 +134,13 @@ public struct CloudflareTunnelStatus: Codable, Sendable, Equatable {
     public var hostname: String
     public var publicBaseURL: String
     public var createdByAppleCore: Bool
+    /// True once `cloudflared tunnel login` has written an origin certificate.
+    /// Without it neither tunnel creation nor DNS routing can work, which is
+    /// the first thing a new setup is missing.
+    public var loggedIn: Bool
+    public var originCertificatePath: String
+    /// Why the configured hostname cannot be routed, when it cannot be.
+    public var hostnameError: String?
 
     public init(
         state: CloudflareTunnelState = .disabled,
@@ -146,7 +158,10 @@ public struct CloudflareTunnelStatus: Codable, Sendable, Equatable {
         tunnelId: String = "",
         hostname: String = "",
         publicBaseURL: String = "",
-        createdByAppleCore: Bool = false
+        createdByAppleCore: Bool = false,
+        loggedIn: Bool = false,
+        originCertificatePath: String = "",
+        hostnameError: String? = nil
     ) {
         self.state = state
         self.message = message
@@ -164,6 +179,9 @@ public struct CloudflareTunnelStatus: Codable, Sendable, Equatable {
         self.hostname = hostname
         self.publicBaseURL = publicBaseURL
         self.createdByAppleCore = createdByAppleCore
+        self.loggedIn = loggedIn
+        self.originCertificatePath = originCertificatePath
+        self.hostnameError = hostnameError
     }
 }
 
@@ -237,6 +255,17 @@ public actor CloudflareManager {
             )
             return CloudflareOperationResult(settings: settings, status: status, didChangeSettings: before != settings)
         }
+        // Creating a tunnel and routing DNS both need the account origin
+        // certificate. Checking here turns an opaque cloudflared failure into
+        // the one instruction that actually unblocks setup.
+        guard fileManager.fileExists(atPath: Self.originCertificatePath()) else {
+            let status = status(
+                messageOverride:
+                    "Log in to Cloudflare first — Apple Core needs your account certificate to create a tunnel and route a hostname.",
+                forcedState: .needsLogin
+            )
+            return CloudflareOperationResult(settings: settings, status: status, didChangeSettings: before != settings)
+        }
 
         if settings.tunnelId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             if let existingTunnelId = existingTunnelID(named: settings.tunnelName) {
@@ -262,13 +291,27 @@ public actor CloudflareManager {
             settings.credentialsFilePath = defaultCredentialsPath(forTunnelID: settings.tunnelId)
         }
 
-        if !settings.hostname.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            _ = ensureDNSRoute()
+        var routingWarning: String?
+        if settings.hostname.isEmpty {
+            routingWarning =
+                "No hostname set, so nothing is routed to this tunnel yet. Enter one such as mcp.\(settings.domain.isEmpty ? "example.com" : settings.domain)."
+        } else if let invalid = Self.hostnameValidationError(for: settings.hostname) {
+            routingWarning = invalid
+        } else {
+            routingWarning = ensureDNSRoute()
         }
 
         writeCloudflaredConfigIfPossible()
         writeLaunchAgentIfPossible()
-        let startStatus = startTunnel()
+        var startStatus = startTunnel()
+        // A tunnel that starts but routes nothing is not a success; say so
+        // rather than letting "started" stand as the whole story.
+        if let routingWarning {
+            startStatus.message = routingWarning
+            if startStatus.state == .running {
+                startStatus.state = .error
+            }
+        }
         return CloudflareOperationResult(settings: settings, status: startStatus, didChangeSettings: before != settings)
     }
 
@@ -289,6 +332,16 @@ public actor CloudflareManager {
         if result.status != 0 {
             let message = "Cloudflare tunnel failed to start: \(sanitized(result.stderr))"
             return status(messageOverride: message, forcedState: .error)
+        }
+        // launchctl bootstrap succeeding only means the job was loaded. If
+        // cloudflared then exits — bad config, unroutable hostname — reporting
+        // "started" next to a Stopped badge is worse than saying nothing.
+        guard isLaunchAgentRunning() else {
+            return status(
+                messageOverride:
+                    "Cloudflare tunnel was loaded but is not running. Check \(settings.configFilePath) and the cloudflared log.",
+                forcedState: .error
+            )
         }
         return status(messageOverride: "Cloudflare tunnel started.", forcedState: nil)
     }
@@ -361,6 +414,40 @@ public actor CloudflareManager {
         return status(messageOverride: "Cloudflare tunnel restarted.", forcedState: nil)
     }
 
+    /// Where `cloudflared tunnel login` writes the account origin certificate.
+    /// `TUNNEL_ORIGIN_CERT` overrides it, so honour that before assuming the
+    /// default, or a machine configured that way reads as logged out forever.
+    public static func originCertificatePath() -> String {
+        if let override = ProcessInfo.processInfo.environment["TUNNEL_ORIGIN_CERT"],
+            !override.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        {
+            return expandedPath(override)
+        }
+        return FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".cloudflared/cert.pem")
+            .path
+    }
+
+    /// Kicks off the browser-based Cloudflare login. The child process is not
+    /// awaited — it stays alive until the person finishes authorizing in the
+    /// browser — so the caller polls `status()` to notice the certificate.
+    public func logInToCloudflare() -> CloudflareTunnelStatus {
+        guard fileManager.fileExists(atPath: settings.cloudflaredPath) else {
+            return status(
+                messageOverride: "cloudflared is not installed at \(settings.cloudflaredPath).",
+                forcedState: .missingCloudflared
+            )
+        }
+        if let failure = runShellDetached(settings.cloudflaredPath, ["tunnel", "login"]) {
+            return status(messageOverride: "Could not start Cloudflare login: \(failure)", forcedState: .error)
+        }
+        return status(
+            messageOverride:
+                "Finish the Cloudflare login in your browser, then choose Check Login. Apple Core is waiting for \(Self.originCertificatePath()).",
+            forcedState: .needsLogin
+        )
+    }
+
     public static func defaultCloudflaredPath() -> String {
         let candidates = [
             "/opt/homebrew/bin/cloudflared",
@@ -375,14 +462,65 @@ public actor CloudflareManager {
         return hostname.isEmpty ? "" : "https://\(hostname)"
     }
 
+    /// Reduces whatever was typed into the Hostname field to the bare host
+    /// that `cloudflared tunnel route dns` accepts. People reasonably paste
+    /// the full connector URL they see elsewhere in Settings
+    /// (`https://mcp.example.com/mcp`), and before this the whole string was
+    /// handed to cloudflared, which rejected it as "not a valid hostname" —
+    /// visible only in the log, so the tunnel silently never routed.
+    public static func normalizedHostname(_ raw: String) -> String {
+        var value = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        for scheme in ["https://", "http://"] where value.hasPrefix(scheme) {
+            value = String(value.dropFirst(scheme.count))
+        }
+        // Drop path, query and fragment, then any userinfo or :port.
+        value = value.components(separatedBy: CharacterSet(charactersIn: "/?#"))[0]
+        if let atIndex = value.lastIndex(of: "@") {
+            value = String(value[value.index(after: atIndex)...])
+        }
+        value = value.components(separatedBy: ":")[0]
+        // A trailing dot is a legal FQDN root marker but cloudflared wants it gone.
+        while value.hasSuffix(".") {
+            value = String(value.dropLast())
+        }
+        return value
+    }
+
+    /// Returns a human-readable reason the hostname cannot be routed, or nil
+    /// when it is usable. Empty is treated as valid-but-absent so the pane can
+    /// distinguish "not configured yet" from "typed something wrong".
+    public static func hostnameValidationError(for raw: String) -> String? {
+        let host = normalizedHostname(raw)
+        if host.isEmpty {
+            return nil
+        }
+        let labels = host.components(separatedBy: ".")
+        if labels.count < 2 {
+            return "Enter a full hostname such as mcp.example.com, not just \(host)."
+        }
+        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyz0123456789-")
+        for label in labels {
+            if label.isEmpty {
+                return "Hostname has an empty part — check for a doubled dot."
+            }
+            if label.hasPrefix("-") || label.hasSuffix("-") {
+                return "Hostname part \"\(label)\" cannot start or end with a hyphen."
+            }
+            if label.rangeOfCharacter(from: allowed.inverted) != nil {
+                return "Hostname part \"\(label)\" has characters that are not letters, digits or hyphens."
+            }
+        }
+        return nil
+    }
+
     public static func normalizedSettings(_ settings: CloudflareSettings) -> CloudflareSettings {
         var normalized = settings
         if normalized.profileName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             normalized.profileName = "Personal tunnel"
         }
-        if normalized.hostname.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-            !normalized.domain.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        {
+        normalized.domain = normalizedHostname(normalized.domain)
+        normalized.hostname = normalizedHostname(normalized.hostname)
+        if normalized.hostname.isEmpty, !normalized.domain.isEmpty {
             normalized.hostname = "mcp.\(normalized.domain)"
         }
         if normalized.tunnelName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -473,6 +611,9 @@ public actor CloudflareManager {
         let credentialsFileExists = !credentialsPath.isEmpty && fileManager.fileExists(atPath: credentialsPath)
         let launchAgentInstalled = fileManager.fileExists(atPath: launchAgentURL.path)
         let launchAgentRunning = isLaunchAgentRunning()
+        let originCertificatePath = Self.originCertificatePath()
+        let loggedIn = fileManager.fileExists(atPath: originCertificatePath)
+        let hostnameError = Self.hostnameValidationError(for: settings.hostname)
 
         let inferredState: CloudflareTunnelState
         let inferredMessage: String
@@ -482,15 +623,24 @@ public actor CloudflareManager {
         } else if !cloudflaredInstalled {
             inferredState = .missingCloudflared
             inferredMessage = "cloudflared is not installed."
+        } else if !loggedIn {
+            inferredState = .needsLogin
+            inferredMessage = "Log in to Cloudflare to let Apple Core create a tunnel and route a hostname."
         } else if settings.tunnelId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !credentialsFileExists {
             inferredState = .needsTunnel
             inferredMessage = "Cloudflare tunnel has not been created or linked yet."
+        } else if let hostnameError {
+            inferredState = .error
+            inferredMessage = hostnameError
+        } else if settings.hostname.isEmpty {
+            inferredState = .needsConfig
+            inferredMessage = "Set a hostname so Cloudflare knows what address to route here."
         } else if !configFileExists || !launchAgentInstalled {
             inferredState = .needsConfig
             inferredMessage = "Cloudflare local config or LaunchAgent needs to be created."
         } else if launchAgentRunning {
             inferredState = .running
-            inferredMessage = "Cloudflare tunnel is running."
+            inferredMessage = "Cloudflare tunnel is running at \(Self.publicBaseURL(for: settings))."
         } else {
             inferredState = .stopped
             inferredMessage = "Cloudflare tunnel is configured but stopped."
@@ -512,7 +662,10 @@ public actor CloudflareManager {
             tunnelId: settings.tunnelId,
             hostname: settings.hostname,
             publicBaseURL: Self.publicBaseURL(for: settings),
-            createdByAppleCore: settings.createdByAppleCore
+            createdByAppleCore: settings.createdByAppleCore,
+            loggedIn: loggedIn,
+            originCertificatePath: originCertificatePath,
+            hostnameError: hostnameError
         )
     }
 
@@ -644,23 +797,31 @@ public actor CloudflareManager {
         return nil
     }
 
-    private func ensureDNSRoute() -> Bool {
+    /// Returns nil on success, or a message describing why the DNS route could
+    /// not be created. The caller surfaces that in the pane: routing failures
+    /// used to be logged and discarded, so a tunnel that could never resolve
+    /// still reported itself as started.
+    private func ensureDNSRoute() -> String? {
         let tunnel =
             settings.tunnelId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ? settings.tunnelName
             : settings.tunnelId
         let result = runShell(settings.cloudflaredPath, ["tunnel", "route", "dns", tunnel, settings.hostname])
         if result.status == 0 {
-            return true
+            return nil
         }
 
         let combined = "\(result.stdout)\n\(result.stderr)".lowercased()
         if combined.contains("already exists") || combined.contains("record exists") {
-            return true
+            return nil
         }
 
-        logMessage("CloudflareManager: DNS route setup failed: \(sanitized(result.stderr))")
-        return false
+        let detail = sanitized(result.stderr).isEmpty ? sanitized(result.stdout) : sanitized(result.stderr)
+        logMessage("CloudflareManager: DNS route setup failed: \(detail)")
+        if combined.contains("cert.pem") || combined.contains("login") || combined.contains("origincert") {
+            return "Cloudflare login required before \(settings.hostname) can be routed. Use Log In to Cloudflare."
+        }
+        return "Could not route \(settings.hostname) to this tunnel: \(detail)"
     }
 
     private func isLaunchAgentRunning() -> Bool {
