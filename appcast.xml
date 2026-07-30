@@ -7,6 +7,79 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <description>Updates for Apple Core - a native macOS MCP server for Apple services</description>
     <language>en</language>
     <item>
+      <title>Version 1.0.3</title>
+      <link>https://github.com/oliverames/apple-core/releases/tag/v1.0.3</link>
+      <sparkle:version>4</sparkle:version>
+      <sparkle:shortVersionString>1.0.3</sparkle:shortVersionString>
+      <description><![CDATA[
+<style>
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Helvetica, Arial, sans-serif;
+    font-size: 13px;
+    line-height: 1.55;
+    color: #1d1d1f;
+    margin: 0;
+    padding: 0;
+}
+h1, h2, h3 { color: #000; font-weight: 600; }
+h1 { font-size: 18px; margin: 0 0 10px 0; }
+h2 {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    color: #6e6e73;
+    margin: 18px 0 6px 0;
+}
+h3 { font-size: 13px; margin: 14px 0 6px 0; }
+p { margin: 0 0 10px 0; }
+ul, ol { padding-left: 20px; margin: 0 0 10px 0; }
+li { margin-bottom: 5px; }
+li > strong:first-child { color: #000; }
+code {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    background: #f2f2f7;
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-size: 12px;
+}
+a { color: #0071e3; text-decoration: none; }
+a:hover { text-decoration: underline; }
+hr { border: 0; border-top: 1px solid #e5e5ea; margin: 16px 0; }
+@media (prefers-color-scheme: dark) {
+    body { color: #f5f5f7; }
+    h1, h2, h3, li > strong:first-child { color: #fff; }
+    h2 { color: #98989d; }
+    code { background: #2c2c2e; }
+    hr { border-top-color: #38383a; }
+}
+</style>
+<h1>Apple Core 1.0.3</h1>
+<p>Apple Core 1.0.3 repairs automatic updates and rebuilds Cloudflare Tunnel setup around a guided flow.</p>
+<h2>Update this release manually</h2>
+<p>The update signing key has changed. Builds from 1.0.0 through 1.0.2 carry a public key whose private half is no longer available, so they cannot validate the update feed and show "The update feed is improperly signed and could not be validated." Download 1.0.3 from <a href="https://github.com/oliverames/apple-core/releases/latest">Releases</a> and replace the app once. Automatic updates work normally from 1.0.3 onward.</p>
+<p>Earlier notes claimed this was fixed in 1.0.1. That was wrong: the feed was well-formed, but it was signed with a different key than the one shipped in the app, so no release could ever verify it.</p>
+<h2>Fixes</h2>
+<ul>
+<li><strong>Hostnames with a scheme or path are accepted</strong>: pasting <code class="notranslate">https://mcp.example.com/mcp</code> into the Cloudflare Hostname field now reduces to <code class="notranslate">mcp.example.com</code>. Previously the whole string went to <code class="notranslate">cloudflared tunnel route dns</code>, which rejected it as an invalid hostname, and the failure appeared only in the log.</li>
+<li><strong>Routing failures are visible</strong>: a DNS route that cannot be created is reported in the Cloudflare pane instead of being discarded. A tunnel that starts without routing anywhere is no longer reported as a success.</li>
+<li><strong>Tunnel status tells the truth</strong>: the pane no longer shows "Cloudflare tunnel started" beside a Stopped badge. Loading the LaunchAgent is now confirmed to have produced a running process before the app claims it started.</li>
+</ul>
+<h2>Cloudflare setup</h2>
+<ul>
+<li><strong>A Before You Start checklist</strong> shows whether <code class="notranslate">cloudflared</code> is installed and whether you are signed in to Cloudflare, with the exact command or button to fix each.</li>
+<li><strong>Log In to Cloudflare</strong> runs the browser sign-in from inside the app. Apple Core detects the resulting account certificate rather than failing later with an opaque error.</li>
+<li><strong>Set Up &amp; Start</strong> replaces Start Tunnel as the primary action, and runs the whole sequence: find or create the named tunnel, route the hostname in DNS, write the config and LaunchAgent, then start. Start Tunnel skipped DNS routing and now lives in Tunnel Actions as "Start Tunnel Only".</li>
+<li><strong>Every field explains itself</strong>, and the Hostname field shows inline why a value cannot be routed.</li>
+</ul>
+      ]]></description>
+      <pubDate>Thu, 30 Jul 2026 14:47:14 +0000</pubDate>
+      <enclosure url="https://github.com/oliverames/apple-core/releases/download/v1.0.3/Apple.Core-1.0.3.zip"
+                 length="8726584"
+                 type="application/octet-stream"
+                 sparkle:edSignature="Plk7TovCLR4TBgn553dFYYt3IvhK86OFNgjukU44Bol8arQHrJp0ok5BqCDXOZUauY1i0h9nj7wLDSOi5OL1Cg==" />
+      <sparkle:minimumSystemVersion>15.1</sparkle:minimumSystemVersion>
+    </item>
+    <item>
       <title>Version 1.0.2</title>
       <link>https://github.com/oliverames/apple-core/releases/tag/v1.0.2</link>
       <sparkle:version>3</sparkle:version>
@@ -194,6 +267,6 @@ hr { border: 0; border-top: 1px solid #e5e5ea; margin: 16px 0; }
     <!-- `Scripts/release.sh appcast` prepends signed release entries here. -->
   </channel>
 </rss><!-- sparkle-signatures:
-edSignature: G19Nb109IAA1P7w3DSf66Zid2cuGxA3M4nXs4G5DStDpJ86niTFlyDxP0mypt454TkXP7rx0OLogVjMhlyLqCQ==
-length: 9558
+edSignature: iXrr5NCZ4FLpIA5DkYJ8cM2CiF7U+PP+Yf94RGf+KLwWRlyFEqRTmawzGDZDFREAHvC8QXGGff6TKpMqpeIJAA==
+length: 14105
 -->
