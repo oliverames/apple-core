@@ -7,6 +7,73 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <description>Updates for Apple Core - a native macOS MCP server for Apple services</description>
     <language>en</language>
     <item>
+      <title>Version 1.0.5</title>
+      <link>https://github.com/oliverames/apple-core/releases/tag/v1.0.5</link>
+      <sparkle:version>6</sparkle:version>
+      <sparkle:shortVersionString>1.0.5</sparkle:shortVersionString>
+      <description><![CDATA[
+<style>
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Helvetica, Arial, sans-serif;
+    font-size: 13px;
+    line-height: 1.55;
+    color: #1d1d1f;
+    margin: 0;
+    padding: 0;
+}
+h1, h2, h3 { color: #000; font-weight: 600; }
+h1 { font-size: 18px; margin: 0 0 10px 0; }
+h2 {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    color: #6e6e73;
+    margin: 18px 0 6px 0;
+}
+h3 { font-size: 13px; margin: 14px 0 6px 0; }
+p { margin: 0 0 10px 0; }
+ul, ol { padding-left: 20px; margin: 0 0 10px 0; }
+li { margin-bottom: 5px; }
+li > strong:first-child { color: #000; }
+code {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    background: #f2f2f7;
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-size: 12px;
+}
+a { color: #0071e3; text-decoration: none; }
+a:hover { text-decoration: underline; }
+hr { border: 0; border-top: 1px solid #e5e5ea; margin: 16px 0; }
+@media (prefers-color-scheme: dark) {
+    body { color: #f5f5f7; }
+    h1, h2, h3, li > strong:first-child { color: #fff; }
+    h2 { color: #98989d; }
+    code { background: #2c2c2e; }
+    hr { border-top-color: #38383a; }
+}
+</style>
+<h1>Apple Core 1.0.5</h1>
+<p>Apple Core 1.0.5 makes <code class="notranslate">/favicon.ico</code> serve a real icon file, so clients that read connector branding from the origin can actually decode it.</p>
+<h2>Fixes</h2>
+<ul>
+<li><strong><code class="notranslate">/favicon.ico</code> returns a real ICO container</strong>: the route answered with a bare 32x32 PNG body labelled <code class="notranslate">image/png</code>. The path claims an ICO container and the content type disagreed with both the path and the bytes, which strict icon resolvers reject outright. The rendered PNG is now wrapped in a genuine single-entry ICO and served as <code class="notranslate">image/x-icon</code>. Every other favicon size is unchanged.</li>
+<li><strong>The landing page advertises fewer, smaller icons</strong>: it listed all seven PNG sizes, which put a 256x256 image ahead of anything cheap. Icon resolvers take the first usable declaration, so the page now offers the ICO plus the 16 and 32 pixel PNGs. All sizes remain served for clients that request them directly.</li>
+</ul>
+<h2>Notes</h2>
+<p>These routes stay unauthenticated and unconditional, so pointing your own Cloudflare Tunnel at Apple Core vends the Apple Core logo from your own domain with no extra configuration.</p>
+<p>If your MCP client still shows a different icon after updating, the cause is likely outside Apple Core: some clients resolve a connector's icon at the registrable domain rather than the exact hostname, so a subdomain's own favicon may never be requested.</p>
+<h2>Upgrading</h2>
+<p>1.0.3 and later update automatically. Installs on 1.0.0 through 1.0.2 still need the one-time manual reinstall described in the <a href="v1.0.3.md">1.0.3 notes</a>, because their update signing key no longer matches the feed.</p>
+      ]]></description>
+      <pubDate>Thu, 30 Jul 2026 17:13:53 +0000</pubDate>
+      <enclosure url="https://github.com/oliverames/apple-core/releases/download/v1.0.5/Apple.Core-1.0.5.zip"
+                 length="8733658"
+                 type="application/octet-stream"
+                 sparkle:edSignature="avXmyDjB+Ve7bucD4SzDKZY3i121rpFEXiPDLXCI/17DN1urfGR8ZxQIMEjHIpaZgCUrjgEev+Q9bZXvB0+PAw==" />
+      <sparkle:minimumSystemVersion>15.1</sparkle:minimumSystemVersion>
+    </item>
+    <item>
       <title>Version 1.0.4</title>
       <link>https://github.com/oliverames/apple-core/releases/tag/v1.0.4</link>
       <sparkle:version>5</sparkle:version>
@@ -332,6 +399,6 @@ hr { border: 0; border-top: 1px solid #e5e5ea; margin: 16px 0; }
     <!-- `Scripts/release.sh appcast` prepends signed release entries here. -->
   </channel>
 </rss><!-- sparkle-signatures:
-edSignature: b7IiQH5B+p/6a7DoYfkks0sdvnlf4QVuPHmBdjSlDLvOtfKjRPp/7uHzREq8dD2IV9okiyA4AhYdy8PnCe9KBg==
-length: 17771
+edSignature: z6izmD11HjyLvaWQuOwXTHL4mr5yxeoU1ZWNow3qE+q+oIEqoOTbRYoNZnapPF5OWJ6Omb1mw0SgGB4Tq7QQCg==
+length: 21487
 -->
