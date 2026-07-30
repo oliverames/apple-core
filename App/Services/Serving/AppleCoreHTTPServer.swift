@@ -958,19 +958,19 @@ public actor AppleCoreHTTPServer {
             "<link rel=\"icon\" type=\"image/png\" sizes=\"\(size)x\(size)\" href=\"/favicon-\(size)x\(size).png\">"
         }.joined(separator: "\n")
         let html = """
-        <!doctype html>
-        <html lang="en">
-        <head>
-          <meta charset="utf-8">
-          <meta name="viewport" content="width=device-width, initial-scale=1">
-          <title>Apple Core MCP</title>
-          <link rel="icon" href="/favicon.ico" sizes="any">
-          \(iconLinks)
-          <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
-        </head>
-        <body><h1>Apple Core MCP</h1></body>
-        </html>
-        """
+            <!doctype html>
+            <html lang="en">
+            <head>
+              <meta charset="utf-8">
+              <meta name="viewport" content="width=device-width, initial-scale=1">
+              <title>Apple Core MCP</title>
+              <link rel="icon" href="/favicon.ico" sizes="any">
+              \(iconLinks)
+              <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
+            </head>
+            <body><h1>Apple Core MCP</h1></body>
+            </html>
+            """
         var headers = connectorIconCacheHeaders
         headers[.contentType] = "text/html; charset=utf-8"
         return HTTPResponse(
