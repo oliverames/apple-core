@@ -100,11 +100,11 @@ public actor AppleCoreHTTPServer {
         handler.appendRoute("HEAD /favicon-256x256.png") { _ in Self.connectorIconResponse(size: 256, headOnly: true) }
 
         handler.appendRoute("GET /favicon.ico") { _ in
-            Self.connectorIconResponse(size: 32)
+            Self.connectorIconICOResponse()
         }
 
         handler.appendRoute("HEAD /favicon.ico") { _ in
-            Self.connectorIconResponse(size: 32, headOnly: true)
+            Self.connectorIconICOResponse(headOnly: true)
         }
 
         handler.appendRoute("GET /apple-touch-icon.png") { _ in
@@ -954,7 +954,10 @@ public actor AppleCoreHTTPServer {
     }
 
     private static func connectorLandingPageResponse(headOnly: Bool = false) -> HTTPResponse {
-        let iconLinks = connectorIconSizes.map { size in
+        // Advertise only the small variants. Icon resolvers take the first
+        // usable declaration, and listing all seven sizes put a 256x256 PNG
+        // ahead of anything cheap. Every size stays served for other consumers.
+        let iconLinks = [16, 32].map { size in
             "<link rel=\"icon\" type=\"image/png\" sizes=\"\(size)x\(size)\" href=\"/favicon-\(size)x\(size).png\">"
         }.joined(separator: "\n")
         let html = """
@@ -964,7 +967,7 @@ public actor AppleCoreHTTPServer {
               <meta charset="utf-8">
               <meta name="viewport" content="width=device-width, initial-scale=1">
               <title>Apple Core MCP</title>
-              <link rel="icon" href="/favicon.ico" sizes="any">
+              <link rel="icon" href="/favicon.ico" sizes="32x32">
               \(iconLinks)
               <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
             </head>
@@ -986,6 +989,49 @@ public actor AppleCoreHTTPServer {
         }
         var headers = connectorIconCacheHeaders
         headers[.contentType] = "image/png"
+        headers[HTTPHeader("Content-Length")] = String(data.count)
+        headers[HTTPHeader("Cross-Origin-Resource-Policy")] = "cross-origin"
+        return HTTPResponse(statusCode: .ok, headers: headers, body: headOnly ? Data() : data)
+    }
+
+    /// `/favicon.ico` used to answer with a bare PNG body typed `image/png`.
+    /// Strict icon resolvers reject that: the path claims an ICO container and
+    /// the content type disagrees with both the path and the bytes. Wrap the
+    /// PNG in a real single-entry ICO instead. PNG-compressed ICO entries are
+    /// supported everywhere that matters and keep the file near 4 KB, matching
+    /// sosumi.ai, whose connector icon does render in Claude.
+    private static func connectorIconICO(size: Int = 32) -> Data? {
+        guard let png = connectorIconPNG(size: size) else { return nil }
+
+        var data = Data()
+        func appendUInt16(_ value: UInt16) { withUnsafeBytes(of: value.littleEndian) { data.append(contentsOf: $0) } }
+        func appendUInt32(_ value: UInt32) { withUnsafeBytes(of: value.littleEndian) { data.append(contentsOf: $0) } }
+
+        // ICONDIR: reserved, type (1 = icon), image count.
+        appendUInt16(0)
+        appendUInt16(1)
+        appendUInt16(1)
+
+        // ICONDIRENTRY. A dimension of 256 is encoded as 0.
+        data.append(UInt8(size == 256 ? 0 : size))
+        data.append(UInt8(size == 256 ? 0 : size))
+        data.append(0)  // palette colour count, 0 for truecolour
+        data.append(0)  // reserved
+        appendUInt16(1)  // colour planes
+        appendUInt16(32)  // bits per pixel
+        appendUInt32(UInt32(png.count))
+        appendUInt32(22)  // byte offset of the image data: 6 + 16
+
+        data.append(png)
+        return data
+    }
+
+    private static func connectorIconICOResponse(headOnly: Bool = false) -> HTTPResponse {
+        guard let data = connectorIconICO() else {
+            return textResponse(.internalServerError, "Icon unavailable\n")
+        }
+        var headers = connectorIconCacheHeaders
+        headers[.contentType] = "image/x-icon"
         headers[HTTPHeader("Content-Length")] = String(data.count)
         headers[HTTPHeader("Cross-Origin-Resource-Policy")] = "cross-origin"
         return HTTPResponse(statusCode: .ok, headers: headers, body: headOnly ? Data() : data)

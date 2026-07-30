@@ -1,5 +1,46 @@
 # Apple Core worklog
 
+## 2026-07-30 - Serve a real ICO container at /favicon.ico
+
+**Context**: Investigating why no `*.amesvt.com` MCP connector rendered its own
+icon in Claude. The measured cause across the other connectors was that Claude
+resolves a connector's icon at the registrable domain and fell back to
+`amesvt.com`, whose `/favicon.ico` returned an HTML page with `HTTP 200`. While
+auditing Apple Core's own icon surface against that finding, a separate defect
+turned up here.
+
+**What changed**: `/favicon.ico` was answering with a bare 32x32 PNG body typed
+`image/png`. The path claims an ICO container and the content type disagreed
+with both the path and the bytes, which strict icon resolvers reject. Added
+`connectorIconICO`, which wraps the rendered PNG in a real single-entry ICO
+(ICONDIR plus one ICONDIRENTRY, PNG-compressed), and served it as
+`image/x-icon`. The landing page now advertises `/favicon.ico` plus the 16 and
+32 pixel PNGs instead of all seven sizes, so a resolver taking the first usable
+declaration no longer meets a 256x256 PNG first. Every size stays served.
+
+**Decisions made**: Kept render-at-request-time from the canonical `AppIcon`
+asset rather than adding generated icon sources, preserving the 2026-07-29
+decision. PNG-compressed ICO entries are supported everywhere that matters and
+keep the file near 1.5 KB. The icon routes stay unauthenticated and
+unconditional, so a third party who installs Apple Core and points their own
+Cloudflare Tunnel at it vends the Apple Core logo from their own domain with no
+extra configuration.
+
+**Verification**: `build_macos` succeeded with zero warnings and zero errors.
+The ICO container logic was extracted verbatim into a standalone Swift script
+and run against the canonical 256px app icon: `file` reports "MS Windows icon
+resource - 1 icon, 32x32 with PNG image data" at 1,544 bytes, and ImageMagick
+decodes it. Not verified end to end over the tunnel: `applecore.amesvt.com`
+currently returns 404 at every path including `/mcp`, so nothing is serving
+behind that hostname yet.
+
+**Open questions**: Whether a correct same-origin icon is enough, or whether
+Claude resolves only at the registrable domain. If the latter, no
+`*.amesvt.com` connector can carry distinct branding. Retest once the tunnel is
+up and `amesvt-website` has deployed its apex icon fix.
+
+---
+
 ## 2026-07-29 - Add hosted connector icon discovery
 
 **What changed**: The HTTP server now exposes the existing Apple Core app icon through unauthenticated favicon routes at 16, 32, 48, 64, 96, 128, and 256 pixels, plus `/favicon.ico`, `/apple-touch-icon.png`, and a versioned 256-pixel asset. A small root landing page advertises the complete icon set so cloud connector clients and favicon crawlers can discover the branding without authenticating to MCP.
