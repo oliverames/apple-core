@@ -1,5 +1,60 @@
 # Apple Core worklog
 
+## 2026-07-30 - Released 1.0.5, and fixed the CI cache that blocked the gate
+
+**What changed**: Shipped 1.0.5 with the `/favicon.ico` container fix from the
+entry below. Also keyed the Xcode DerivedData cache on the runner image version
+in `ci.yml`.
+
+**The release gate failed first, and it was not the code.** Three commits in a
+row failed CI, including a docs-only commit touching nothing but `WORKLOG.md`,
+with `could not build module '_DarwinFoundation1'` and exit 65. The real error
+was further up the log: `module.modulemap has been modified since the module
+file was built: mtime changed (was 1784095471, now 1784527055)`. GitHub had
+shipped a new `macos-26` image, and the restored 528 MiB DerivedData cache held
+`.pcm` files precompiled against the previous SDK. The cache key had no image
+component, so every run kept restoring the poisoned cache. Cleared by deleting
+the cache with `gh cache delete`, then re-running the failed jobs, which went
+green with no code change. `ImageVersion` is now in both `key` and
+`restore-keys` so a new image cannot fall back to an old image's module cache.
+
+**Decisions made**: Deleted the stale cache and re-ran rather than re-pointing
+the pushed `v1.0.5` tag, so the tag still names the commit that was actually
+built, signed, and notarized.
+
+**Verification**: Preflight clean — `swift format lint --strict` exit 0,
+`gitleaks` no leaks across 165 commits, `xcodebuild test` `** TEST SUCCEEDED **`.
+`Scripts/release.sh all` notarized (submission
+`3daee39a-1cd5-4878-8d86-75e544f5e017`, Accepted), stapled, Developer ID valid,
+Gatekeeper `accepted / source=Notarized Developer ID`.
+
+Functionally verified the fix on the exported signed build before publishing, by
+launching it against `127.0.0.1:8756`: `/favicon.ico` returns `image/x-icon`,
+1,547 bytes, `file` reports "MS Windows icon resource - 1 icon, 32x32 with PNG
+image data". `/favicon-32x32.png` still returns a plain PNG, and the landing
+page emits four icon links with the ICO first. Symbol inspection was useless
+here — the Release build strips the private statics, so neither the new nor the
+pre-existing `connectorIcon*` symbols appear in the binary.
+
+Release workflow green on re-run, GitHub release published with
+`Apple.Core-1.0.5.zip`, appcast signed and live at
+`https://oliverames.github.io/apple-core/appcast.xml` with a well-formed
+`sparkle:shortVersionString` 1.0.5 item and an EdDSA signature. Sparkle keys
+were confirmed matching before signing (`NIhfyD083qOzYZteoMsBOljz/u7/ptMziiHheqt3mns=`
+in both the login Keychain and `App/Info.plist`), so this is not a repeat of the
+1.0.0–1.0.2 mismatch.
+
+**Left off at**: `applecore.amesvt.com` still serves the 1.0.4 response
+(`/favicon.ico` returns `image/png`, 1,525 bytes, plain PNG). home-server has
+not taken the Sparkle update yet. The live endpoint will only show the fix once
+that Mac updates to 1.0.5.
+
+**Open questions**: Unchanged from the entry below. Even after home-server
+updates, Claude may still not render this icon, because the sibling-connector
+retest showed a correct same-origin icon does not win.
+
+---
+
 ## 2026-07-30 - Serve a real ICO container at /favicon.ico
 
 **Context**: Investigating why no `*.amesvt.com` MCP connector rendered its own
