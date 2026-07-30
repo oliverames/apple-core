@@ -225,7 +225,20 @@ public actor CloudflareManager {
         )
         let result = await manager.reconcileTunnel()
         config.cloudflare = result.settings
-        config.publicBaseURL = CloudflareManager.publicBaseURL(for: result.settings)
+        let publicBaseURL = CloudflareManager.publicBaseURL(for: result.settings)
+        config.publicBaseURL = publicBaseURL
+        // The OAuth issuer and the CORS origin list are both derived from the
+        // public base URL, so a config saved before the hostname existed keeps
+        // serving discovery metadata pointing at localhost. Re-merge on every
+        // startup reconciliation rather than only when the pane is used.
+        var origins = config.allowedOrigins ?? []
+        for origin in ServingConfigManager.defaultAllowedOrigins(
+            port: config.port ?? 8756,
+            publicBaseURL: publicBaseURL
+        ) where !origins.contains(origin) {
+            origins.append(origin)
+        }
+        config.allowedOrigins = origins.sorted()
         ServingConfigManager.save(config)
         return result
     }

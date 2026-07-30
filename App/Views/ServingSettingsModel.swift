@@ -173,7 +173,7 @@ final class ServingSettingsModel: ObservableObject {
     }
 
     func prepareCloudflareConfiguration() async {
-        config.publicBaseURL = CloudflareManager.publicBaseURL(for: cloudflare)
+        setPublicBaseURL(CloudflareManager.publicBaseURL(for: cloudflare))
         let result = await cloudflareManager().prepareLocalConfiguration()
         applyCloudflareResult(result)
     }
@@ -192,7 +192,7 @@ final class ServingSettingsModel: ObservableObject {
         var settings = cloudflare
         settings.enabled = enabled
         cloudflare = settings
-        config.publicBaseURL = CloudflareManager.publicBaseURL(for: settings)
+        setPublicBaseURL(CloudflareManager.publicBaseURL(for: settings))
         let result = await cloudflareManager().reconcileTunnel()
         applyCloudflareResult(result)
     }
@@ -218,7 +218,25 @@ final class ServingSettingsModel: ObservableObject {
         if settings != cloudflare {
             cloudflare = settings
         }
-        config.publicBaseURL = CloudflareManager.publicBaseURL(for: settings)
+        setPublicBaseURL(CloudflareManager.publicBaseURL(for: settings))
+    }
+
+    /// Records the tunnel's public base URL and makes sure the matching origin
+    /// is allowed. The two were tracked independently, so a config written
+    /// before the hostname existed kept a localhost-only origin list and an
+    /// OAuth issuer of `http://localhost:<port>` — cloud clients then followed
+    /// discovery metadata that pointed at the user's own machine.
+    private func setPublicBaseURL(_ url: String) {
+        config.publicBaseURL = url
+        let required = ServingConfigManager.defaultAllowedOrigins(
+            port: port,
+            publicBaseURL: url
+        )
+        var origins = config.allowedOrigins ?? []
+        for origin in required where !origins.contains(origin) {
+            origins.append(origin)
+        }
+        config.allowedOrigins = origins.sorted()
     }
 
     func stopCloudflareTunnel() async {
