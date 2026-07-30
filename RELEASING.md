@@ -82,7 +82,15 @@ Apple Core ships Sparkle 2 (mirroring ping-warden's setup): `SPUStandardUpdaterC
 /usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' App/Info.plist
 ```
 
-  Keep an off-Keychain backup of the private key so a lost Keychain cannot force another rotation on everyone.
+  The private key is backed up in 1Password as the Secure Note **"Apple Core Sparkle EdDSA Private Key"** in the Development vault, alongside the sibling Image Relay item. The last line of that note is the key; the lines above it record which public key it matches and why. Restore and verify with:
+
+```bash
+op read "op://Development/Apple Core Sparkle EdDSA Private Key/notesPlain" | tail -1 > /tmp/sparkle.key
+sign_update --ed-key-file /tmp/sparkle.key <file>   # signature must verify against SUPublicEDKey
+rm /tmp/sparkle.key
+```
+
+  Verified 2026-07-30 by signing with the vaulted copy and checking the signature against the shipped public key. Losing the login Keychain must never again force a rotation on everyone.
 - **Per release**, after `package` (and `notarize`/`staple` if signing):
 
 ```bash
