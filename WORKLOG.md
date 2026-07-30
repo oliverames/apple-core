@@ -1,5 +1,23 @@
 # Apple Core worklog
 
+## 2026-07-30 - Released 1.0.6 with foreground-safe permission requests
+
+**What changed**: Fixed the fresh-install service controls on macOS Tahoe. The menu bar and Settings previously called `NSApp.activate(ignoringOtherApps:)` and immediately requested TCC access, but activation is asynchronous and not guaranteed. Tahoe could return a denial without showing a prompt or writing a privacy record. Apple Core now temporarily becomes a regular app, requests activation with the current API, waits until `NSApp.isActive`, and only then calls the service activation method.
+
+Calendar, Contacts, and Reminders now reject a false permission result instead of leaving the service checked. Mail and Notes run read-only Automation probes when enabled. Messages requests Automation before the existing `chat.db` access flow. Capture attempts Camera, Microphone, and Screen Recording even if one of the other grants fails. Both control surfaces wait for activation to finish before updating the server, so a rejected switch cannot leave the service exposed internally.
+
+**Decisions made**: Kept Shortcuts and Utilities prompt-free because their current implementations use `/usr/bin/shortcuts` and `NSSound`, neither of which needs an Apple Core TCC grant. Maps continues to share Location access. Added one explicit permission inventory for every compiled service, including empty entries, and a test that fails when that inventory drifts.
+
+**Verification**: `swift format lint --strict --recursive .`, `git diff --check`, plist linting, the complete Xcode test suite, and Gitleaks across 171 commits passed locally. The signed production build is 1.0.6 build 7. Apple accepted notarization submission `8d721d6f-c1f3-4346-b297-15c09523bd73`; Developer ID, Gatekeeper, stapler, ZIP checksum, and Sparkle appcast signature checks passed. GitHub's release workflow `30582818311` passed its macOS 26 build, tests, lint, and full-history secret scan. The public ZIP downloaded with SHA-256 `395c9912128cac5bf94e7976f54f20ecd06cce2dbca31a084410e591f1a4fb05`, matching the local notarized artifact. The signed 1.0.6 appcast is live on GitHub Pages and matches the committed feed byte for byte.
+
+Home Server downloaded that public ZIP and matched the same SHA-256 before installation. `/Applications/Apple Core.app` reports 1.0.6 build 7, passes Gatekeeper and stapler validation, and runs under the loaded `com.oliverames.applecore.launchagent`. The existing Cloudflare process stayed running. The local landing page returns HTTP 200, and unauthenticated `/mcp` returns HTTP 401.
+
+**Left off at**: The final Home Server consent pass is pending. Apple Core's TCC records and service switches were reset, every service is off, and the 1.0.6 Settings window is open for the user to approve each macOS prompt.
+
+**Open questions**: **NEW:** none in the implementation. Completion still requires recording the fresh-state permission results on Home Server.
+
+---
+
 ## 2026-07-30 - Released 1.0.5, and fixed the CI cache that blocked the gate
 
 **What changed**: Shipped 1.0.5 with the `/favicon.ico` container fix from the
