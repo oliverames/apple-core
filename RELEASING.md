@@ -71,7 +71,18 @@ VERSION=1.0.0 Scripts/release.sh upload
 
 Apple Core ships Sparkle 2 (mirroring ping-warden's setup): `SPUStandardUpdaterController` in the app, "Check for Updates…" in the status menu, and a signed appcast served from GitHub Pages at `https://oliverames.github.io/apple-core/appcast.xml` (the `SUFeedURL` in `App/Info.plist`).
 
-- **Keys (one-time, done 2026-07-20):** the EdDSA keypair was generated with Sparkle's `generate_keys`; the public key is in `App/Info.plist` (`SUPublicEDKey`) and the private key lives in the login Keychain as "Private key for signing Sparkle updates". Never export or commit the private key.
+- **Keys (rotated 2026-07-30, for 1.0.3):** the EdDSA keypair lives in the login Keychain as "Private key for signing Sparkle updates"; the matching public key is in `App/Info.plist` (`SUPublicEDKey`). Never commit the private key.
+
+  Releases 1.0.0 through 1.0.2 shipped `qMLqpF6nJjBtvt0UMuGfe6zy4/psV9nTA/YHsXU4uqs=`, whose private half was absent from the login Keychain, from 1Password, and from disk, while the appcast was signed with the Keychain key. Every one of those builds therefore rejected the feed as improperly signed. 1.0.3 adopts the Keychain key `NIhfyD083qOzYZteoMsBOljz/u7/ptMziiHheqt3mns=` and those installs need a one-time manual reinstall.
+
+  **Before signing a release, confirm the two keys still match**, because a mismatch is invisible until a user tries to update:
+
+```bash
+"$(Scripts/release.sh --print-sign-update-path 2>/dev/null || find ~/Library/Developer/Xcode/DerivedData -type f -name generate_keys -path '*Sparkle*' | head -1)" -p
+/usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' App/Info.plist
+```
+
+  Keep an off-Keychain backup of the private key so a lost Keychain cannot force another rotation on everyone.
 - **Per release**, after `package` (and `notarize`/`staple` if signing):
 
 ```bash
