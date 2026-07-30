@@ -13,7 +13,7 @@
 	<key>SUFeedURL</key>
 	<string>https://oliverames.github.io/apple-core/appcast.xml</string>
 	<key>SUPublicEDKey</key>
-	<string>qMLqpF6nJjBtvt0UMuGfe6zy4/psV9nTA/YHsXU4uqs=</string>
+	<string>NIhfyD083qOzYZteoMsBOljz/u7/ptMziiHheqt3mns=</string>
 	<key>SURequireSignedFeed</key>
 	<true/>
 	<key>SUVerifyUpdateBeforeExtraction</key>
