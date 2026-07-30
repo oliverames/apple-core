@@ -7,6 +7,76 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <description>Updates for Apple Core - a native macOS MCP server for Apple services</description>
     <language>en</language>
     <item>
+      <title>Version 1.0.6</title>
+      <link>https://github.com/oliverames/apple-core/releases/tag/v1.0.6</link>
+      <sparkle:version>7</sparkle:version>
+      <sparkle:shortVersionString>1.0.6</sparkle:shortVersionString>
+      <description><![CDATA[
+<style>
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Helvetica, Arial, sans-serif;
+    font-size: 13px;
+    line-height: 1.55;
+    color: #1d1d1f;
+    margin: 0;
+    padding: 0;
+}
+h1, h2, h3 { color: #000; font-weight: 600; }
+h1 { font-size: 18px; margin: 0 0 10px 0; }
+h2 {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    color: #6e6e73;
+    margin: 18px 0 6px 0;
+}
+h3 { font-size: 13px; margin: 14px 0 6px 0; }
+p { margin: 0 0 10px 0; }
+ul, ol { padding-left: 20px; margin: 0 0 10px 0; }
+li { margin-bottom: 5px; }
+li > strong:first-child { color: #000; }
+code {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    background: #f2f2f7;
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-size: 12px;
+}
+a { color: #0071e3; text-decoration: none; }
+a:hover { text-decoration: underline; }
+hr { border: 0; border-top: 1px solid #e5e5ea; margin: 16px 0; }
+@media (prefers-color-scheme: dark) {
+    body { color: #f5f5f7; }
+    h1, h2, h3, li > strong:first-child { color: #fff; }
+    h2 { color: #98989d; }
+    code { background: #2c2c2e; }
+    hr { border-top-color: #38383a; }
+}
+</style>
+<h1>Apple Core 1.0.6</h1>
+<p>Apple Core 1.0.6 makes macOS privacy prompts work from both the menu bar and Settings on a Mac with no existing grants.</p>
+<h2>Fixes</h2>
+<ul>
+<li>Apple Core now becomes a regular foreground app and waits for macOS to confirm that it is active before requesting access. Earlier builds called the permission API immediately after asking to become active, and Tahoe could deny that request without displaying a prompt.</li>
+<li>Calendar, Contacts, and Reminders now check the result of the permission request. A denied request can no longer leave the service checked and available to the MCP server.</li>
+<li>Mail and Notes now request their Automation grants when you enable the service. Messages requests Automation before guiding you through access to <code class="notranslate">chat.db</code>.</li>
+<li>Capture requests Camera, Microphone, and Screen Recording access even if one of the other grants is denied.</li>
+<li>The menu bar and Settings now update the server only after activation finishes. If macOS denies access, the switch returns to off and the server keeps the service unavailable.</li>
+</ul>
+<h2>Permission coverage</h2>
+<p>Calendar, Contacts, Location, and Reminders use their native macOS permission prompts. Maps uses the Location grant. Mail and Notes use Automation, while Messages uses Automation plus the existing database picker. Capture uses Camera, Microphone, and Screen Recording.</p>
+<p>Shortcuts and Utilities do not need a macOS privacy grant, so they enable without a permission prompt.</p>
+<h2>Upgrading</h2>
+<p>1.0.3 and later update automatically. Installs on 1.0.0 through 1.0.2 still need the one-time manual reinstall described in the <a href="v1.0.3.md">1.0.3 notes</a>, because their update signing key no longer matches the feed.</p>
+      ]]></description>
+      <pubDate>Thu, 30 Jul 2026 21:17:16 +0000</pubDate>
+      <enclosure url="https://github.com/oliverames/apple-core/releases/download/v1.0.6/Apple.Core-1.0.6.zip"
+                 length="8745175"
+                 type="application/octet-stream"
+                 sparkle:edSignature="LiNoS8ZTS7kvEsQGz22But2nDMWh50PowA0pJvsVEIrtaF/0fHw5q763I5wM7gZZ6UQedB1tpQJW0lBtbumeCg==" />
+      <sparkle:minimumSystemVersion>15.1</sparkle:minimumSystemVersion>
+    </item>
+    <item>
       <title>Version 1.0.5</title>
       <link>https://github.com/oliverames/apple-core/releases/tag/v1.0.5</link>
       <sparkle:version>6</sparkle:version>
@@ -399,6 +469,6 @@ hr { border: 0; border-top: 1px solid #e5e5ea; margin: 16px 0; }
     <!-- `Scripts/release.sh appcast` prepends signed release entries here. -->
   </channel>
 </rss><!-- sparkle-signatures:
-edSignature: z6izmD11HjyLvaWQuOwXTHL4mr5yxeoU1ZWNow3qE+q+oIEqoOTbRYoNZnapPF5OWJ6Omb1mw0SgGB4Tq7QQCg==
-length: 21487
+edSignature: GV1j1AX3hZNCE0c1Fim5/R6SOVFmQNwztMwUc6uZAhub6b2r7PFZNnmyI2hpP5leF3OqfNZJH1GOsryX+5IdBw==
+length: 25218
 -->
