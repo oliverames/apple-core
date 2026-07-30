@@ -882,8 +882,24 @@ private struct ServiceRow: View {
     @ObservedObject var serverController: ServerController
     @ObservedObject var model: ServingSettingsModel
     let config: ServiceConfig
+    @State private var activationError: String?
 
     var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            row
+            if let activationError {
+                Label(activationError, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+            }
+        }
+        .padding(14)
+        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private var row: some View {
         HStack(alignment: .center, spacing: 12) {
             Circle()
                 .fill(config.binding.wrappedValue ? config.color : Color(NSColor.controlColor))
@@ -920,6 +936,7 @@ private struct ServiceRow: View {
                     set: { newValue in
                         config.binding.wrappedValue = newValue
                         if newValue {
+                            activationError = nil
                             // Front the app so TCC shows the permission prompt.
                             NSApp.activate(ignoringOtherApps: true)
                             Task {
@@ -927,8 +944,15 @@ private struct ServiceRow: View {
                                     try await config.service.activate()
                                 } catch {
                                     config.binding.wrappedValue = false
+                                    // Reverting the switch with no explanation
+                                    // reads as a broken control. Say what macOS
+                                    // actually refused, and why it can refuse
+                                    // without ever showing a prompt.
+                                    activationError = Self.explain(error, service: config.name)
                                 }
                             }
+                        } else {
+                            activationError = nil
                         }
                         Task {
                             await serverController.updateServiceBindings(
@@ -948,8 +972,28 @@ private struct ServiceRow: View {
             .labelsHidden()
             .accessibilityLabel("Enable \(config.name)")
         }
-        .padding(14)
-        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    /// Turns an activation failure into something actionable. macOS reports a
+    /// plain "denied" both when someone clicked Don't Allow and when TCC
+    /// declined to show the prompt at all — the latter happens when Apple Core
+    /// is not the frontmost app, which is the normal state on a headless Mac
+    /// driven over Screen Sharing, where another process owns the foreground.
+    private static func explain(_ error: Error, service: String) -> String {
+        let message = error.localizedDescription
+        guard message.lowercased().contains("denied") || message.lowercased().contains("restricted") else {
+            return "\(service) could not be enabled: \(message)"
+        }
+        let frontmost = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+        let isFrontmost = frontmost == Bundle.main.bundleIdentifier
+        if isFrontmost {
+            return
+                "\(service) access was denied. Grant it in System Settings > Privacy & Security, then enable this again."
+        }
+        return
+            "\(service) access was refused and macOS did not show a prompt, because Apple Core is not the frontmost app. "
+            + "Click the Apple Core window first, or grant access at the Mac itself — over Screen Sharing another process "
+            + "can hold the foreground and permission prompts are suppressed."
     }
 }
 
