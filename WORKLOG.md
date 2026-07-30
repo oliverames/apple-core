@@ -30,14 +30,25 @@ extra configuration.
 The ICO container logic was extracted verbatim into a standalone Swift script
 and run against the canonical 256px app icon: `file` reports "MS Windows icon
 resource - 1 icon, 32x32 with PNG image data" at 1,544 bytes, and ImageMagick
-decodes it. Not verified end to end over the tunnel: `applecore.amesvt.com`
-currently returns 404 at every path including `/mcp`, so nothing is serving
-behind that hostname yet.
+decodes it.
+
+The tunnel came up later the same session, which confirmed the defect live on
+the shipped build. On Apple Core 1.0.4, `https://applecore.amesvt.com/mcp`
+returns 401 as expected, and `https://applecore.amesvt.com/favicon.ico` returns
+`200` with `content-type: image/png` and 1,525 bytes that `file` identifies as
+"PNG image data, 32 x 32" with no ICO container. That is exactly the mismatch
+this change fixes. The fix is source-only so far; it needs a new build and
+release before the live endpoint serves a real ICO.
 
 **Open questions**: Whether a correct same-origin icon is enough, or whether
-Claude resolves only at the registrable domain. If the latter, no
-`*.amesvt.com` connector can carry distinct branding. Retest once the tunnel is
-up and `amesvt-website` has deployed its apex icon fix.
+Claude resolves only at the registrable domain. The retest on a sibling
+connector was negative: `workspace.amesvt.com` served a correct same-origin
+mark and Claude still rendered the green `amesvt.com` icon after a full
+sign-out, disconnect and reconnect. So shipping this ICO fix may not change
+what Claude displays for Apple Core either, even though the ICO is wrong on its
+own terms and worth fixing regardless. Full analysis, and the decisive
+apex-recolor test that was deliberately not run, live in ynab-mcp-server's
+WORKLOG under 2026-07-30.
 
 ---
 
