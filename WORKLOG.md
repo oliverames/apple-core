@@ -1,5 +1,17 @@
 # Apple Core worklog
 
+## 2026-07-29 - Add hosted connector icon discovery
+
+**What changed**: The HTTP server now exposes the existing Apple Core app icon through unauthenticated favicon routes at 16, 32, 48, 64, 96, 128, and 256 pixels, plus `/favicon.ico`, `/apple-touch-icon.png`, and a versioned 256-pixel asset. A small root landing page advertises the complete icon set so cloud connector clients and favicon crawlers can discover the branding without authenticating to MCP.
+
+**Decisions made**: The server renders PNGs from the canonical `AppIcon` asset at request time, keeping connector branding aligned with the installed app and avoiding a second icon source. Icon and landing-page routes remain public while MCP, status, and OAuth-protected resources retain their existing security behavior.
+
+**Verification**: The Apple Core Debug build succeeds and the full macOS test suite passes with code signing disabled.
+
+**Left off at**: The change is ready for the next signed Apple Core app release. The currently installed release will not expose the new routes until the app is updated.
+
+---
+
 ## 2026-07-23 - Fix duplicate menu bar, broken toggles, Dock icon toggle, release 1.0.2
 
 **What changed**: Fixed three issues affecting new-machine setup and added Dock icon visibility control. The LaunchAgent now launches via `open -W -a <bundle>` through LaunchServices instead of running the bare executable directly, which deduplicates instances and prevents two menu bar items. `NSApp.activate(ignoringOtherApps:)` is now called before `service.activate()` in both the menu bar and Settings UI toggle paths, so TCC shows the permission prompt instead of silently denying from a background-only accessory app. Added `LSUIElement=true` to Info.plist (menu-bar-only by default) plus a "Show Dock Icon" toggle in Settings > Server > General. Released Apple Core 1.0.2 (notarized, stapled, signed appcast published).

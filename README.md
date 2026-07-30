@@ -22,6 +22,7 @@ A single menu-bar app (`com.oliverames.applecore`) runs every Apple surface in-p
 
 - **Local**: MCP clients connect to `http://127.0.0.1:8756/mcp` (Streamable HTTP + SSE) with a locally-generated bearer token (`~/.config/apple-core/config.json`). A thin bundled CLI (`Contents/MacOS/apple-core`) bridges stdio-only clients to the same endpoint.
 - **Remote**: an optional Cloudflare Tunnel (managed in-app) exposes selected surfaces to cloud clients such as Claude custom connectors and ChatGPT apps, behind bearer authentication or OAuth 2.1 + PKCE.
+- **Connector branding**: the HTTP server exposes the Apple Core app icon at `/favicon.ico`, explicit PNG favicon sizes from 16 through 256 pixels, `/apple-touch-icon.png`, and a versioned `/assets/apple-core-icon-v1.png`. The public landing page advertises every size for connector clients and favicon crawlers.
 - **Per-surface control**: each surface (Calendar, Notes, Mail, …) has an enable toggle and a separate Remote Access toggle (local-only by default; remote access always requires authentication — it is never anonymous), managed in a Bridgeport-style settings window (Dashboard / Services / Security / Cloudflare / Cloud Clients / Server panes).
 - **Menu bar**: an AppKit `NSStatusItem` app with per-client connection approval and a persistent trust list. The canonical app icon is reproducibly rendered in Swift by `Scripts/generate_app_icon.swift` from the same connection symbol used in the menu bar.
 - **Daemon**: a LaunchAgent keeps the server available in the background.

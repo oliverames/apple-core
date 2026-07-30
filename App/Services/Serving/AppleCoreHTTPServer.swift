@@ -14,6 +14,7 @@
 // new session to `MCP.Server` + `registerHandlers(for:connectionID:)` --
 // this file only owns HTTP/SSE plumbing, never MCP dispatch.
 
+import AppKit
 import FlyingFox
 import FlyingSocks
 import Foundation
@@ -74,6 +75,53 @@ public actor AppleCoreHTTPServer {
         self.server = server
 
         var handler = RoutedHTTPHandler()
+
+        handler.appendRoute("GET /") { _ in
+            Self.connectorLandingPageResponse()
+        }
+
+        handler.appendRoute("HEAD /") { _ in
+            Self.connectorLandingPageResponse(headOnly: true)
+        }
+
+        handler.appendRoute("GET /favicon-16x16.png") { _ in Self.connectorIconResponse(size: 16) }
+        handler.appendRoute("HEAD /favicon-16x16.png") { _ in Self.connectorIconResponse(size: 16, headOnly: true) }
+        handler.appendRoute("GET /favicon-32x32.png") { _ in Self.connectorIconResponse(size: 32) }
+        handler.appendRoute("HEAD /favicon-32x32.png") { _ in Self.connectorIconResponse(size: 32, headOnly: true) }
+        handler.appendRoute("GET /favicon-48x48.png") { _ in Self.connectorIconResponse(size: 48) }
+        handler.appendRoute("HEAD /favicon-48x48.png") { _ in Self.connectorIconResponse(size: 48, headOnly: true) }
+        handler.appendRoute("GET /favicon-64x64.png") { _ in Self.connectorIconResponse(size: 64) }
+        handler.appendRoute("HEAD /favicon-64x64.png") { _ in Self.connectorIconResponse(size: 64, headOnly: true) }
+        handler.appendRoute("GET /favicon-96x96.png") { _ in Self.connectorIconResponse(size: 96) }
+        handler.appendRoute("HEAD /favicon-96x96.png") { _ in Self.connectorIconResponse(size: 96, headOnly: true) }
+        handler.appendRoute("GET /favicon-128x128.png") { _ in Self.connectorIconResponse(size: 128) }
+        handler.appendRoute("HEAD /favicon-128x128.png") { _ in Self.connectorIconResponse(size: 128, headOnly: true) }
+        handler.appendRoute("GET /favicon-256x256.png") { _ in Self.connectorIconResponse(size: 256) }
+        handler.appendRoute("HEAD /favicon-256x256.png") { _ in Self.connectorIconResponse(size: 256, headOnly: true) }
+
+        handler.appendRoute("GET /favicon.ico") { _ in
+            Self.connectorIconResponse(size: 32)
+        }
+
+        handler.appendRoute("HEAD /favicon.ico") { _ in
+            Self.connectorIconResponse(size: 32, headOnly: true)
+        }
+
+        handler.appendRoute("GET /apple-touch-icon.png") { _ in
+            Self.connectorIconResponse(size: 180)
+        }
+
+        handler.appendRoute("HEAD /apple-touch-icon.png") { _ in
+            Self.connectorIconResponse(size: 180, headOnly: true)
+        }
+
+        handler.appendRoute("GET /assets/apple-core-icon-v1.png") { _ in
+            Self.connectorIconResponse(size: 256)
+        }
+
+        handler.appendRoute("HEAD /assets/apple-core-icon-v1.png") { _ in
+            Self.connectorIconResponse(size: 256, headOnly: true)
+        }
 
         handler.appendRoute("GET /.well-known/oauth-protected-resource") { [weak self] request in
             guard let self else { return HTTPResponse(statusCode: .internalServerError) }
@@ -905,6 +953,75 @@ public actor AppleCoreHTTPServer {
         HTTPResponse(statusCode: statusCode, headers: [.contentType: "text/plain"], body: Data(text.utf8))
     }
 
+    private static func connectorLandingPageResponse(headOnly: Bool = false) -> HTTPResponse {
+        let iconLinks = connectorIconSizes.map { size in
+            "<link rel=\"icon\" type=\"image/png\" sizes=\"\(size)x\(size)\" href=\"/favicon-\(size)x\(size).png\">"
+        }.joined(separator: "\n")
+        let html = """
+        <!doctype html>
+        <html lang="en">
+        <head>
+          <meta charset="utf-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1">
+          <title>Apple Core MCP</title>
+          <link rel="icon" href="/favicon.ico" sizes="any">
+          \(iconLinks)
+          <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
+        </head>
+        <body><h1>Apple Core MCP</h1></body>
+        </html>
+        """
+        var headers = connectorIconCacheHeaders
+        headers[.contentType] = "text/html; charset=utf-8"
+        return HTTPResponse(
+            statusCode: .ok,
+            headers: headers,
+            body: headOnly ? Data() : Data(html.utf8)
+        )
+    }
+
+    private static func connectorIconResponse(size: Int, headOnly: Bool = false) -> HTTPResponse {
+        guard let data = connectorIconPNG(size: size) else {
+            return textResponse(.internalServerError, "Icon unavailable\n")
+        }
+        var headers = connectorIconCacheHeaders
+        headers[.contentType] = "image/png"
+        headers[HTTPHeader("Content-Length")] = String(data.count)
+        headers[HTTPHeader("Cross-Origin-Resource-Policy")] = "cross-origin"
+        return HTTPResponse(statusCode: .ok, headers: headers, body: headOnly ? Data() : data)
+    }
+
+    private static func connectorIconPNG(size: Int) -> Data? {
+        guard let source = NSImage(named: "AppIcon"),
+            let bitmap = NSBitmapImageRep(
+                bitmapDataPlanes: nil,
+                pixelsWide: size,
+                pixelsHigh: size,
+                bitsPerSample: 8,
+                samplesPerPixel: 4,
+                hasAlpha: true,
+                isPlanar: false,
+                colorSpaceName: .deviceRGB,
+                bytesPerRow: 0,
+                bitsPerPixel: 0
+            )
+        else {
+            return nil
+        }
+
+        bitmap.size = NSSize(width: size, height: size)
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: bitmap)
+        source.draw(
+            in: NSRect(x: 0, y: 0, width: size, height: size),
+            from: .zero,
+            operation: .copy,
+            fraction: 1
+        )
+        NSGraphicsContext.restoreGraphicsState()
+        return bitmap.representation(using: .png, properties: [:])
+    }
+
     private static func htmlResponse(_ statusCode: HTTPStatusCode, _ html: String) -> HTTPResponse {
         HTTPResponse(statusCode: statusCode, headers: [.contentType: "text/html; charset=utf-8"], body: Data(html.utf8))
     }
@@ -1001,6 +1118,12 @@ public actor AppleCoreHTTPServer {
     }
 
     private static let sessionHeader = HTTPHeader("Mcp-Session-Id")
+    private static let connectorIconSizes = [16, 32, 48, 64, 96, 128, 256]
+    private static let connectorIconCacheHeaders: HTTPHeaders = {
+        var headers = HTTPHeaders()
+        headers[HTTPHeader("Cache-Control")] = "public, max-age=86400"
+        return headers
+    }()
     private static let hostHeader = HTTPHeader("Host")
     private static let forwardedForHeader = HTTPHeader("X-Forwarded-For")
     private static let connectingIPHeader = HTTPHeader("CF-Connecting-IP")
