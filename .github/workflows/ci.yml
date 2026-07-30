@@ -34,9 +34,17 @@ jobs:
                   path: |
                       ~/Library/Developer/Xcode/DerivedData
                       ~/Library/Caches/org.swift.swiftpm
-                  key: ${{ runner.os }}-xcode-${{ matrix.xcode }}-derived-${{ hashFiles('**/Package.resolved') }}
+                  # ImageVersion is in the key because the cached DerivedData holds
+                  # precompiled module files built against the runner image's SDK.
+                  # When GitHub ships a new image the SDK modulemap mtime changes and
+                  # every restored .pcm is rejected ("module.modulemap has been
+                  # modified since the module file was built"), failing the build with
+                  # exit 65 even on a docs-only commit. This blocked the v1.0.5 release
+                  # gate on 2026-07-30. restore-keys carries it too, so a new image can
+                  # never fall back to a previous image's module cache.
+                  key: ${{ runner.os }}-xcode-${{ matrix.xcode }}-img${{ env.ImageVersion }}-derived-${{ hashFiles('**/Package.resolved') }}
                   restore-keys: |
-                      ${{ runner.os }}-xcode-${{ matrix.xcode }}-derived-
+                      ${{ runner.os }}-xcode-${{ matrix.xcode }}-img${{ env.ImageVersion }}-derived-
 
             - name: Lint
               run: swift format lint --strict --recursive .
