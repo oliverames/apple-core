@@ -1,5 +1,19 @@
 # Apple Core worklog
 
+## 2026-08-13 - Released 1.0.8: Calendar/Reminders identifiers, and diagnosed the tunnel
+
+**What changed**: End-to-end testing of the live MCP server (loopback, bearer token) exposed a real defect: `events_fetch`, `events_create`, `reminders_fetch`, and the create/update tools returned schema.org objects with no identifier, and `calendars_list`/reminder-lists returned none either. Since `events_update`/`events_delete` and `reminders_update`/`delete`/`complete` all require an id, create and read worked but mutation was impossible through the API. The `Ontology` `Event`/`PlanAction` types already have an `identifier` property (emitted as JSON-LD `@id`); the EventKit initializers just never populated it. Fixed by setting it at every return site — `eventIdentifier` for events (what events_update/delete resolve on), `calendarItemIdentifier` for reminders (matching the reminder lookup) — plus `calendarIdentifier` on the calendar and reminder-list tools.
+
+**Verification**: `swift format lint --strict` clean, `xcodebuild ... build` and full test suite `** TEST SUCCEEDED **`. Released 1.0.8 build 11: notarization Accepted, stapled, Developer ID + Gatekeeper valid, SHA-256 `556975a0711ee4ab6070424d74cee9b35530b3f5b60583d9fac9c0acf9da9d7b`, appcast signed and published, release workflow green, enclosure URL 200. Deployed 1.0.8 to home-server (checksum-verified, notarized signature verified, swapped in place, relaunched). Ran a full round-trip on the deployed build: create → fetch (id present) → update by id → delete by id → confirm gone, for both Calendar and Reminders — all passed, no residue.
+
+**Remote endpoint diagnosis (not yet fixed — needs sudo)**: `applecore.amesvt.com/mcp` returned 404 then 502 through this session. Root cause established via the Cloudflare API: tunnel `apple-core` (6f89c86d) is healthy but has **two connectors** attached from home-server. One is the app's user agent `com.oliverames.applecore.cloudflared`; the other, by elimination (amesvt has one connector, bridgeport is down), is the **root `com.cloudflare.cloudflared` LaunchDaemon** (pid 50502, up since Jul 30) — a stray `cloudflared service install` bound to the same tunnel that can't serve the origin, so Cloudflare round-robins into 502s. The Cloudflare API can't evict a live connector, and stopping a root daemon needs a password this session can't supply. Fix handed to Oliver: `sudo launchctl bootout system/com.cloudflare.cloudflared` (after confirming it serves the apple-core tunnel), leaving the app's user agent as the sole connector.
+
+**Left off at**: 1.0.8 live and running on home-server with the identifier fix verified. The remote tunnel awaits the one sudo command above; once the root daemon is gone I verify the connector count drops to one and the endpoint returns 401/200.
+
+**Open questions**: Whether the root `com.cloudflare.cloudflared` daemon is needed for anything else (it currently serves only the apple-core tunnel, which the app's own agent should own).
+
+---
+
 ## 2026-08-13 - Released 1.0.7, and found the real cause of the home-server prompt failure
 
 **What changed**: Two service-permission fixes. First, enabling a service from the status menu no longer aborts with "Apple Core could not become the active app". `ServicePermissionCoordinator` re-requests activation on every poll iteration and then proceeds regardless, because failing early guaranteed no prompt at all. Second, Calendar, Contacts, Reminders, and Capture now distinguish a real user refusal from a consent dialog macOS never displayed: when a request returns denied while the authorization status is still `notDetermined`, the new `ServicePermissionError` reports that the prompt was suppressed and names the likely cause, instead of claiming the user denied access.
