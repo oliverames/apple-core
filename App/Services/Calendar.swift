@@ -213,6 +213,7 @@ final class CalendarService: Service {
 
             return calendars.map { calendar in
                 Value.object([
+                    "identifier": .string(calendar.calendarIdentifier),
                     "title": .string(calendar.title),
                     "source": .string(calendar.source.title),
                     "color": .string(calendar.color.accessibilityName),
@@ -380,7 +381,13 @@ final class CalendarService: Service {
                 events = events.filter { ($0.hasRecurrenceRules) == isRecurring }
             }
 
-            return events.map { Event($0) }
+            // Expose the EventKit identifier so callers can feed it back to
+            // events_update / events_delete, which resolve by eventIdentifier.
+            return events.map { ekEvent in
+                var event = Event(ekEvent)
+                event.identifier = ekEvent.eventIdentifier
+                return event
+            }
         }
         Tool(
             name: "events_create",
@@ -708,7 +715,9 @@ final class CalendarService: Service {
             // Save the event
             try self.eventStore.save(event, span: .thisEvent)
 
-            return Event(event)
+            var result = Event(event)
+            result.identifier = event.eventIdentifier
+            return result
         }
 
         Tool(
@@ -1000,7 +1009,9 @@ final class CalendarService: Service {
             // EventKit detaches this occurrence from the series.
             try self.eventStore.save(event, span: span)
 
-            return Event(event)
+            var result = Event(event)
+            result.identifier = event.eventIdentifier
+            return result
         }
 
         Tool(

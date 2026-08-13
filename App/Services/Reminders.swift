@@ -100,6 +100,7 @@ final class RemindersService: Service {
 
             return reminderLists.map { reminderList in
                 Value.object([
+                    "identifier": .string(reminderList.calendarIdentifier),
                     "title": .string(reminderList.title),
                     "source": .string(reminderList.source.title),
                     "color": .string(reminderList.color.accessibilityName),
@@ -243,7 +244,14 @@ final class RemindersService: Service {
                 }
             }
 
-            return filteredReminders.map { PlanAction($0) }
+            // Expose the EventKit identifier so callers can feed it back to
+            // reminders_update / reminders_delete / reminders_complete, which
+            // resolve by calendarItemIdentifier.
+            return filteredReminders.map { reminder in
+                var action = PlanAction(reminder)
+                action.identifier = reminder.calendarItemIdentifier
+                return action
+            }
         }
 
         Tool(
@@ -370,7 +378,9 @@ final class RemindersService: Service {
             // Save the reminder
             try self.eventStore.save(reminder, commit: true)
 
-            return PlanAction(reminder)
+            var action = PlanAction(reminder)
+            action.identifier = reminder.calendarItemIdentifier
+            return action
         }
 
         Tool(
@@ -540,7 +550,9 @@ final class RemindersService: Service {
 
             try self.eventStore.save(reminder, commit: true)
 
-            return PlanAction(reminder)
+            var action = PlanAction(reminder)
+            action.identifier = reminder.calendarItemIdentifier
+            return action
         }
 
         Tool(
@@ -596,7 +608,9 @@ final class RemindersService: Service {
 
             try self.eventStore.save(reminder, commit: true)
 
-            return PlanAction(reminder)
+            var action = PlanAction(reminder)
+            action.identifier = reminder.calendarItemIdentifier
+            return action
         }
 
         Tool(
