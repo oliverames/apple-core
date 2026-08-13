@@ -7,6 +7,67 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <description>Updates for Apple Core - a native macOS MCP server for Apple services</description>
     <language>en</language>
     <item>
+      <title>Version 1.0.8</title>
+      <link>https://github.com/oliverames/apple-core/releases/tag/v1.0.8</link>
+      <sparkle:version>11</sparkle:version>
+      <sparkle:shortVersionString>1.0.8</sparkle:shortVersionString>
+      <description><![CDATA[
+<style>
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Helvetica, Arial, sans-serif;
+    font-size: 13px;
+    line-height: 1.55;
+    color: #1d1d1f;
+    margin: 0;
+    padding: 0;
+}
+h1, h2, h3 { color: #000; font-weight: 600; }
+h1 { font-size: 18px; margin: 0 0 10px 0; }
+h2 {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    color: #6e6e73;
+    margin: 18px 0 6px 0;
+}
+h3 { font-size: 13px; margin: 14px 0 6px 0; }
+p { margin: 0 0 10px 0; }
+ul, ol { padding-left: 20px; margin: 0 0 10px 0; }
+li { margin-bottom: 5px; }
+li > strong:first-child { color: #000; }
+code {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    background: #f2f2f7;
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-size: 12px;
+}
+a { color: #0071e3; text-decoration: none; }
+a:hover { text-decoration: underline; }
+hr { border: 0; border-top: 1px solid #e5e5ea; margin: 16px 0; }
+@media (prefers-color-scheme: dark) {
+    body { color: #f5f5f7; }
+    h1, h2, h3, li > strong:first-child { color: #fff; }
+    h2 { color: #98989d; }
+    code { background: #2c2c2e; }
+    hr { border-top-color: #38383a; }
+}
+</style>
+<h1>Apple Core 1.0.8</h1>
+<h2>Fixed</h2>
+<ul>
+<li>Calendar and Reminders tools now return the item's identifier. Previously <code class="notranslate">events_fetch</code>, <code class="notranslate">events_create</code>, <code class="notranslate">reminders_fetch</code>, and the other read/create tools returned objects with no id, so <code class="notranslate">events_update</code>, <code class="notranslate">events_delete</code>, <code class="notranslate">reminders_update</code>, <code class="notranslate">reminders_delete</code>, and <code class="notranslate">reminders_complete</code> — which all require an identifier — could not be used through the API. Events expose their <code class="notranslate">eventIdentifier</code> and reminders their <code class="notranslate">calendarItemIdentifier</code> (as the JSON-LD <code class="notranslate">@id</code>), matching how each tool resolves the item.</li>
+<li><code class="notranslate">calendars_list</code> and the reminder-list tool now include each calendar's identifier.</li>
+</ul>
+      ]]></description>
+      <pubDate>Thu, 13 Aug 2026 15:12:42 +0000</pubDate>
+      <enclosure url="https://github.com/oliverames/apple-core/releases/download/v1.0.8/Apple.Core-1.0.8.zip"
+                 length="8745555"
+                 type="application/octet-stream"
+                 sparkle:edSignature="XxEA5yVdbhsnLtYmrJebjTuRrl+6F+7dw4bfkjMlAhdPn3LqnHMUuMvksqCEa5NTN/A79M9mhKOQ4GRFYeFMCg==" />
+      <sparkle:minimumSystemVersion>15.1</sparkle:minimumSystemVersion>
+    </item>
+    <item>
       <title>Version 1.0.7</title>
       <link>https://github.com/oliverames/apple-core/releases/tag/v1.0.7</link>
       <sparkle:version>9</sparkle:version>
@@ -534,6 +595,6 @@ hr { border: 0; border-top: 1px solid #e5e5ea; margin: 16px 0; }
     <!-- `Scripts/release.sh appcast` prepends signed release entries here. -->
   </channel>
 </rss><!-- sparkle-signatures:
-edSignature: JB6w0l8PtRvtss4bs2Wrc9zfXEJLZXKvqjACTxp/Z177Da4nszZwCoxAfcdKcydl3iUPBF1dKkiZmd8VXKRRBA==
-length: 28299
+edSignature: X+U7Hr3BBWpV6T9gIHPUkzVf6xBXHCDpCZ0knfs81fKb5aIUTslhyjtQ0Sa6O54AuwcogZBiRn9PzzY89KatCQ==
+length: 31265
 -->
