@@ -22,10 +22,11 @@ final class CalendarService: Service {
     func activate() async throws {
         let granted = try await eventStore.requestFullAccessToEvents()
         guard granted else {
-            throw NSError(
+            let statusAfterRequest = EKEventStore.authorizationStatus(for: .event)
+            throw ServicePermissionError.requestFailed(
                 domain: "CalendarError",
-                code: 1,
-                userInfo: [NSLocalizedDescriptionKey: "Calendar access was denied"]
+                what: "Calendar",
+                promptCouldHaveAppeared: statusAfterRequest != .notDetermined
             )
         }
     }

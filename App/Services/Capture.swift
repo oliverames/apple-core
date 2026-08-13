@@ -85,10 +85,11 @@ final class CaptureService: NSObject, Service {
             log.debug("Requesting \(mediaName) access")
             let granted = await AVCaptureDevice.requestAccess(for: mediaType)
             if !granted {
-                throw NSError(
+                let statusAfterRequest = AVCaptureDevice.authorizationStatus(for: mediaType)
+                throw ServicePermissionError.requestFailed(
                     domain: "CaptureServiceError",
-                    code: 1,
-                    userInfo: [NSLocalizedDescriptionKey: "\(mediaName) access denied"]
+                    what: mediaName,
+                    promptCouldHaveAppeared: statusAfterRequest != .notDetermined
                 )
             }
         @unknown default:

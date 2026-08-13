@@ -120,10 +120,11 @@ final class ContactsService: Service {
             log.debug("Requesting contacts access")
             let granted = try await contactStore.requestAccess(for: .contacts)
             guard granted else {
-                throw NSError(
+                let statusAfterRequest = CNContactStore.authorizationStatus(for: .contacts)
+                throw ServicePermissionError.requestFailed(
                     domain: "ContactsService",
-                    code: 1,
-                    userInfo: [NSLocalizedDescriptionKey: "Contacts access was denied"]
+                    what: "Contacts",
+                    promptCouldHaveAppeared: statusAfterRequest != .notDetermined
                 )
             }
         @unknown default:

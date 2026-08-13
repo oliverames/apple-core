@@ -6,23 +6,14 @@ import Foundation
 /// Presents service permission requests from an app state where Tahoe can
 /// actually show them. `NSApplication.activate()` is only a request, so this
 /// coordinator temporarily promotes the menu-bar app to a regular app and
-/// waits until it is active before touching TCC-protected APIs.
+/// keeps requesting activation before touching TCC-protected APIs. Activation
+/// is best-effort: the permission request proceeds even if the app never
+/// observes itself becoming active, because the services now detect and
+/// report a prompt that macOS refused to display.
 @MainActor
 enum ServicePermissionCoordinator {
     private struct PresentationContext {
         let restoreAccessoryPolicy: Bool
-    }
-
-    enum PresentationError: LocalizedError {
-        case couldNotBecomeActive
-
-        var errorDescription: String? {
-            switch self {
-            case .couldNotBecomeActive:
-                return
-                    "Apple Core could not become the active app, so macOS could not safely show the permission request. Open Apple Core Settings and try again."
-            }
-        }
     }
 
     static func activate(
@@ -34,34 +25,27 @@ enum ServicePermissionCoordinator {
             return
         }
 
-        let context = try await prepareForPermissionPresentation()
+        let context = await prepareForPermissionPresentation()
         defer { restorePresentation(context) }
         try await service.activate()
     }
 
-    private static func prepareForPermissionPresentation() async throws -> PresentationContext {
-        let restoreAccessoryPolicy = NSApp.activationPolicy() == .accessory
+    private static func prepareForPermissionPresentation() async -> PresentationContext {
+        let restoreAccessoryPolicy =
+            NSApp.activationPolicy() == .accessory && NSApp.setActivationPolicy(.regular)
 
-        if restoreAccessoryPolicy, !NSApp.setActivationPolicy(.regular) {
-            throw PresentationError.couldNotBecomeActive
-        }
-
-        NSApp.activate()
-
-        // App activation is asynchronous and not guaranteed. Waiting for the
-        // observed active state prevents the permission call from racing the
-        // activation request, which Tahoe otherwise rejects without a prompt.
-        for _ in 0 ..< 40 {
-            if NSApp.isActive {
-                return PresentationContext(restoreAccessoryPolicy: restoreAccessoryPolicy)
-            }
+        // App activation is asynchronous and not guaranteed, and a single
+        // cooperative request issued from a status-menu action is routinely
+        // ignored while menu tracking winds down. Re-request every poll
+        // iteration instead of once, and treat activation as best-effort:
+        // aborting here guarantees no prompt, while proceeding lets tccd
+        // decide whether it can present one.
+        for _ in 0 ..< 40 where !NSApp.isActive {
+            NSApp.activate()
             try? await Task.sleep(for: .milliseconds(50))
         }
 
-        if restoreAccessoryPolicy {
-            NSApp.setActivationPolicy(.accessory)
-        }
-        throw PresentationError.couldNotBecomeActive
+        return PresentationContext(restoreAccessoryPolicy: restoreAccessoryPolicy)
     }
 
     private static func restorePresentation(_ context: PresentationContext) {

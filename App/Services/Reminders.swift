@@ -38,10 +38,11 @@ final class RemindersService: Service {
     func activate() async throws {
         let granted = try await eventStore.requestFullAccessToReminders()
         guard granted else {
-            throw NSError(
+            let statusAfterRequest = EKEventStore.authorizationStatus(for: .reminder)
+            throw ServicePermissionError.requestFailed(
                 domain: "RemindersError",
-                code: 1,
-                userInfo: [NSLocalizedDescriptionKey: "Reminders access was denied"]
+                what: "Reminders",
+                promptCouldHaveAppeared: statusAfterRequest != .notDetermined
             )
         }
     }
