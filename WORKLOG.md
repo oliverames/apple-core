@@ -1,5 +1,21 @@
 # Apple Core worklog
 
+## 2026-08-13 - Released 1.0.7, and found the real cause of the home-server prompt failure
+
+**What changed**: Two service-permission fixes. First, enabling a service from the status menu no longer aborts with "Apple Core could not become the active app". `ServicePermissionCoordinator` re-requests activation on every poll iteration and then proceeds regardless, because failing early guaranteed no prompt at all. Second, Calendar, Contacts, Reminders, and Capture now distinguish a real user refusal from a consent dialog macOS never displayed: when a request returns denied while the authorization status is still `notDetermined`, the new `ServicePermissionError` reports that the prompt was suppressed and names the likely cause, instead of claiming the user denied access.
+
+**Root cause, verified live on home-server (macOS Tahoe 26.5.2)**: the machine's `nvram boot-args` carry `amfi_get_out_of_my_way=1` (part of the BlueBubbles private-API setup) with SIP disabled. With AMFI out of the way, every third-party process is flagged `CS_PLATFORM_BINARY` (confirmed via `csops` on Apple Core, Skylight Bridge, BlueBubbles, Docker, Plex). Tahoe's tccd then refuses standard consent prompts for platform-flagged, non-Apple-signed binaries: `CS_PLATFORM_BINARY set but not AppleSigned; prompt policy is Deny`. The request returns denied with no TCC.db row written, so the app cannot appear in System Settings either. This is machine state, not an app bug, and it hits Skylight Bridge identically (reproduced its Reminders request failing the same way). The 2026-07-30 "Skylight Bridge is frontmost over Screen Sharing" diagnosis in the old memory was wrong and has been corrected; activation state is irrelevant.
+
+The prompt path and the grant path are separate: a pre-existing allow-row is still honored. Because SIP is off and this SSH session holds Full Disk Access (`kTCCServiceSystemPolicyAllFiles` granted to sshd-keygen-wrapper), the durable workaround that keeps the boot-args is to insert allow-rows directly into the user `TCC.db` with a correct csreq blob (generated from the app's designated requirement via `SecCodeCopyDesignatedRequirement`). The csreq generation is proven; the actual DB write is left to Oliver to run at the machine, since it changes security state.
+
+**Verification**: `swift format lint --strict` exit 0, `git diff --check` clean, full Xcode test suite `** TEST SUCCEEDED **` (25 tests), Gitleaks no leaks across 175 commits. `Scripts/release.sh all` notarized (Accepted), stapled, Developer ID and Gatekeeper valid; Sparkle keypair confirmed matching (`NIhfyD083qOzYZteoMsBOljz/u7/ptMziiHheqt3mns=`). Local zip SHA-256 `b1a802a75334ee6166830aa6e1314abec97ba400dc5c3e849b9928f4d6274815`, build 9. Tag `v1.0.7` pushed, release workflow `31707555090` green, asset `Apple.Core-1.0.7.zip` uploaded and its enclosure URL returns HTTP 200, appcast published to gh-pages with a valid EdDSA item signature.
+
+**Left off at**: 1.0.7 is live. home-server still runs 1.0.6 until it takes the Sparkle update. The suppressed-prompt reporting will show the honest message there; granting the blocked services still requires either the direct TCC.db insert or clearing the boot-args. A follow-up task to port the same suppressed-prompt detection to Skylight Bridge was spun off.
+
+**Open questions**: Whether Oliver wants the direct-insert workaround scripted into a repeatable helper, or prefers to clear the boot-args once BlueBubbles no longer needs them.
+
+---
+
 ## 2026-07-30 - Released 1.0.6 with foreground-safe permission requests
 
 **What changed**: Fixed the fresh-install service controls on macOS Tahoe. The menu bar and Settings previously called `NSApp.activate(ignoringOtherApps:)` and immediately requested TCC access, but activation is asynchronous and not guaranteed. Tahoe could return a denial without showing a prompt or writing a privacy record. Apple Core now temporarily becomes a regular app, requests activation with the current API, waits until `NSApp.isActive`, and only then calls the service activation method.
