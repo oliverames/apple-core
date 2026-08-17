@@ -914,12 +914,7 @@ actor ServerNetworkManager {
 
     private func isServiceAccessible(_ serviceID: String, surface: MCPAccessSurface) -> Bool {
         let isLocallyEnabled = serviceBindings[serviceID]?.wrappedValue ?? false
-        let isExposedRemotely = servingConfig.settings(forServiceID: serviceID).exposePublicly
-        return ServiceAccessPolicy.isAccessible(
-            isLocallyEnabled: isLocallyEnabled,
-            surface: surface,
-            isExposedRemotely: isExposedRemotely
-        )
+        return ServiceAccessPolicy.isAccessible(isLocallyEnabled: isLocallyEnabled, surface: surface)
     }
 
     // Update the enabled state and notify clients.

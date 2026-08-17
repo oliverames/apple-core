@@ -36,12 +36,19 @@ enum RequestAccessClassifier {
 }
 
 enum ServiceAccessPolicy {
-    static func isAccessible(
-        isLocallyEnabled: Bool,
-        surface: MCPAccessSurface,
-        isExposedRemotely: Bool
-    ) -> Bool {
-        guard isLocallyEnabled else { return false }
-        return surface == .local || isExposedRemotely
+    /// A service you have enabled is reachable on whichever surface is
+    /// serving it. Remote reachability is decided once, by whether remote
+    /// access is set up at all, rather than per service.
+    ///
+    /// There used to be a second axis: every service carried its own
+    /// `exposePublicly` flag, off by default, surfaced as a "Remote" switch
+    /// next to each of the eleven services. The common outcome was someone
+    /// configuring a tunnel correctly and reaching nothing through it, with
+    /// the reason spread across eleven switches on a different pane. Remote
+    /// requests are authenticated either way, so the axis bought precision
+    /// almost nobody wanted at the cost of the failure being invisible.
+    static func isAccessible(isLocallyEnabled: Bool, surface: MCPAccessSurface) -> Bool {
+        _ = surface
+        return isLocallyEnabled
     }
 }

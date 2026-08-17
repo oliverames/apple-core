@@ -117,6 +117,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusMenu: NSMenu?
     private var settingsWindowController: SettingsWindowController?
     private var aboutWindowController: AboutWindowController?
+    private var onboardingWindowController: OnboardingWindowController?
 
     // Sparkle auto-updating, following ping-warden's pattern
     // (PingWardenApp.swift): the controller is created with
@@ -173,6 +174,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 )
             }
         }
+
+        // A menu-bar app with no first-run explanation left new users with an
+        // icon and no idea what to do next. Show setup once, and only when the
+        // app is launched by a person: a LaunchAgent relaunch must not put a
+        // window on screen.
+        if !OnboardingWindowController.hasCompletedOnboarding && !wasLaunchedByLaunchd {
+            showOnboarding()
+        }
+    }
+
+    /// True when launchd started this process rather than the user. launchd
+    /// passes its job label in the environment of the jobs it spawns.
+    private var wasLaunchedByLaunchd: Bool {
+        ProcessInfo.processInfo.environment["XPC_SERVICE_NAME"].map {
+            $0 != "0" && $0.contains(AppLaunchAgent.label)
+        } ?? false
+    }
+
+    func showOnboarding() {
+        let settingsController = settingsWindowController ?? SettingsWindowController(
+            serverController: serverController
+        )
+        settingsWindowController = settingsController
+
+        let controller = onboardingWindowController ?? OnboardingWindowController()
+        onboardingWindowController = controller
+        controller.show(serverController: serverController, model: settingsController.model)
+    }
+
+    @objc private func openOnboardingFromMenu() {
+        showOnboarding()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -253,6 +285,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         )
         settingsItem.target = self
         menu.addItem(settingsItem)
+
+        let setupItem = NSMenuItem(
+            title: "Setup Guide…",
+            action: #selector(openOnboardingFromMenu),
+            keyEquivalent: ""
+        )
+        setupItem.target = self
+        menu.addItem(setupItem)
 
         let aboutItem = NSMenuItem(
             title: "About Apple Core",

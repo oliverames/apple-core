@@ -25,6 +25,23 @@ final class ServingSettingsModel: ObservableObject {
     @Published var isOpenAtLoginEnabled = false
     @Published var lastStatusMessage = "Ready"
 
+    /// Non-nil while cloudflared is being downloaded and installed.
+    @Published var cloudflaredInstallProgress: CloudflaredInstallProgress?
+    /// The version of the cloudflared currently in use, for display.
+    @Published var cloudflaredVersion: String?
+    /// What the Cloudflare login told us: account, zone, and domain. Populated
+    /// after sign-in so the pane can stop asking for any of it.
+    @Published var cloudflareAccount: CloudflareAccountInfo?
+    /// Set when a remote-access step failed, for display next to the control
+    /// that started it.
+    @Published var cloudflareSetupError: String?
+    /// True while the whole remote-access sequence is running.
+    @Published var isConfiguringRemoteAccess = false
+    /// The one line of progress shown while that sequence runs.
+    @Published var remoteSetupStage: String?
+    /// Set when the address could not be derived and has to be typed after all.
+    @Published var needsManualHostname = false
+
     @AppStorage("runAsLaunchAgent") var runAsLaunchAgent = true
     @AppStorage("showDockIcon") var showDockIcon = false
 
@@ -169,7 +186,153 @@ final class ServingSettingsModel: ObservableObject {
     }
 
     func refreshCloudflareStatus() async {
+        // Pick up a cloudflared that appeared since the config was written —
+        // installed by Apple Core, or by Homebrew behind its back.
+        if let located = CloudflaredInstaller.locateInstalled(), located != cloudflare.cloudflaredPath {
+            var settings = cloudflare
+            settings.cloudflaredPath = located
+            cloudflare = settings
+            save(restartServer: false)
+        }
         cloudflareStatus = await cloudflareManager().status()
+        cloudflaredVersion = CloudflaredInstaller.locateInstalled().flatMap {
+            CloudflaredInstaller.installedVersion(at: $0)
+        }
+        if cloudflareAccount == nil, CloudflareAccount.isSignedIn() {
+            await refreshCloudflareAccount()
+        }
+    }
+
+    // MARK: - cloudflared installation
+
+    var isCloudflaredInstalled: Bool {
+        CloudflaredInstaller.locateInstalled() != nil
+    }
+
+    /// Downloads and installs cloudflared, then points the config at it.
+    /// Returns true on success so a caller running the full setup sequence can
+    /// stop at the first failure.
+    @discardableResult
+    func installCloudflared() async -> Bool {
+        cloudflareSetupError = nil
+        let installer = CloudflaredInstaller()
+        do {
+            let path = try await installer.install { [weak self] progress in
+                Task { @MainActor in self?.cloudflaredInstallProgress = progress }
+            }
+            var settings = cloudflare
+            settings.cloudflaredPath = path
+            cloudflare = settings
+            save(restartServer: false)
+            cloudflaredInstallProgress = nil
+            await refreshCloudflareStatus()
+            lastStatusMessage = "cloudflared installed"
+            return true
+        } catch {
+            cloudflaredInstallProgress = nil
+            cloudflareSetupError = error.localizedDescription
+            lastStatusMessage = "cloudflared install failed"
+            return false
+        }
+    }
+
+    // MARK: - Derived account
+
+    /// Reads the account, zone and domain out of the Cloudflare login and
+    /// fills them in, so none of the three has to be typed. Leaves a hostname
+    /// the user already chose alone.
+    func refreshCloudflareAccount() async {
+        guard let info = try? await CloudflareAccount.resolve() else {
+            cloudflareAccount = nil
+            return
+        }
+        cloudflareAccount = info
+
+        var settings = cloudflare
+        var changed = false
+        if settings.accountId.isEmpty, !info.accountID.isEmpty {
+            settings.accountId = info.accountID
+            changed = true
+        }
+        if settings.zoneId.isEmpty, !info.zoneID.isEmpty {
+            settings.zoneId = info.zoneID
+            changed = true
+        }
+        if let domain = info.domain, !domain.isEmpty, settings.domain != domain {
+            settings.domain = domain
+            changed = true
+        }
+        if settings.hostname.isEmpty, let suggested = info.suggestedHostname {
+            settings.hostname = suggested
+            changed = true
+        }
+        if changed {
+            cloudflare = settings
+            setPublicBaseURL(CloudflareManager.publicBaseURL(for: settings))
+            save(restartServer: false)
+        }
+    }
+
+    // MARK: - One-step remote access
+
+    /// Everything remote access needs, start to finish, behind one action:
+    /// install cloudflared, sign in to Cloudflare, read the account and domain
+    /// out of that sign-in, choose an address, create the tunnel and route it.
+    ///
+    /// The pane used to expose this same sequence as a prerequisite checklist
+    /// plus four repair verbs in a menu, and left both the ordering and the
+    /// identifiers to the user. None of those steps is a decision — they are
+    /// all consequences of one decision, which is whether to have remote
+    /// access at all. So the sequence runs, and only its progress is shown.
+    func setUpRemoteAccess() async {
+        isConfiguringRemoteAccess = true
+        defer {
+            isConfiguringRemoteAccess = false
+            remoteSetupStage = nil
+        }
+        cloudflareSetupError = nil
+
+        if !isCloudflaredInstalled {
+            guard await installCloudflared() else { return }
+        }
+
+        if !CloudflareAccount.isSignedIn() {
+            remoteSetupStage = "Waiting for you to sign in to Cloudflare in your browser…"
+            await performCloudflareLogin()
+            guard CloudflareAccount.isSignedIn() else {
+                cloudflareSetupError =
+                    "The Cloudflare sign-in did not finish. Try again, and approve the domain you want to use."
+                return
+            }
+        }
+
+        remoteSetupStage = "Reading your Cloudflare account…"
+        await refreshCloudflareAccount()
+
+        guard !cloudflare.hostname.isEmpty else {
+            cloudflareSetupError =
+                "Apple Core could not work out an address from your Cloudflare account. Enter one below."
+            needsManualHostname = true
+            return
+        }
+        if let invalid = CloudflareManager.hostnameValidationError(for: cloudflare.hostname) {
+            cloudflareSetupError = invalid
+            needsManualHostname = true
+            return
+        }
+
+        var settings = cloudflare
+        settings.enabled = true
+        cloudflare = settings
+        setPublicBaseURL(CloudflareManager.publicBaseURL(for: settings))
+        save(restartServer: false)
+
+        remoteSetupStage = "Creating the tunnel and routing \(settings.hostname)…"
+        await bootstrapCloudflareTunnel()
+
+        if let status = cloudflareStatus, status.state == .error {
+            cloudflareSetupError = status.message
+        }
     }
 
     func prepareCloudflareConfiguration() async {
@@ -201,8 +364,24 @@ final class ServingSettingsModel: ObservableObject {
         cloudflareStatus = await cloudflareManager().startTunnel()
     }
 
-    func logInToCloudflare() async {
+    /// Opens the Cloudflare browser sign-in and waits for it, rather than
+    /// making the user come back and press a second "Check Login" button. The
+    /// certificate appears on disk the moment they authorize, so poll for it.
+    private func performCloudflareLogin() async {
         cloudflareStatus = await cloudflareManager().logInToCloudflare()
+
+        // Two minutes is long enough to find the right Cloudflare account in a
+        // browser and short enough that an abandoned sign-in stops spinning.
+        let deadline = Date().addingTimeInterval(120)
+        while Date() < deadline {
+            if CloudflareAccount.isSignedIn() {
+                await refreshCloudflareAccount()
+                await refreshCloudflareStatus()
+                return
+            }
+            try? await Task.sleep(for: .seconds(2))
+        }
+        await refreshCloudflareStatus()
     }
 
     /// Cleans up whatever was typed into Domain or Hostname the moment the

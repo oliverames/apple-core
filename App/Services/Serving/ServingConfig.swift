@@ -18,9 +18,16 @@ public struct ServingServiceSettings: Codable, Sendable {
     /// Whether this service's tools are visible to requests that arrive via
     /// the public hostname (Cloudflare tunnel). Local requests are governed
     /// solely by the existing enabled/disabled binding in ServerController.
+    ///
+    /// Defaults to on. This only takes effect once remote access has been set
+    /// up at all — with no tunnel there is no public hostname to reach, and
+    /// remote requests still have to authenticate with the bearer token or
+    /// OAuth. Defaulting it off meant someone who deliberately configured a
+    /// tunnel then found nothing reachable through it, with the reason spread
+    /// across eleven separate switches on another pane.
     public var exposePublicly: Bool
 
-    public init(exposePublicly: Bool = false) {
+    public init(exposePublicly: Bool = true) {
         self.exposePublicly = exposePublicly
     }
 }

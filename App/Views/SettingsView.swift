@@ -1,32 +1,36 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// Settings window UI. Adapted from Bridgeport's
-// Sources/bridgeport/Views/SettingsView.swift: same NavigationSplitView
-// pane layout, SettingsGroup cards, and interaction patterns, with
-// Bridgeport's per-connector rows replaced by per-service-surface rows
-// (the fixed ServiceRegistry set), plus Apple Core's trusted-client list.
+// Settings window.
+//
+// This replaces a six-pane window (Dashboard / Services / Security /
+// Cloudflare / Cloud Clients / Server) carrying roughly sixty-five controls.
+// Almost none of them were decisions: port, bind host, LaunchAgent lifecycle,
+// allowed origins, route mode, tunnel and account identifiers, cloudflared and
+// config paths were implementation details surfaced as settings because they
+// existed, and each one asked the user to understand something about how the
+// server works in order to use it.
+//
+// There are three decisions in this app: what data Apple Core can reach,
+// whether it is reachable from outside this Mac, and which clients are
+// allowed. Those are the three panes. Everything else is automatic or lives in
+// Diagnostics, which is a sheet, not a pane, because it is for when something
+// is wrong rather than for setting anything up.
 
 import AppKit
 import SwiftUI
 
 private enum SettingsPane: String, CaseIterable, Identifiable {
-    case dashboard = "Dashboard"
     case services = "Services"
-    case security = "Security"
-    case cloudflare = "Cloudflare"
-    case clients = "Cloud Clients"
-    case server = "Server"
+    case access = "Access"
+    case clients = "Clients"
 
     var id: String { rawValue }
 
     var icon: String {
         switch self {
-        case .dashboard: "gauge.with.dots.needle.bottom.50percent"
         case .services: "square.grid.2x2"
-        case .security: "lock.shield"
-        case .cloudflare: "network"
-        case .clients: "cloud"
-        case .server: "server.rack"
+        case .access: "globe"
+        case .clients: "desktopcomputer"
         }
     }
 }
@@ -34,9 +38,9 @@ private enum SettingsPane: String, CaseIterable, Identifiable {
 struct SettingsView: View {
     @ObservedObject var serverController: ServerController
     @ObservedObject var model: ServingSettingsModel
-    @State private var selection: SettingsPane = .dashboard
-    @State private var isCloudflareAdvancedExpanded = false
-    @State private var showingResetTrustedClientsAlert = false
+
+    @State private var selection: SettingsPane = .services
+    @State private var isShowingDiagnostics = false
 
     var body: some View {
         NavigationSplitView {
@@ -44,946 +48,388 @@ struct SettingsView: View {
                 Label(pane.rawValue, systemImage: pane.icon)
                     .tag(pane)
             }
-            .navigationSplitViewColumnWidth(min: 180, ideal: 200, max: 220)
+            .navigationSplitViewColumnWidth(min: 170, ideal: 180, max: 200)
             .listStyle(.sidebar)
-        } detail: {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    switch selection {
-                    case .dashboard:
-                        dashboardPane
-                    case .services:
-                        servicesPane
-                    case .security:
-                        securityPane
-                    case .cloudflare:
-                        cloudflarePane
-                    case .clients:
-                        clientsPane
-                    case .server:
-                        serverPane
-                    }
+            .safeAreaInset(edge: .bottom) {
+                Button {
+                    isShowingDiagnostics = true
+                } label: {
+                    Label("Diagnostics", systemImage: "stethoscope")
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .padding(.horizontal, 32)
-                .padding(.top, 24)
-                .padding(.bottom, 32)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .buttonStyle(.borderless)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
             }
-            .background(.background)
-            .navigationTitle("Apple Core Settings")
+        } detail: {
+            switch selection {
+            case .services:
+                ServicesPane(serverController: serverController)
+            case .access:
+                AccessPane(model: model)
+            case .clients:
+                ClientsPane(serverController: serverController, model: model)
+            }
         }
-        .navigationSplitViewStyle(.prominentDetail)
-        .frame(minWidth: 860, idealWidth: 980, minHeight: 560, idealHeight: 680)
+        .frame(minWidth: 720, idealWidth: 780, minHeight: 520, idealHeight: 600)
+        .sheet(isPresented: $isShowingDiagnostics) {
+            DiagnosticsView(model: model, serverController: serverController)
+        }
         .task {
             model.reloadConfigFromDisk()
             await model.refreshCloudflareStatus()
         }
-        .onChange(of: selection) { _, _ in
-            model.reloadConfigFromDisk()
-            Task { await model.refreshCloudflareStatus() }
-        }
     }
+}
 
-    private var serviceConfigs: [ServiceConfig] {
-        serverController.computedServiceConfigs
-    }
+// MARK: - Pane chrome
 
-    // MARK: - Dashboard
+/// Title, one supporting line, and the pane's content in a grouped form.
+/// Every pane uses it so the three read as one window rather than three.
+private struct PaneScaffold<Content: View>: View {
+    let title: String
+    let subtitle: String
+    @ViewBuilder var content: Content
 
-    private var dashboardPane: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            ProductHeader(
-                title: "Apple Core",
-                subtitle: "Personal MCP server for Apple system services, served over HTTP/SSE."
-            )
-
-            SettingsGroup(title: "Status") {
-                LabeledContent("Server") {
-                    StatusValue(
-                        text: serverController.serverStatus,
-                        systemImage: serverController.serverStatus == "Running"
-                            ? "checkmark.circle.fill" : "stop.circle",
-                        tint: serverController.serverStatus == "Running" ? .green : .secondary
-                    )
-                }
-                Divider()
-                LabeledContent("Enabled Services") {
-                    Text("\(serviceConfigs.filter { $0.binding.wrappedValue }.count) of \(serviceConfigs.count)")
-                        .foregroundStyle(.secondary)
-                }
-                Divider()
-                LabeledContent("Remote Services") {
-                    Text("\(model.publiclyExposedServiceCount(from: serviceConfigs))")
-                        .foregroundStyle(.secondary)
-                }
-            }
-
-            SettingsGroup(title: "Endpoints") {
-                LabeledContent("Local") {
-                    Text("\(model.localBaseURL)/mcp")
-                        .font(.system(.body, design: .monospaced))
-                        .textSelection(.enabled)
-                }
-                LabeledContent("Remote") {
-                    Text(model.publicBaseURL.isEmpty ? "Not configured" : "\(model.clientBaseURL)/mcp")
-                        .font(.system(.body, design: .monospaced))
-                        .foregroundStyle(model.publicBaseURL.isEmpty ? .secondary : .primary)
-                        .textSelection(.enabled)
-                }
-                LabeledContent("Status") {
-                    Text(model.lastStatusMessage)
-                        .foregroundStyle(.secondary)
-                }
-            }
-
-            SettingsGroup(title: "Service") {
-                ActionGrid(minimumItemWidth: 180) {
-                    Button {
-                        Task {
-                            await serverController.stopServer()
-                            await serverController.startServer()
-                        }
-                    } label: {
-                        Label("Restart Server", systemImage: "arrow.clockwise.circle")
-                    }
-
-                    CopyButton(title: "Copy Local URL", systemImage: "link") {
-                        "\(model.localBaseURL)/mcp"
-                    }
-
-                    CopyButton(title: "Copy Remote URL", systemImage: "globe") {
-                        "\(model.clientBaseURL)/mcp"
-                    }
-                    .disabled(model.publicBaseURL.isEmpty)
-                }
-            }
-        }
-    }
-
-    // MARK: - Services
-
-    private var servicesPane: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            PaneHeader(
-                title: "Services",
-                subtitle:
-                    "Enable Apple system service surfaces and choose which allow remote access through the tunnel "
-                    + "hostname. Remote access always requires authentication (bearer token or OAuth)."
-            )
-
-            LazyVStack(alignment: .leading, spacing: 12) {
-                ForEach(serviceConfigs) { config in
-                    ServiceRow(serverController: serverController, model: model, config: config)
-                }
-            }
-        }
-    }
-
-    // MARK: - Security
-
-    private var securityPane: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            PaneHeader(
-                title: "Security",
-                subtitle: "Apple Core uses bearer-token authentication for tunneled MCP traffic."
-            )
-
-            SettingsGroup(title: "API Token") {
-                LabeledContent("Token") {
-                    HStack(spacing: 8) {
-                        Text(model.isShowingToken ? model.token : String(repeating: "•", count: 28))
-                            .font(.system(.body, design: .monospaced))
-                            .textSelection(.enabled)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-
-                        Button(model.isShowingToken ? "Hide" : "Show") {
-                            model.isShowingToken.toggle()
-                        }
-
-                        CopyButton(title: "Copy", systemImage: "doc.on.doc") {
-                            model.token
-                        }
-                    }
-                }
-                Divider()
-                Button {
-                    model.rotateToken()
-                } label: {
-                    Label("Rotate Token", systemImage: "key.horizontal")
-                }
-            }
-
-            SettingsGroup(title: "Authentication") {
-                Toggle(
-                    isOn: Binding(
-                        get: { model.allowQueryTokenAuth },
-                        set: { newValue in
-                            model.allowQueryTokenAuth = newValue
-                            model.save()
-                        }
-                    )
-                ) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Query-String Token Fallback")
-                        Text("Legacy clients can pass the token in the URL instead of a Bearer header.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-            }
-
-            SettingsGroup(title: "Allowed Origins") {
-                TextEditor(text: $model.allowedOriginsText)
-                    .font(.system(.body, design: .monospaced))
-                    .frame(minHeight: 100)
-                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(.separator))
-                Button {
-                    model.save()
-                } label: {
-                    Label("Apply Origins", systemImage: "checkmark.circle")
-                }
-            }
-
-            trustedClientsGroup
-        }
-    }
-
-    private var trustedClientsGroup: some View {
-        SettingsGroup(title: "Trusted Clients") {
-            Text("Clients that automatically connect without approval.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            let trustedClients = serverController.getTrustedClients()
-            if trustedClients.isEmpty {
-                Text("No trusted clients")
-                    .foregroundStyle(.secondary)
-                    .italic()
-            } else {
-                ForEach(trustedClients, id: \.self) { client in
-                    HStack {
-                        Text(client)
-                            .font(.system(.body, design: .monospaced))
-                        Spacer()
-                        Button(role: .destructive) {
-                            serverController.removeTrustedClient(client)
-                        } label: {
-                            Label("Remove", systemImage: "minus.circle")
-                        }
-                        .buttonStyle(.borderless)
-                    }
-                }
-
-                Divider()
-
-                Button(role: .destructive) {
-                    showingResetTrustedClientsAlert = true
-                } label: {
-                    Label("Remove All", systemImage: "trash")
-                }
-                .alert("Remove All Trusted Clients", isPresented: $showingResetTrustedClientsAlert) {
-                    Button("Cancel", role: .cancel) {}
-                    Button("Remove All", role: .destructive) {
-                        serverController.resetTrustedClients()
-                    }
-                } message: {
-                    Text("They will need to be approved again when connecting.")
-                }
-            }
-        }
-    }
-
-    // MARK: - Cloudflare
-
-    private var cloudflarePane: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            PaneHeader(
-                title: "Cloudflare",
-                subtitle:
-                    "Create and run a named Cloudflare Tunnel owned by Apple Core, with explicit per-service remote access."
-            )
-
-            SettingsGroup(title: "Before You Start") {
-                let cloudflaredInstalled = model.cloudflareStatus?.cloudflaredInstalled ?? false
-                let loggedIn = model.cloudflareStatus?.loggedIn ?? false
-
-                setupStep(
-                    done: cloudflaredInstalled,
-                    title: "cloudflared installed",
-                    detail: cloudflaredInstalled
-                        ? model.cloudflareStatus?.cloudflaredPath ?? ""
-                        : "Install it with: brew install cloudflared"
-                )
-
-                Divider()
-
-                VStack(alignment: .leading, spacing: 8) {
-                    setupStep(
-                        done: loggedIn,
-                        title: "Signed in to Cloudflare",
-                        detail: loggedIn
-                            ? "Account certificate found at \(model.cloudflareStatus?.originCertificatePath ?? "")"
-                            : "Apple Core needs a one-time browser sign-in to create tunnels and DNS records in your account."
-                    )
-
-                    if !loggedIn {
-                        HStack(spacing: 10) {
-                            Button {
-                                Task { await model.logInToCloudflare() }
-                            } label: {
-                                Label("Log In to Cloudflare", systemImage: "person.badge.key")
-                            }
-                            .disabled(!cloudflaredInstalled)
-
-                            Button("Check Login") {
-                                Task { await model.refreshCloudflareStatus() }
-                            }
-                        }
-                    }
-                }
-
-                Divider()
-
-                Text(
-                    "Then set a Domain and Hostname below and choose Set Up & Start. Apple Core creates the tunnel, points the hostname at this Mac in DNS, and keeps cloudflared running."
-                )
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            }
-
-            SettingsGroup(title: "Status") {
-                LabeledContent("Tunnel") {
-                    StatusValue(
-                        text: cloudflareStatusText,
-                        systemImage: cloudflareStatusIcon,
-                        tint: cloudflareStatusTint
-                    )
-                }
-                Divider()
-                LabeledContent("Detail") {
-                    Text(model.cloudflareStatus?.message ?? "Checking…")
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                Divider()
-                LabeledContent("Remote URL") {
-                    let derivedURL =
-                        model.publicBaseURL.isEmpty
-                        ? CloudflareManager.publicBaseURL(for: model.cloudflare) : model.publicBaseURL
-                    if derivedURL.isEmpty {
-                        Text("Not configured")
-                            .foregroundStyle(.secondary)
-                    } else {
-                        Text(derivedURL)
-                            .font(.system(.body, design: .monospaced))
-                            .textSelection(.enabled)
-                    }
-                }
-            }
-
-            SettingsGroup(title: "Configuration") {
-                Toggle(
-                    isOn: Binding(
-                        get: { model.cloudflare.enabled },
-                        set: { newValue in
-                            Task { await model.setCloudflareEnabled(newValue) }
-                        }
-                    )
-                ) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Enable Cloudflare Tunnel")
-                        Text(
-                            "Apple Core will manage a local cloudflared LaunchAgent, but services allow remote access only when their Remote Access toggle is on."
-                        )
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    }
-                }
-
-                Divider()
-
-                SettingsField(label: "Profile") {
-                    cloudflareFieldStack(
-                        placeholder: "Personal tunnel",
-                        keyPath: \.profileName,
-                        help: "A label for your own reference. Cloudflare never sees it."
-                    )
-                }
-                SettingsField(label: "Domain") {
-                    cloudflareFieldStack(
-                        placeholder: "example.com",
-                        keyPath: \.domain,
-                        help: "A domain already in your Cloudflare account. Filling this in suggests a hostname below.",
-                        normalizesHost: true
-                    )
-                }
-                SettingsField(label: "Hostname") {
-                    cloudflareFieldStack(
-                        placeholder: "mcp.example.com",
-                        keyPath: \.hostname,
-                        help:
-                            "The address Cloudflare will route to this Mac. Host only — no https:// and no /mcp path.",
-                        normalizesHost: true,
-                        error: model.cloudflareStatus?.hostnameError
-                    )
-                }
-                SettingsField(label: "Tunnel Name") {
-                    cloudflareFieldStack(
-                        placeholder: "apple-core",
-                        keyPath: \.tunnelName,
-                        help: "Name of the named tunnel in your Cloudflare account. Apple Core reuses it if it exists."
-                    )
-                }
-
-                DisclosureGroup(isExpanded: $isCloudflareAdvancedExpanded) {
-                    VStack(alignment: .leading, spacing: 10) {
-                        SettingsField(label: "Tunnel ID") {
-                            cloudflareTextField("Created or discovered by Apple Core", keyPath: \.tunnelId)
-                        }
-                        SettingsField(label: "Account ID") {
-                            cloudflareTextField("Optional Cloudflare account ID", keyPath: \.accountId)
-                        }
-                        SettingsField(label: "Zone ID") {
-                            cloudflareTextField("Optional Cloudflare zone ID", keyPath: \.zoneId)
-                        }
-                        SettingsField(label: "cloudflared") {
-                            cloudflareTextField("/opt/homebrew/bin/cloudflared", keyPath: \.cloudflaredPath)
-                        }
-                        SettingsField(label: "Config File") {
-                            cloudflareTextField(
-                                "~/.config/apple-core/cloudflared/config.yml",
-                                keyPath: \.configFilePath
-                            )
-                        }
-                        SettingsField(label: "Credentials File") {
-                            cloudflareTextField("Created by cloudflared tunnel create", keyPath: \.credentialsFilePath)
-                        }
-                    }
-                    .padding(.top, 6)
-                } label: {
-                    Label("Advanced Cloudflare Settings", systemImage: "gearshape")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                }
-
-                HStack(spacing: 10) {
-                    Spacer()
-
-                    Menu {
-                        Button("Prepare Local Config") {
-                            Task { await model.prepareCloudflareConfiguration() }
-                        }
-                        .disabled(!model.cloudflare.enabled)
-
-                        Button("Create or Repair Tunnel") {
-                            Task { await model.bootstrapCloudflareTunnel() }
-                        }
-                        .disabled(
-                            !model.cloudflare.enabled || !(model.cloudflareStatus?.cloudflaredInstalled ?? false)
-                        )
-
-                        Button("Restart Tunnel") {
-                            Task { await model.restartCloudflareTunnel() }
-                        }
-                        .disabled(!model.cloudflare.enabled || model.cloudflareStatus?.state == .needsTunnel)
-
-                        // Loads the LaunchAgent without touching DNS. Only
-                        // useful once routing is already correct.
-                        Button("Start Tunnel Only") {
-                            Task { await model.startCloudflareTunnel() }
-                        }
-                        .disabled(!model.cloudflare.enabled)
-                    } label: {
-                        Label("Tunnel Actions", systemImage: "ellipsis.circle")
-                    }
-                    .fixedSize()
-
-                    if model.cloudflareStatus?.state == .running {
-                        Button {
-                            Task { await model.stopCloudflareTunnel() }
-                        } label: {
-                            Label("Stop Tunnel", systemImage: "stop.circle")
-                                .frame(width: 150)
-                        }
-                    } else {
-                        // The primary action runs the whole sequence: find or
-                        // create the tunnel, route the hostname in DNS, write
-                        // the config and LaunchAgent, then start. Plain "Start
-                        // Tunnel" skipped DNS routing, which made a tunnel that
-                        // came up but resolved nowhere the default outcome.
-                        Button {
-                            Task { await model.bootstrapCloudflareTunnel() }
-                        } label: {
-                            Label("Set Up & Start", systemImage: "play.circle")
-                                .frame(width: 150)
-                        }
-                        .keyboardShortcut(.defaultAction)
-                        .disabled(!model.cloudflare.enabled)
-                    }
-                }
-            }
-
-            SettingsGroup(title: "Routing") {
-                Text(
-                    "One Cloudflare hostname forwards to \(model.localBaseURL); only services with Remote Access enabled are reachable, and every remote request must authenticate."
-                )
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-                Divider()
-
-                LabeledContent("Route Mode") {
-                    Text(humanizedRouteMode)
-                        .foregroundStyle(.secondary)
-                        .help("Configured route mode: \(model.cloudflare.routeMode)")
-                }
-
-                Label(
-                    model.cloudflare.createdByAppleCore
-                        ? "Apple Core created this tunnel." : "Apple Core did not create this tunnel.",
-                    systemImage: model.cloudflare.createdByAppleCore ? "checkmark.circle" : "info.circle"
-                )
-                .foregroundStyle(.secondary)
-            }
-        }
-    }
-
-    private func cloudflareTextField(
-        _ placeholder: String,
-        keyPath: WritableKeyPath<CloudflareSettings, String>,
-        normalizesHost: Bool = false
-    ) -> some View {
-        TextField(
-            placeholder,
-            text: Binding(
-                get: { model.cloudflare[keyPath: keyPath] },
-                set: { model.cloudflare[keyPath: keyPath] = $0 }
-            )
-        )
-        .textFieldStyle(.roundedBorder)
-        .frame(maxWidth: 340, alignment: .leading)
-        .onSubmit {
-            if normalizesHost {
-                model.normalizeCloudflareHostFields()
-            }
-            model.save(restartServer: false)
-            Task { await model.refreshCloudflareStatus() }
-        }
-    }
-
-    /// A Cloudflare field with the one-line explanation of what it is for, and
-    /// an inline reason when the value cannot work. These used to be bare text
-    /// fields whose rejection surfaced only in the log.
-    private func cloudflareFieldStack(
-        placeholder: String,
-        keyPath: WritableKeyPath<CloudflareSettings, String>,
-        help: String,
-        normalizesHost: Bool = false,
-        error: String? = nil
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            cloudflareTextField(placeholder, keyPath: keyPath, normalizesHost: normalizesHost)
-            if let error, !error.isEmpty {
-                Label(error, systemImage: "exclamationmark.triangle.fill")
-                    .font(.caption)
-                    .foregroundStyle(.red)
-                    .fixedSize(horizontal: false, vertical: true)
-            } else {
-                Text(help)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-        .frame(maxWidth: 340, alignment: .leading)
-    }
-
-    private var humanizedRouteMode: String {
-        switch model.cloudflare.routeMode {
-        case "single-hostname-path-routing": "Single hostname, path-based routing"
-        default: model.cloudflare.routeMode
-        }
-    }
-
-    /// One line of the Cloudflare prerequisite checklist: satisfied or not,
-    /// with the specific next action when it is not.
-    private func setupStep(done: Bool, title: String, detail: String) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Image(systemName: done ? "checkmark.circle.fill" : "circle")
-                .foregroundStyle(done ? Color.green : Color.secondary)
-            VStack(alignment: .leading, spacing: 2) {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 4) {
                 Text(title)
-                if !detail.isEmpty {
-                    Text(detail)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .textSelection(.enabled)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
+                    .font(.title.weight(.semibold))
+                Text(subtitle)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            Spacer()
-        }
-    }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 20)
+            .padding(.top, 24)
 
-    private var cloudflareStatusText: String {
-        guard let status = model.cloudflareStatus else { return "Checking…" }
-        switch status.state {
-        case .running: return "Running"
-        case .stopped: return "Stopped"
-        case .disabled: return "Disabled"
-        case .needsLogin: return "Needs Cloudflare Login"
-        case .needsTunnel: return "Needs Tunnel"
-        case .needsConfig: return "Needs Config"
-        case .missingCloudflared: return "cloudflared Missing"
-        case .error: return "Error"
-        }
-    }
-
-    private var cloudflareStatusTint: Color {
-        switch model.cloudflareStatus?.state {
-        case .running: .green
-        case .error, .missingCloudflared: .red
-        case .needsLogin, .needsTunnel, .needsConfig: .orange
-        case .disabled, .stopped, .none: .secondary
-        }
-    }
-
-    private var cloudflareStatusIcon: String {
-        switch model.cloudflareStatus?.state {
-        case .running: "checkmark.circle.fill"
-        case .error: "exclamationmark.triangle.fill"
-        case .missingCloudflared: "questionmark.circle"
-        case .needsLogin: "person.badge.key"
-        case .needsTunnel, .needsConfig: "wrench.and.screwdriver"
-        case .stopped: "stop.circle"
-        case .disabled, .none: "pause.circle"
-        }
-    }
-
-    // MARK: - Cloud Clients
-
-    private var clientsPane: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            PaneHeader(
-                title: "Cloud Clients",
-                subtitle:
-                    "Copy the remote Apple Core endpoint into Claude custom connectors and other cloud MCP clients; OAuth clients register here automatically."
-            )
-
-            SettingsGroup(title: "Endpoint") {
-                LabeledContent("MCP URL") {
-                    Text(model.publicBaseURL.isEmpty ? "Remote base URL not configured" : "\(model.clientBaseURL)/mcp")
-                        .font(.system(.body, design: .monospaced))
-                        .foregroundStyle(model.publicBaseURL.isEmpty ? .secondary : .primary)
-                        .textSelection(.enabled)
-                }
-
-                ActionGrid(minimumItemWidth: 180) {
-                    CopyButton(title: "Copy MCP URL", systemImage: "link") {
-                        "\(model.clientBaseURL)/mcp"
-                    }
-                    .disabled(model.publicBaseURL.isEmpty)
-
-                    CopyButton(title: "Copy Token", systemImage: "key") {
-                        model.token
-                    }
-
-                    Button {
-                        ClaudeDesktop.showConfigurationPanel()
-                    } label: {
-                        Label("Configure Claude Desktop…", systemImage: "desktopcomputer")
-                    }
-                }
+            Form {
+                content
             }
-
-            SettingsGroup(title: "Registered OAuth Clients") {
-                Button {
-                    model.reloadOAuthClients()
-                } label: {
-                    Label("Refresh", systemImage: "arrow.clockwise")
-                }
-
-                if model.registeredOAuthClients.isEmpty {
-                    Text("No OAuth clients registered yet.")
-                        .foregroundStyle(.secondary)
-                } else {
-                    ForEach(model.registeredOAuthClients, id: \.clientID) { client in
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(client.clientName)
-                                .font(.headline)
-                            Text(client.clientID)
-                                .font(.system(.caption, design: .monospaced))
-                                .foregroundStyle(.secondary)
-                                .textSelection(.enabled)
-                            Text(
-                                Date(timeIntervalSince1970: TimeInterval(client.issuedAt)),
-                                format: .dateTime
-                            )
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        }
-                        .padding(.vertical, 4)
-                    }
-                }
-            }
-        }
-        .onAppear {
-            model.reloadOAuthClients()
-        }
-    }
-
-    // MARK: - Server
-
-    private var serverPane: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            PaneHeader(
-                title: "Server",
-                subtitle: "Local HTTP/SSE listener and LaunchAgent lifecycle."
-            )
-
-            SettingsGroup(title: "Listener") {
-                LabeledContent("Port") {
-                    TextField("8756", text: $model.portText)
-                        .textFieldStyle(.roundedBorder)
-                        .multilineTextAlignment(.trailing)
-                        .frame(width: 100)
-                        .onSubmit { model.save() }
-                }
-                Divider()
-                LabeledContent("Bind Host") {
-                    TextField("127.0.0.1", text: $model.bindHost)
-                        .textFieldStyle(.roundedBorder)
-                        .multilineTextAlignment(.trailing)
-                        .frame(width: 200)
-                        .onSubmit { model.save() }
-                }
-                Divider()
-                HStack {
-                    Spacer()
-                    Button {
-                        model.save()
-                    } label: {
-                        Label("Apply and Restart Server", systemImage: "checkmark.circle")
-                    }
-                }
-            }
-
-            SettingsGroup(title: "General") {
-                Toggle(
-                    isOn: Binding(
-                        get: { model.isOpenAtLoginEnabled },
-                        set: { newValue in
-                            model.setOpenAtLogin(newValue)
-                        }
-                    )
-                ) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Open at Login")
-                        Text("Standard login item: opens Apple Core and its menu bar icon when you log in.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-
-                Divider()
-
-                Toggle(
-                    isOn: Binding(
-                        get: { model.showDockIcon },
-                        set: { newValue in
-                            model.showDockIcon = newValue
-                            if let delegate = NSApp.delegate as? AppDelegate {
-                                delegate.setShowDockIcon(newValue)
-                            }
-                        }
-                    )
-                ) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Show Dock Icon")
-                        Text(
-                            "Display the Apple Core icon in the Dock while the app is running. When off, Apple Core lives entirely in the menu bar."
-                        )
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    }
-                }
-            }
-
-            SettingsGroup(title: "LaunchAgent") {
-                Toggle(
-                    isOn: Binding(
-                        get: { model.runAsLaunchAgent },
-                        set: { newValue in
-                            model.runAsLaunchAgent = newValue
-                            if newValue {
-                                model.installAppLaunchAgent()
-                            } else {
-                                model.removeAppLaunchAgent()
-                            }
-                        }
-                    )
-                ) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Run as LaunchAgent")
-                        Text(
-                            "Background keep-alive: launchd relaunches Apple Core if it quits (and also starts it at "
-                                + "login, so Open at Login above is redundant while this is on)."
-                        )
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    }
-                }
-
-                Divider()
-
-                LabeledContent("Status") {
-                    StatusValue(
-                        text: model.isAppLaunchAgentLoaded ? "Loaded" : "Not Loaded",
-                        systemImage: model.isAppLaunchAgentLoaded ? "checkmark.circle.fill" : "circle",
-                        tint: model.isAppLaunchAgentLoaded ? .green : .secondary
-                    )
-                }
-
-                Divider()
-
-                HStack(spacing: 10) {
-                    Spacer()
-                    Button {
-                        model.installAppLaunchAgent()
-                    } label: {
-                        Label("Install or Repair", systemImage: "wrench.and.screwdriver")
-                            .frame(width: 150)
-                    }
-
-                    Button {
-                        model.refreshAppLaunchAgentStatus()
-                    } label: {
-                        Label("Refresh Status", systemImage: "arrow.clockwise")
-                            .frame(width: 150)
-                    }
-                }
-            }
-        }
-        .onAppear {
-            model.refreshAppLaunchAgentStatus()
-            model.refreshOpenAtLoginStatus()
+            .formStyle(.grouped)
         }
     }
 }
 
-// MARK: - Rows
+// MARK: - Services
 
-/// One service surface: local enable toggle (same @AppStorage binding the
-/// menu bar uses) plus the ported ServingConfig "Public" exposure toggle.
-private struct ServiceRow: View {
+private struct ServicesPane: View {
     @ObservedObject var serverController: ServerController
-    @ObservedObject var model: ServingSettingsModel
+
+    var body: some View {
+        PaneScaffold(
+            title: "Services",
+            subtitle: "What Apple Core can reach on this Mac."
+        ) {
+            Section {
+                ForEach(serverController.computedServiceConfigs) { config in
+                    ServiceToggleRow(serverController: serverController, config: config)
+                }
+            } footer: {
+                Text("macOS asks your permission the first time each one is switched on.")
+            }
+        }
+    }
+}
+
+/// One service. Its own type so switching Calendar on does not re-evaluate the
+/// other ten rows, and so the in-flight and error state stay local.
+///
+/// This row used to carry a second "Remote" switch. See `ServiceAccessPolicy`
+/// for why that axis is gone.
+private struct ServiceToggleRow: View {
+    @ObservedObject var serverController: ServerController
     let config: ServiceConfig
+
+    @State private var isActivating = false
     @State private var activationError: String?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            row
-            if let activationError {
-                Label(activationError, systemImage: "exclamationmark.triangle.fill")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .textSelection(.enabled)
+        Toggle(isOn: binding) {
+            HStack(spacing: 10) {
+                Image(systemName: config.iconName)
+                    .foregroundStyle(config.color)
+                    .frame(width: 20)
+
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(config.name)
+                    if let activationError {
+                        Text(activationError)
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+
+                if isActivating {
+                    ProgressView().controlSize(.small)
+                }
             }
         }
-        .padding(14)
-        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
+        .disabled(isActivating)
     }
 
-    private var row: some View {
-        HStack(alignment: .center, spacing: 12) {
-            Circle()
-                .fill(config.binding.wrappedValue ? config.color : Color(NSColor.controlColor))
-                .overlay(
-                    Image(systemName: config.iconName)
-                        .resizable()
-                        .scaledToFit()
-                        .foregroundColor(config.binding.wrappedValue ? .white : .primary.opacity(0.7))
-                        .padding(6)
-                )
-                .frame(width: 30, height: 30)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(config.name)
-                    .font(.headline)
-                Text(config.id)
-                    .font(.system(.caption, design: .monospaced))
-                    .foregroundStyle(.secondary)
-            }
-
-            Spacer()
-
-            Toggle("Remote", isOn: model.exposePubliclyBinding(forServiceID: config.id))
-                .disabled(!config.binding.wrappedValue)
-                .accessibilityLabel("Allow remote access to \(config.name)")
-                .help(
-                    "Allow this service through the remote tunnel hostname. "
-                        + "Remote requests still require authentication (bearer token or OAuth)."
-                )
-
-            Toggle(
-                isOn: Binding(
-                    get: { config.binding.wrappedValue },
-                    set: { newValue in
-                        config.binding.wrappedValue = newValue
-                        activationError = nil
-                        Task { @MainActor in
-                            if newValue {
-                                do {
-                                    try await ServicePermissionCoordinator.activate(
-                                        config.service,
-                                        requirements: config.permissionRequirements
-                                    )
-                                } catch {
-                                    config.binding.wrappedValue = false
-                                    activationError = Self.explain(error, service: config.name)
-                                }
-                            }
-                            await serverController.updateServiceBindings(
-                                Dictionary(
-                                    uniqueKeysWithValues: serverController.computedServiceConfigs.map {
-                                        ($0.id, $0.binding)
-                                    }
-                                )
+    private var binding: Binding<Bool> {
+        Binding(
+            get: { config.binding.wrappedValue },
+            set: { newValue in
+                config.binding.wrappedValue = newValue
+                activationError = nil
+                Task { @MainActor in
+                    if newValue {
+                        isActivating = true
+                        defer { isActivating = false }
+                        do {
+                            try await ServicePermissionCoordinator.activate(
+                                config.service,
+                                requirements: config.permissionRequirements
                             )
+                        } catch {
+                            config.binding.wrappedValue = false
+                            activationError = Self.explain(error, service: config.name)
                         }
                     }
-                )
-            ) {
-                Text("Enable \(config.name)")
+                    await serverController.updateServiceBindings(
+                        Dictionary(
+                            uniqueKeysWithValues: serverController.computedServiceConfigs.map { ($0.id, $0.binding) }
+                        )
+                    )
+                }
             }
-            .toggleStyle(.switch)
-            .labelsHidden()
-            .accessibilityLabel("Enable \(config.name)")
-        }
+        )
     }
 
-    /// Turns an activation failure into something actionable without hiding
-    /// the system's service-specific error.
     private static func explain(_ error: Error, service: String) -> String {
         let message = error.localizedDescription
         guard message.lowercased().contains("denied") || message.lowercased().contains("restricted") else {
-            return "\(service) could not be enabled: \(message)"
+            return message
         }
-        return
-            "\(service) could not be enabled: \(message). Change the service's access in System Settings > Privacy & Security, then try again."
+        return "\(message) Change it in System Settings › Privacy & Security, then try again."
     }
 }
 
-// MARK: - Shared Components (adapted from Bridgeport's SettingsView.swift)
+// MARK: - Access
 
-/// Copy-to-pasteboard button with transient confirmation: the label flips to
-/// "Copied" briefly so the user knows it worked.
-private struct CopyButton: View {
+private struct AccessPane: View {
+    @ObservedObject var model: ServingSettingsModel
+
+    var body: some View {
+        PaneScaffold(
+            title: "Access",
+            subtitle: "Where Apple Core can be reached from."
+        ) {
+            Section {
+                Picker("", selection: reachabilityBinding) {
+                    Text("This Mac only").tag(false)
+                    Text("Reachable from anywhere").tag(true)
+                }
+                .pickerStyle(.radioGroup)
+                .labelsHidden()
+            } footer: {
+                Text("Every connection is authenticated, from here or from anywhere.")
+            }
+
+            if isRemoteOn {
+                Section {
+                    RemoteAccessSetup(model: model)
+                }
+            } else {
+                Section {
+                    LabeledContent("Address") {
+                        Text("\(model.localBaseURL)/mcp")
+                            .font(.system(.callout, design: .monospaced))
+                            .textSelection(.enabled)
+                    }
+                }
+            }
+        }
+    }
+
+    private var isRemoteOn: Bool {
+        model.cloudflareStatus?.state == .running || model.cloudflare.enabled
+    }
+
+    /// Choosing "Reachable from anywhere" does not itself publish anything; it
+    /// reveals the one setup action. Choosing "This Mac only" tears the tunnel
+    /// down, which is the whole of turning it off.
+    private var reachabilityBinding: Binding<Bool> {
+        Binding(
+            get: { isRemoteOn },
+            set: { wantsRemote in
+                if wantsRemote {
+                    var settings = model.cloudflare
+                    settings.enabled = true
+                    model.cloudflare = settings
+                    model.save(restartServer: false)
+                } else {
+                    Task { await model.stopCloudflareTunnel() }
+                }
+            }
+        )
+    }
+}
+
+// MARK: - Clients
+
+private struct ClientsPane: View {
+    @ObservedObject var serverController: ServerController
+    @ObservedObject var model: ServingSettingsModel
+
+    @State private var isConfirmingRemoveAll = false
+
+    private var address: String { "\(model.clientBaseURL)/mcp" }
+
+    private var isRemoteOn: Bool {
+        model.cloudflareStatus?.state == .running
+    }
+
+    var body: some View {
+        PaneScaffold(
+            title: "Clients",
+            subtitle: "Apps allowed to use Apple Core."
+        ) {
+            Section {
+                Text(
+                    "Every client connects to the same address using the same token. Apple Core can set some of "
+                        + "them up for you; the rest you paste the address into. Whichever it is, the first "
+                        + "connection has to be approved here before anything is shared."
+                )
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+                LabeledContent("Address") {
+                    Text(address)
+                        .font(.system(.callout, design: .monospaced))
+                        .textSelection(.enabled)
+                }
+
+                SettingsCopyButton(title: "Copy Address and Token", systemImage: "doc.on.doc") {
+                    "\(address)\n\(model.token)"
+                }
+            }
+
+            Section {
+                ForEach(MCPClientCatalog.local(address: address, token: model.token)) { client in
+                    ClientRow(client: client, address: address, token: model.token, isRemoteOn: true)
+                }
+            } header: {
+                Text("On this Mac")
+            }
+
+            Section {
+                ForEach(MCPClientCatalog.cloud) { client in
+                    ClientRow(client: client, address: address, token: model.token, isRemoteOn: isRemoteOn)
+                }
+            } header: {
+                Text("Over the internet")
+            } footer: {
+                Text(
+                    isRemoteOn
+                        ? "These reach this Mac at the address above."
+                        : "Turn on \"Reachable from anywhere\" in Access before these can connect."
+                )
+            }
+
+            TrustedClientsSection(
+                clients: serverController.getTrustedClients(),
+                onRemove: { serverController.removeTrustedClient($0) },
+                onRemoveAll: { isConfirmingRemoveAll = true }
+            )
+        }
+        .alert("Remove all trusted clients?", isPresented: $isConfirmingRemoveAll) {
+            Button("Cancel", role: .cancel) {}
+            Button("Remove All", role: .destructive) { serverController.resetTrustedClients() }
+        } message: {
+            Text("Each one will have to be approved again the next time it connects.")
+        }
+    }
+}
+
+/// One client. What the trailing control is depends on how much Apple Core can
+/// actually do for that client, which is the honest distinction: configure it,
+/// hand over a command, or hand over the address.
+private struct ClientRow: View {
+    let client: MCPClient
+    let address: String
+    let token: String
+    let isRemoteOn: Bool
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: client.iconName)
+                .foregroundStyle(client.isInstalled ? Color.accentColor : Color.secondary)
+                .frame(width: 20)
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text(client.name)
+                    .foregroundStyle(client.isInstalled ? .primary : .secondary)
+                if case let .paste(instructions) = client.setup {
+                    Text(instructions)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else if !client.isInstalled {
+                    Text("Not installed")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Spacer(minLength: 8)
+
+            action
+        }
+        .opacity(client.requiresRemoteAccess && !isRemoteOn ? 0.5 : 1)
+        .disabled(client.requiresRemoteAccess && !isRemoteOn)
+    }
+
+    @ViewBuilder
+    private var action: some View {
+        switch client.setup {
+        case .automatic:
+            Button("Configure") { ClaudeDesktop.showConfigurationPanel() }
+                .disabled(!client.isInstalled)
+        case let .command(command):
+            SettingsCopyButton(title: "Copy Command", systemImage: "terminal") { command }
+        case .paste:
+            SettingsCopyButton(title: "Copy Address", systemImage: "link") { address }
+        }
+    }
+}
+
+private struct TrustedClientsSection: View {
+    let clients: [String]
+    let onRemove: (String) -> Void
+    let onRemoveAll: () -> Void
+
+    var body: some View {
+        Section {
+            if clients.isEmpty {
+                Text("No clients approved yet.")
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(clients, id: \.self) { client in
+                    HStack {
+                        Text(client)
+                        Spacer()
+                        Button("Remove") { onRemove(client) }
+                            .buttonStyle(.borderless)
+                    }
+                }
+                Button("Remove All", role: .destructive, action: onRemoveAll)
+            }
+        } header: {
+            Text("Approved")
+        } footer: {
+            Text("These connect without asking. Anything else has to be approved when it first connects.")
+        }
+    }
+}
+
+// MARK: - Shared
+
+struct SettingsCopyButton: View {
     let title: String
     let systemImage: String
     let value: () -> String?
@@ -993,9 +439,8 @@ private struct CopyButton: View {
     var body: some View {
         Button {
             guard let value = value(), !value.isEmpty else { return }
-            let pasteboard = NSPasteboard.general
-            pasteboard.clearContents()
-            pasteboard.setString(value, forType: .string)
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(value, forType: .string)
             withAnimation { isConfirmingCopy = true }
             Task {
                 try? await Task.sleep(for: .milliseconds(1400))
@@ -1007,114 +452,5 @@ private struct CopyButton: View {
                 systemImage: isConfirmingCopy ? "checkmark.circle.fill" : systemImage
             )
         }
-    }
-}
-
-private struct PaneHeader: View {
-    let title: String
-    let subtitle: String
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(title)
-                .font(.title2.weight(.semibold))
-            Text(subtitle)
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-}
-
-private struct ProductHeader: View {
-    let title: String
-    let subtitle: String
-
-    var body: some View {
-        HStack(spacing: 14) {
-            Image(nsImage: NSApp.applicationIconImage)
-                .resizable()
-                .frame(width: 52, height: 52)
-                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.title2.weight(.semibold))
-                Text(subtitle)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.quaternary.opacity(0.28), in: RoundedRectangle(cornerRadius: 8))
-    }
-}
-
-private struct SettingsGroup<Content: View>: View {
-    let title: String
-    @ViewBuilder var content: Content
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(title)
-                .font(.headline)
-            VStack(alignment: .leading, spacing: 10) {
-                content
-            }
-            .padding(14)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(.quaternary.opacity(0.28), in: RoundedRectangle(cornerRadius: 8))
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-}
-
-private struct SettingsField<Content: View>: View {
-    let label: String
-    @ViewBuilder var content: Content
-
-    var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 12) {
-            Text(label)
-                .frame(width: 120, alignment: .trailing)
-                .foregroundStyle(.secondary)
-            content
-        }
-    }
-}
-
-private struct StatusValue: View {
-    let text: String
-    let systemImage: String
-    let tint: Color
-
-    var body: some View {
-        Label(text, systemImage: systemImage)
-            .foregroundStyle(tint)
-    }
-}
-
-private struct ActionGrid<Content: View>: View {
-    let minimumItemWidth: CGFloat
-    @ViewBuilder var content: Content
-
-    var body: some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(spacing: 10) {
-                content
-            }
-
-            LazyVGrid(
-                columns: [GridItem(.adaptive(minimum: minimumItemWidth), spacing: 10, alignment: .leading)],
-                alignment: .leading,
-                spacing: 10
-            ) {
-                content
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }

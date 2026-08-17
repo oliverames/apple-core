@@ -13,7 +13,9 @@ import SwiftUI
 @MainActor
 final class SettingsWindowController: NSObject, NSWindowDelegate {
     private let serverController: ServerController
-    private let model: ServingSettingsModel
+    /// Shared with the onboarding window so the two surfaces edit the same
+    /// state rather than each holding a copy that overwrites the other's save.
+    let model: ServingSettingsModel
     private var dockIconWasVisible = false
     private var window: NSWindow?
 
@@ -34,7 +36,10 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         }
 
         if window == nil {
-            let initialSize = NSSize(width: 980, height: 680)
+            // Sized to the content the three panes actually hold. The window
+            // was 980x680 when there were six panes of dense controls; at that
+            // size the simplified panes were more empty than full.
+            let initialSize = NSSize(width: 760, height: 560)
             let hostingController = NSHostingController(
                 rootView: SettingsView(serverController: serverController, model: model)
             )
@@ -50,7 +55,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
             newWindow.title = "Apple Core Settings"
             newWindow.identifier = NSUserInterfaceItemIdentifier("AppleCoreSettingsWindow")
             newWindow.contentViewController = hostingController
-            newWindow.minSize = NSSize(width: 860, height: 560)
+            newWindow.minSize = NSSize(width: 700, height: 480)
             newWindow.isReleasedWhenClosed = false
             newWindow.toolbarStyle = .unified
             newWindow.tabbingMode = .disallowed

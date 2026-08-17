@@ -461,13 +461,14 @@ public actor CloudflareManager {
         )
     }
 
+    /// The cloudflared to use. Prefers whatever is actually installed —
+    /// Homebrew, the system, or the copy Apple Core downloaded itself — and
+    /// otherwise names the managed path, which is where the installer will put
+    /// one. Returning the managed path rather than a Homebrew path that does
+    /// not exist keeps the pane's "not installed" state pointing at the
+    /// location the Install button will fill.
     public static func defaultCloudflaredPath() -> String {
-        let candidates = [
-            "/opt/homebrew/bin/cloudflared",
-            "/usr/local/bin/cloudflared",
-            "/usr/bin/cloudflared",
-        ]
-        return candidates.first { FileManager.default.fileExists(atPath: $0) } ?? candidates[0]
+        CloudflaredInstaller.locateInstalled() ?? CloudflaredInstaller.managedBinaryPath()
     }
 
     public static func publicBaseURL(for settings: CloudflareSettings) -> String {

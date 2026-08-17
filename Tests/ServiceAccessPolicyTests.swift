@@ -2,51 +2,14 @@ import Testing
 
 @Suite("Service access policy")
 struct ServiceAccessPolicyTests {
-    @Test("Disabled services stay hidden locally and remotely")
-    func disabledServiceIsHidden() {
-        #expect(
-            !ServiceAccessPolicy.isAccessible(
-                isLocallyEnabled: false,
-                surface: .local,
-                isExposedRemotely: true
-            )
-        )
-        #expect(
-            !ServiceAccessPolicy.isAccessible(
-                isLocallyEnabled: false,
-                surface: .remote,
-                isExposedRemotely: true
-            )
-        )
+    @Test("Disabled services stay hidden on both surfaces", arguments: [MCPAccessSurface.local, .remote])
+    func disabledServiceIsHidden(surface: MCPAccessSurface) {
+        #expect(!ServiceAccessPolicy.isAccessible(isLocallyEnabled: false, surface: surface))
     }
 
-    @Test("Enabled services remain available locally")
-    func enabledServiceIsAvailableLocally() {
-        #expect(
-            ServiceAccessPolicy.isAccessible(
-                isLocallyEnabled: true,
-                surface: .local,
-                isExposedRemotely: false
-            )
-        )
-    }
-
-    @Test("Remote access requires explicit exposure")
-    func remoteAccessRequiresExposure() {
-        #expect(
-            !ServiceAccessPolicy.isAccessible(
-                isLocallyEnabled: true,
-                surface: .remote,
-                isExposedRemotely: false
-            )
-        )
-        #expect(
-            ServiceAccessPolicy.isAccessible(
-                isLocallyEnabled: true,
-                surface: .remote,
-                isExposedRemotely: true
-            )
-        )
+    @Test("An enabled service is reachable on both surfaces", arguments: [MCPAccessSurface.local, .remote])
+    func enabledServiceIsAvailable(surface: MCPAccessSurface) {
+        #expect(ServiceAccessPolicy.isAccessible(isLocallyEnabled: true, surface: surface))
     }
 }
 
