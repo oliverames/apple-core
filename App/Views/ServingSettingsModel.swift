@@ -42,6 +42,21 @@ final class ServingSettingsModel: ObservableObject {
     /// Set when the address could not be derived and has to be typed after all.
     @Published var needsManualHostname = false
 
+    /// Drives the first-run sheet. Onboarding is presented on the Settings
+    /// window rather than as a window of its own, matching skylight-bridge.
+    @Published var isOnboardingPresented = false
+
+    static let onboardingCompletedDefaultsKey = "hasCompletedOnboarding"
+
+    static var hasCompletedOnboarding: Bool {
+        UserDefaults.standard.bool(forKey: onboardingCompletedDefaultsKey)
+    }
+
+    func completeOnboarding() {
+        UserDefaults.standard.set(true, forKey: Self.onboardingCompletedDefaultsKey)
+        isOnboardingPresented = false
+    }
+
     @AppStorage("runAsLaunchAgent") var runAsLaunchAgent = true
     @AppStorage("showDockIcon") var showDockIcon = false
 

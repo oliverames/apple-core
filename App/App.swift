@@ -117,7 +117,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusMenu: NSMenu?
     private var settingsWindowController: SettingsWindowController?
     private var aboutWindowController: AboutWindowController?
-    private var onboardingWindowController: OnboardingWindowController?
 
     // Sparkle auto-updating, following ping-warden's pattern
     // (PingWardenApp.swift): the controller is created with
@@ -179,7 +178,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // icon and no idea what to do next. Show setup once, and only when the
         // app is launched by a person: a LaunchAgent relaunch must not put a
         // window on screen.
-        if !OnboardingWindowController.hasCompletedOnboarding && !wasLaunchedByLaunchd {
+        if !ServingSettingsModel.hasCompletedOnboarding && !wasLaunchedByLaunchd {
             showOnboarding()
         }
     }
@@ -192,15 +191,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } ?? false
     }
 
+    /// Onboarding is a sheet on the Settings window, not a window of its own,
+    /// so there is one place the app is configured from.
     func showOnboarding() {
-        let settingsController = settingsWindowController ?? SettingsWindowController(
-            serverController: serverController
-        )
-        settingsWindowController = settingsController
-
-        let controller = onboardingWindowController ?? OnboardingWindowController()
-        onboardingWindowController = controller
-        controller.show(serverController: serverController, model: settingsController.model)
+        openSettings()
+        settingsWindowController?.model.isOnboardingPresented = true
     }
 
     @objc private func openOnboardingFromMenu() {

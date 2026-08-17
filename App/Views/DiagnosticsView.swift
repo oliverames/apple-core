@@ -32,20 +32,17 @@ struct DiagnosticsView: View {
                 repairSection
             }
             .formStyle(.grouped)
+            .groupedPageLayout()
 
-            Divider()
-
-            HStack {
-                SettingsCopyButton(title: "Copy Report", systemImage: "doc.on.clipboard") {
-                    report
-                }
-                Spacer()
-                Button("Done") { dismiss() }
-                    .buttonStyle(.borderedProminent)
-                    .keyboardShortcut(.defaultAction)
-            }
-            .padding(.horizontal, 20)
-            .padding(.vertical, 14)
+            EditorFooter(
+                confirmTitle: "Done",
+                cancelTitle: "Copy Report",
+                onCancel: {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(report, forType: .string)
+                },
+                onConfirm: { dismiss() }
+            )
         }
         .frame(width: 620, height: 560)
         .task {
@@ -85,7 +82,7 @@ struct DiagnosticsView: View {
                 }
             }
         } header: {
-            Text("Server")
+            SectionHeader(title: "Server", subtitle: "What Apple Core is doing right now.")
         }
     }
 
@@ -121,7 +118,7 @@ struct DiagnosticsView: View {
                     .foregroundStyle(.secondary)
             }
         } header: {
-            Text("Remote access")
+            SectionHeader(title: "Remote Access")
         }
     }
 
@@ -155,9 +152,9 @@ struct DiagnosticsView: View {
                 Label("Rotate Token", systemImage: "key.horizontal")
             }
         } header: {
-            Text("Repair")
+            SectionHeader(title: "Repair", subtitle: "For when something above is wrong.")
         } footer: {
-            Text("Rotating the token disconnects every client until each one is given the new one.")
+            TipFooter(text: "Rotating the token disconnects every client until each one is given the new one.")
         }
     }
 

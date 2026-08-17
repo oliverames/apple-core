@@ -7,19 +7,19 @@
 // Almost none of them were decisions: port, bind host, LaunchAgent lifecycle,
 // allowed origins, route mode, tunnel and account identifiers, cloudflared and
 // config paths were implementation details surfaced as settings because they
-// existed, and each one asked the user to understand something about how the
-// server works in order to use it.
+// existed. There are three decisions in this app — what data Apple Core can
+// reach, whether it is reachable from outside this Mac, and which clients are
+// allowed — so there are three panes, and the machinery moved to Diagnostics.
 //
-// There are three decisions in this app: what data Apple Core can reach,
-// whether it is reachable from outside this Mac, and which clients are
-// allowed. Those are the three panes. Everything else is automatic or lives in
-// Diagnostics, which is a sheet, not a pane, because it is for when something
-// is wrong rather than for setting anything up.
+// The layout follows skylight-bridge: NavigationSplitView with a sidebar List,
+// detail pages that are grouped `Form`s titled by `.navigationTitle` rather
+// than an in-content heading, `SectionHeader`/`TipFooter` section grammar, and
+// `groupedPageLayout()` margins. See `Components.swift`.
 
 import AppKit
 import SwiftUI
 
-private enum SettingsPane: String, CaseIterable, Identifiable {
+enum SettingsPane: String, CaseIterable, Identifiable {
     case services = "Services"
     case access = "Access"
     case clients = "Clients"
@@ -48,66 +48,51 @@ struct SettingsView: View {
                 Label(pane.rawValue, systemImage: pane.icon)
                     .tag(pane)
             }
-            .navigationSplitViewColumnWidth(min: 170, ideal: 180, max: 200)
             .listStyle(.sidebar)
-            .safeAreaInset(edge: .bottom) {
-                Button {
-                    isShowingDiagnostics = true
-                } label: {
-                    Label("Diagnostics", systemImage: "stethoscope")
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .buttonStyle(.borderless)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 10)
-            }
+            .navigationTitle("Apple Core")
+            .navigationSplitViewColumnWidth(min: 190, ideal: 210, max: 260)
         } detail: {
-            switch selection {
-            case .services:
-                ServicesPane(serverController: serverController)
-            case .access:
-                AccessPane(model: model)
-            case .clients:
-                ClientsPane(serverController: serverController, model: model)
-            }
+            detail
+                .toolbar {
+                    ToolbarItem(placement: .primaryAction) {
+                        Button {
+                            isShowingDiagnostics = true
+                        } label: {
+                            Label("Diagnostics", systemImage: "stethoscope")
+                        }
+                        .help("Server status, tunnel details, and repair actions")
+                    }
+                }
         }
-        .frame(minWidth: 720, idealWidth: 780, minHeight: 520, idealHeight: 600)
         .sheet(isPresented: $isShowingDiagnostics) {
             DiagnosticsView(model: model, serverController: serverController)
+        }
+        .sheet(isPresented: $model.isOnboardingPresented) {
+            OnboardingView(
+                serverController: serverController,
+                model: model,
+                onFinish: {
+                    model.completeOnboarding()
+                    selection = .services
+                }
+            )
+            .interactiveDismissDisabled()
         }
         .task {
             model.reloadConfigFromDisk()
             await model.refreshCloudflareStatus()
         }
     }
-}
 
-// MARK: - Pane chrome
-
-/// Title, one supporting line, and the pane's content in a grouped form.
-/// Every pane uses it so the three read as one window rather than three.
-private struct PaneScaffold<Content: View>: View {
-    let title: String
-    let subtitle: String
-    @ViewBuilder var content: Content
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(title)
-                    .font(.title.weight(.semibold))
-                Text(subtitle)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 20)
-            .padding(.top, 24)
-
-            Form {
-                content
-            }
-            .formStyle(.grouped)
+    @ViewBuilder
+    private var detail: some View {
+        switch selection {
+        case .services:
+            ServicesPane(serverController: serverController)
+        case .access:
+            AccessPane(model: model)
+        case .clients:
+            ClientsPane(serverController: serverController, model: model)
         }
     }
 }
@@ -118,18 +103,23 @@ private struct ServicesPane: View {
     @ObservedObject var serverController: ServerController
 
     var body: some View {
-        PaneScaffold(
-            title: "Services",
-            subtitle: "What Apple Core can reach on this Mac."
-        ) {
+        Form {
             Section {
                 ForEach(serverController.computedServiceConfigs) { config in
                     ServiceToggleRow(serverController: serverController, config: config)
                 }
+            } header: {
+                SectionHeader(
+                    title: "Apple Services",
+                    subtitle: "Only what you switch on here is ever available to a client."
+                )
             } footer: {
-                Text("macOS asks your permission the first time each one is switched on.")
+                TipFooter(text: "macOS asks your permission the first time each service is switched on.")
             }
         }
+        .formStyle(.grouped)
+        .groupedPageLayout()
+        .navigationTitle("Services")
     }
 }
 
@@ -146,28 +136,47 @@ private struct ServiceToggleRow: View {
     @State private var activationError: String?
 
     var body: some View {
-        Toggle(isOn: binding) {
-            HStack(spacing: 10) {
-                Image(systemName: config.iconName)
-                    .foregroundStyle(config.color)
-                    .frame(width: 20)
+        HStack(spacing: 12) {
+            Image(systemName: config.iconName)
+                .foregroundStyle(config.color)
+                .frame(width: 22)
+                .accessibilityHidden(true)
 
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(config.name)
-                    if let activationError {
-                        Text(activationError)
-                            .font(.caption)
-                            .foregroundStyle(.orange)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-
-                if isActivating {
-                    ProgressView().controlSize(.small)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(config.name)
+                    .fontWeight(.medium)
+                if let activationError {
+                    Text(activationError)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else if !config.permissionRequirements.isEmpty {
+                    Text("Needs \(config.permissionRequirements.sentenceDescription)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
+
+            Spacer(minLength: 12)
+
+            if activationError != nil {
+                StatusBadge(title: "Not granted", tone: .warning)
+            }
+
+            if isActivating {
+                ProgressView()
+                    .controlSize(.small)
+            }
+
+            Toggle("Enabled", isOn: binding)
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .controlSize(.small)
+                .disabled(isActivating)
+                .accessibilityLabel("Enable \(config.name)")
         }
-        .disabled(isActivating)
+        .padding(.vertical, 4)
     }
 
     private var binding: Binding<Bool> {
@@ -187,7 +196,7 @@ private struct ServiceToggleRow: View {
                             )
                         } catch {
                             config.binding.wrappedValue = false
-                            activationError = Self.explain(error, service: config.name)
+                            activationError = Self.explain(error)
                         }
                     }
                     await serverController.updateServiceBindings(
@@ -200,12 +209,12 @@ private struct ServiceToggleRow: View {
         )
     }
 
-    private static func explain(_ error: Error, service: String) -> String {
+    private static func explain(_ error: Error) -> String {
         let message = error.localizedDescription
         guard message.lowercased().contains("denied") || message.lowercased().contains("restricted") else {
             return message
         }
-        return "\(message) Change it in System Settings › Privacy & Security, then try again."
+        return "Grant it in System Settings › Privacy & Security, then try again."
     }
 }
 
@@ -214,45 +223,53 @@ private struct ServiceToggleRow: View {
 private struct AccessPane: View {
     @ObservedObject var model: ServingSettingsModel
 
+    private var isRemoteOn: Bool {
+        model.cloudflareStatus?.state == .running || model.cloudflare.enabled
+    }
+
     var body: some View {
-        PaneScaffold(
-            title: "Access",
-            subtitle: "Where Apple Core can be reached from."
-        ) {
+        Form {
             Section {
-                Picker("", selection: reachabilityBinding) {
+                Picker("Reachable from", selection: reachabilityBinding) {
                     Text("This Mac only").tag(false)
-                    Text("Reachable from anywhere").tag(true)
+                    Text("Anywhere").tag(true)
                 }
                 .pickerStyle(.radioGroup)
                 .labelsHidden()
+
+                LabeledContent("Address") {
+                    Text(isRemoteOn && !model.publicBaseURL.isEmpty
+                        ? "\(model.clientBaseURL)/mcp"
+                        : "\(model.localBaseURL)/mcp")
+                        .font(.system(.callout, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
+            } header: {
+                SectionHeader(
+                    title: "Where Apple Core Can Be Reached",
+                    subtitle: "Clients on this Mac always work. Anywhere adds cloud clients."
+                )
             } footer: {
-                Text("Every connection is authenticated, from here or from anywhere.")
+                TipFooter(text: "Every connection is authenticated, from here or from anywhere.")
             }
 
             if isRemoteOn {
                 Section {
                     RemoteAccessSetup(model: model)
-                }
-            } else {
-                Section {
-                    LabeledContent("Address") {
-                        Text("\(model.localBaseURL)/mcp")
-                            .font(.system(.callout, design: .monospaced))
-                            .textSelection(.enabled)
-                    }
+                } header: {
+                    SectionHeader(title: "Remote Access")
                 }
             }
         }
+        .formStyle(.grouped)
+        .groupedPageLayout()
+        .navigationTitle("Access")
     }
 
-    private var isRemoteOn: Bool {
-        model.cloudflareStatus?.state == .running || model.cloudflare.enabled
-    }
-
-    /// Choosing "Reachable from anywhere" does not itself publish anything; it
-    /// reveals the one setup action. Choosing "This Mac only" tears the tunnel
-    /// down, which is the whole of turning it off.
+    /// Choosing "Anywhere" does not itself publish anything; it reveals the one
+    /// setup action. Choosing "This Mac only" tears the tunnel down, which is
+    /// the whole of turning it off.
     private var reachabilityBinding: Binding<Bool> {
         Binding(
             get: { isRemoteOn },
@@ -285,50 +302,45 @@ private struct ClientsPane: View {
     }
 
     var body: some View {
-        PaneScaffold(
-            title: "Clients",
-            subtitle: "Apps allowed to use Apple Core."
-        ) {
+        Form {
             Section {
-                Text(
-                    "Every client connects to the same address using the same token. Apple Core can set some of "
-                        + "them up for you; the rest you paste the address into. Whichever it is, the first "
-                        + "connection has to be approved here before anything is shared."
-                )
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
                 LabeledContent("Address") {
                     Text(address)
                         .font(.system(.callout, design: .monospaced))
+                        .foregroundStyle(.secondary)
                         .textSelection(.enabled)
                 }
-
                 SettingsCopyButton(title: "Copy Address and Token", systemImage: "doc.on.doc") {
                     "\(address)\n\(model.token)"
                 }
+            } header: {
+                SectionHeader(
+                    title: "How Clients Connect",
+                    subtitle: "Every client uses the same address and token. Some Apple Core can set up for you; "
+                        + "for the rest you paste the details in."
+                )
+            } footer: {
+                TipFooter(text: "The first time any client connects, Apple Core asks you to approve it.")
             }
 
             Section {
                 ForEach(MCPClientCatalog.local(address: address, token: model.token)) { client in
-                    ClientRow(client: client, address: address, token: model.token, isRemoteOn: true)
+                    ClientRow(client: client, address: address, isAvailable: true)
                 }
             } header: {
-                Text("On this Mac")
+                SectionHeader(title: "On This Mac")
             }
 
             Section {
                 ForEach(MCPClientCatalog.cloud) { client in
-                    ClientRow(client: client, address: address, token: model.token, isRemoteOn: isRemoteOn)
+                    ClientRow(client: client, address: address, isAvailable: isRemoteOn)
                 }
             } header: {
-                Text("Over the internet")
+                SectionHeader(title: "Over the Internet")
             } footer: {
-                Text(
-                    isRemoteOn
-                        ? "These reach this Mac at the address above."
-                        : "Turn on \"Reachable from anywhere\" in Access before these can connect."
-                )
+                if !isRemoteOn {
+                    TipFooter(text: "Set Access to Anywhere before these can connect.")
+                }
             }
 
             TrustedClientsSection(
@@ -337,7 +349,10 @@ private struct ClientsPane: View {
                 onRemoveAll: { isConfirmingRemoveAll = true }
             )
         }
-        .alert("Remove all trusted clients?", isPresented: $isConfirmingRemoveAll) {
+        .formStyle(.grouped)
+        .groupedPageLayout()
+        .navigationTitle("Clients")
+        .alert("Remove all approved clients?", isPresented: $isConfirmingRemoveAll) {
             Button("Cancel", role: .cancel) {}
             Button("Remove All", role: .destructive) { serverController.resetTrustedClients() }
         } message: {
@@ -347,48 +362,53 @@ private struct ClientsPane: View {
 }
 
 /// One client. What the trailing control is depends on how much Apple Core can
-/// actually do for that client, which is the honest distinction: configure it,
-/// hand over a command, or hand over the address.
+/// actually do for that client: configure it, hand over a command, or hand over
+/// the address.
 private struct ClientRow: View {
     let client: MCPClient
     let address: String
-    let token: String
-    let isRemoteOn: Bool
+    let isAvailable: Bool
 
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 12) {
             Image(systemName: client.iconName)
-                .foregroundStyle(client.isInstalled ? Color.accentColor : Color.secondary)
-                .frame(width: 20)
+                .foregroundStyle(.secondary)
+                .frame(width: 22)
+                .accessibilityHidden(true)
 
-            VStack(alignment: .leading, spacing: 1) {
+            VStack(alignment: .leading, spacing: 2) {
                 Text(client.name)
-                    .foregroundStyle(client.isInstalled ? .primary : .secondary)
+                    .fontWeight(.medium)
                 if case let .paste(instructions) = client.setup {
                     Text(instructions)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
-                } else if !client.isInstalled {
-                    Text("Not installed")
+                } else if client.isInstalled {
+                    Text("Installed on this Mac")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                } else {
+                    Text("Not installed")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
                 }
             }
 
-            Spacer(minLength: 8)
+            Spacer(minLength: 12)
 
             action
         }
-        .opacity(client.requiresRemoteAccess && !isRemoteOn ? 0.5 : 1)
-        .disabled(client.requiresRemoteAccess && !isRemoteOn)
+        .padding(.vertical, 4)
+        .opacity(isAvailable ? 1 : 0.5)
+        .disabled(!isAvailable)
     }
 
     @ViewBuilder
     private var action: some View {
         switch client.setup {
         case .automatic:
-            Button("Configure") { ClaudeDesktop.showConfigurationPanel() }
+            Button("Set Up…") { ClaudeDesktop.showConfigurationPanel() }
                 .disabled(!client.isInstalled)
         case let .command(command):
             SettingsCopyButton(title: "Copy Command", systemImage: "terminal") { command }
@@ -408,48 +428,23 @@ private struct TrustedClientsSection: View {
             if clients.isEmpty {
                 Text("No clients approved yet.")
                     .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .padding(.vertical, 10)
             } else {
                 ForEach(clients, id: \.self) { client in
                     HStack {
                         Text(client)
-                        Spacer()
+                        Spacer(minLength: 12)
                         Button("Remove") { onRemove(client) }
-                            .buttonStyle(.borderless)
                     }
+                    .padding(.vertical, 2)
                 }
-                Button("Remove All", role: .destructive, action: onRemoveAll)
+                Button("Remove All…", role: .destructive, action: onRemoveAll)
             }
         } header: {
-            Text("Approved")
-        } footer: {
-            Text("These connect without asking. Anything else has to be approved when it first connects.")
-        }
-    }
-}
-
-// MARK: - Shared
-
-struct SettingsCopyButton: View {
-    let title: String
-    let systemImage: String
-    let value: () -> String?
-
-    @State private var isConfirmingCopy = false
-
-    var body: some View {
-        Button {
-            guard let value = value(), !value.isEmpty else { return }
-            NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(value, forType: .string)
-            withAnimation { isConfirmingCopy = true }
-            Task {
-                try? await Task.sleep(for: .milliseconds(1400))
-                withAnimation { isConfirmingCopy = false }
-            }
-        } label: {
-            Label(
-                isConfirmingCopy ? "Copied" : title,
-                systemImage: isConfirmingCopy ? "checkmark.circle.fill" : systemImage
+            SectionHeader(
+                title: "Approved",
+                subtitle: "These connect without asking again."
             )
         }
     }

@@ -52,14 +52,15 @@ struct OnboardingView: View {
                 )
             }
         }
-        .frame(width: 560, height: 540)
+        .frame(width: 560, height: 520)
         .safeAreaInset(edge: .bottom) {
-            OnboardingFooter(
-                showsBack: step != .welcome && step != .done,
-                isBusy: model.isConfiguringRemoteAccess,
-                primaryTitle: primaryTitle,
-                onBack: { step = OnboardingStep(rawValue: step.rawValue - 1) ?? .welcome },
-                onPrimary: performPrimaryAction
+            EditorFooter(
+                confirmTitle: primaryTitle,
+                cancelTitle: "Back",
+                showsCancel: step != .welcome && step != .done,
+                canConfirm: !model.isConfiguringRemoteAccess,
+                onCancel: { step = OnboardingStep(rawValue: step.rawValue - 1) ?? .welcome },
+                onConfirm: performPrimaryAction
             )
         }
         .task { await model.refreshCloudflareStatus() }
@@ -92,37 +93,6 @@ struct OnboardingView: View {
         default:
             step = OnboardingStep(rawValue: step.rawValue + 1) ?? .done
         }
-    }
-}
-
-// MARK: - Footer
-
-/// At most two buttons, which is as many as an Apple setup panel ever shows.
-private struct OnboardingFooter: View {
-    let showsBack: Bool
-    let isBusy: Bool
-    let primaryTitle: String
-    let onBack: () -> Void
-    let onPrimary: () -> Void
-
-    var body: some View {
-        HStack {
-            if showsBack {
-                Button("Back", action: onBack)
-                    .disabled(isBusy)
-            }
-
-            Spacer()
-
-            Button(primaryTitle, action: onPrimary)
-                .buttonStyle(.borderedProminent)
-                .keyboardShortcut(.defaultAction)
-                .disabled(isBusy)
-        }
-        .controlSize(.large)
-        .padding(.horizontal, 20)
-        .padding(.vertical, 14)
-        .background(.bar)
     }
 }
 
@@ -452,80 +422,3 @@ private struct OnboardingDoneStep: View {
     }
 }
 
-// MARK: - Window
-
-@MainActor
-final class OnboardingWindowController: NSObject, NSWindowDelegate {
-    static let completionDefaultsKey = "hasCompletedOnboarding"
-
-    private var window: NSWindow?
-    private var shouldRestoreAccessoryPolicy = false
-
-    static var hasCompletedOnboarding: Bool {
-        UserDefaults.standard.bool(forKey: completionDefaultsKey)
-    }
-
-    func show(serverController: ServerController, model: ServingSettingsModel) {
-        if let window {
-            NSApp.activate(ignoringOtherApps: true)
-            window.makeKeyAndOrderFront(nil)
-            return
-        }
-
-        let view = OnboardingView(
-            serverController: serverController,
-            model: model,
-            onFinish: { [weak self] in
-                UserDefaults.standard.set(true, forKey: Self.completionDefaultsKey)
-                self?.closeWindow()
-            }
-        )
-
-        let window = NSWindow(contentViewController: NSHostingController(rootView: view))
-        window.styleMask = [.titled, .closable, .fullSizeContentView]
-        // A setup panel, not a document window: the chrome is the content.
-        window.titleVisibility = .hidden
-        window.titlebarAppearsTransparent = true
-        window.isMovableByWindowBackground = true
-        window.isReleasedWhenClosed = false
-        window.tabbingMode = .disallowed
-        window.center()
-        window.delegate = self
-        self.window = window
-
-        // Onboarding is the one moment a menu-bar app has to be in front, and
-        // an accessory app cannot reliably take focus.
-        shouldRestoreAccessoryPolicy = NSApp.activationPolicy() == .accessory && NSApp.setActivationPolicy(.regular)
-        NSApp.activate(ignoringOtherApps: true)
-        window.makeKeyAndOrderFront(nil)
-    }
-
-    private func closeWindow() {
-        window?.delegate = nil
-        window?.close()
-        window = nil
-        restorePolicy()
-    }
-
-    func windowWillClose(_ notification: Notification) {
-        // Closing with the titlebar button counts as finishing: re-showing the
-        // flow on every launch until someone reaches the last step would be
-        // worse than letting them out.
-        UserDefaults.standard.set(true, forKey: Self.completionDefaultsKey)
-        window = nil
-        restorePolicy()
-    }
-
-    private func restorePolicy() {
-        guard shouldRestoreAccessoryPolicy else { return }
-        shouldRestoreAccessoryPolicy = false
-
-        let dockIconRequested = UserDefaults.standard.object(forKey: "showDockIcon") as? Bool ?? false
-        let settingsWindowVisible = NSApp.windows.contains {
-            $0.identifier?.rawValue == "AppleCoreSettingsWindow" && $0.isVisible
-        }
-        if !dockIconRequested && !settingsWindowVisible {
-            NSApp.setActivationPolicy(.accessory)
-        }
-    }
-}
