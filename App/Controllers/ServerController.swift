@@ -901,8 +901,16 @@ actor ServerNetworkManager {
                         log.error(
                             "Error executing tool \(params.name): \(error.localizedDescription)"
                         )
+                        // `\(error)` prints the raw Swift value — a client
+                        // asking for a file outside its allowed folders saw
+                        // `outsideAllowedRoots("/etc/hosts")` rather than the
+                        // sentence written for exactly that case. Every
+                        // LocalizedError in the app defines errorDescription;
+                        // localizedDescription is what surfaces it.
                         return CallTool.Result(
-                            content: [.text(text: "Error: \(error)", annotations: nil, _meta: nil)],
+                            content: [
+                                .text(text: error.localizedDescription, annotations: nil, _meta: nil)
+                            ],
                             isError: true
                         )
                     }
