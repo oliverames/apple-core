@@ -34,11 +34,13 @@ recorded so they are not "fixed" again:
 
 ## Confirmed gaps
 
-### Contacts (thinnest of the mature surfaces)
-- No delete. `contacts_create` and `contacts_update` exist with no inverse.
-- No group support at all: no `CNGroup` read, create, or membership change.
-- No contact images (`imageData` / `thumbnailImageData`).
-- No fetch by identifier; search is the only lookup path.
+### Contacts — done
+- Was the thinnest mature surface: create and update with no inverse, no
+  groups, no photos, no fetch by identifier.
+- Added `contacts_get`, `contacts_delete`, `contacts_groups`,
+  `contacts_group_members` and `contacts_photo`.
+- Still open: creating and editing groups, and setting a contact photo. Both
+  are writes to structures the surface can now read, and neither is blocked.
 
 ### Location
 - Reverse geocoding was assumed missing and is not: `location_reverse_geocode`
@@ -49,28 +51,45 @@ recorded so they are not "fixed" again:
   MCP surface; not planned.
 
 ### Messages
-- No attachment handling, sending or reading.
-- No tapbacks/reactions.
-- No unread state.
+- No attachment handling, no tapbacks/reactions, no unread state.
+- Blocked, not merely unbuilt. The surface reads through the third-party
+  `iMessage` module from `loopwork-ai/madrid`, which does not expose these
+  fields. Closing the gap means either contributing upstream or querying
+  `chat.db` directly alongside madrid. That is a real design decision about
+  taking on a second read path, so it is not something to slip in at the end
+  of an afternoon.
 
-### Utilities
-- One tool, `utilities_beep`. Effectively a placeholder. Candidates that need
-  no new TCC grant: notifications, clipboard read/write, open URL, system and
-  battery info, frontmost app.
+### Utilities — done
+- Was one tool, `utilities_beep`. Now six: added `utilities_notify`,
+  `utilities_clipboard_read`, `utilities_clipboard_write`,
+  `utilities_open_url` and `utilities_system_info`.
+- `utilities_open_url` accepts only http, https, mailto, facetime, sms and
+  tel. Every registered URL handler on a Mac is a far larger surface than
+  "show the user a page", and an allowlist is the difference.
+- Notification authorization is requested on first use rather than on enable,
+  so a session that never posts one never prompts.
 
-### Filesystem
-- Absent entirely. This is the highest-risk surface in the app and the one
-  with a real security decision attached, since it is the only surface whose
-  scope is not already bounded by a macOS TCC grant. Needs an explicit
-  allowlist of roots plus read/write separation before implementation.
+### Filesystem — done
+- Built as `FilesystemService` with five tools, bounded by an allowlist that
+  starts empty. Read and write are tracked per shared folder.
+- Containment is enforced on symlink-resolved canonical paths in
+  `Shared/FilesystemAccess.swift`, with tests covering `..` traversal, a
+  symlink pointing out of a shared folder, and the sibling-prefix case where
+  "Documents-private" must not match the root "Documents".
+- Follows the Access setting like every other surface, per the decision taken
+  when it was specified.
 
 ## Next
 
-1. Contacts: delete, groups, images, fetch-by-identifier.
-2. Location: reverse geocode.
-3. Messages: attachments, unread.
-4. Utilities: promote from placeholder.
-5. Filesystem: design the scoping model first, then build.
+1. Messages: decide whether to contribute upstream to madrid or add a direct
+   `chat.db` read path. Blocked on that decision, not on effort.
+2. Contacts: group creation and membership editing, and setting a photo.
+3. Calendar prefix rename, below.
+4. A documentation-driven second pass. This audit was written from the source,
+   which finds what is missing against what is there — it does not find what
+   neither the code nor the reader thought of. Apple's framework references,
+   the local `apple-notes-mcp` project, and the `remctl` reminders CLI are all
+   better sources for that, and the result will be larger than this list.
 6. MCP surfacing: annotations are already present and correct (`readOnlyHint`,
    `openWorldHint`, human titles) on the tools sampled. Two naming defects
    found; one fixed, one needs a decision.
