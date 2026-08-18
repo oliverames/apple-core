@@ -8,6 +8,8 @@ struct ServicePermissionInventoryTests {
             "CalendarService": [.calendar],
             "CaptureService": [.camera, .microphone, .screenRecording],
             "ContactsService": [.contacts],
+            // Bounded by the user's shared-folder allowlist, not by TCC.
+            "FilesystemService": [],
             "LocationService": [.location],
             "MailService": [.mailAutomation],
             "MapsService": [.location],

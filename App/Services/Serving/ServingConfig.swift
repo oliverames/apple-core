@@ -41,6 +41,11 @@ public struct AppleCoreServingConfig: Codable, Sendable, Equatable {
     public var allowQueryTokenAuth: Bool?
     public var serviceSettings: [String: ServingServiceSettings]?
     public var cloudflare: CloudflareSettings?
+    /// Folders the filesystem surface may touch. Absent or empty means the
+    /// surface can reach nothing, which is the default: unlike every other
+    /// surface, the filesystem has no macOS privacy grant bounding it, so the
+    /// bound is this list and it starts empty.
+    public var filesystemRoots: [FilesystemRoot]?
 
     public init(
         token: String? = nil,
@@ -50,7 +55,8 @@ public struct AppleCoreServingConfig: Codable, Sendable, Equatable {
         allowedOrigins: [String]? = nil,
         allowQueryTokenAuth: Bool? = nil,
         serviceSettings: [String: ServingServiceSettings]? = nil,
-        cloudflare: CloudflareSettings? = nil
+        cloudflare: CloudflareSettings? = nil,
+        filesystemRoots: [FilesystemRoot]? = nil
     ) {
         self.token = token
         self.port = port
@@ -60,6 +66,7 @@ public struct AppleCoreServingConfig: Codable, Sendable, Equatable {
         self.allowQueryTokenAuth = allowQueryTokenAuth
         self.serviceSettings = serviceSettings
         self.cloudflare = cloudflare
+        self.filesystemRoots = filesystemRoots
     }
 
     public func settings(forServiceID serviceID: String) -> ServingServiceSettings {

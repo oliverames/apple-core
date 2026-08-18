@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		AC0000010000000000000031 /* FilesystemAccess.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC0000010000000000000030 /* FilesystemAccess.swift */; };
+		AC0000010000000000000032 /* FilesystemAccess.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC0000010000000000000030 /* FilesystemAccess.swift */; };
 		AC000001000000000000000D /* ServiceAccessPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC000001000000000000000E /* ServiceAccessPolicy.swift */; };
 		AC000001000000000000000F /* ServiceAccessPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC000001000000000000000E /* ServiceAccessPolicy.swift */; };
 		AC0000010000000000000011 /* AttachmentSaveDirectory.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC0000010000000000000012 /* AttachmentSaveDirectory.swift */; };
@@ -57,6 +59,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		AC0000010000000000000030 /* FilesystemAccess.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilesystemAccess.swift; sourceTree = "<group>"; };
 		AC000001000000000000000E /* ServiceAccessPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServiceAccessPolicy.swift; sourceTree = "<group>"; };
 		AC0000010000000000000012 /* AttachmentSaveDirectory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachmentSaveDirectory.swift; sourceTree = "<group>"; };
 		AC0000010000000000000017 /* OAuthSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = OAuthSupport.swift; path = App/Services/Serving/OAuthSupport.swift; sourceTree = SOURCE_ROOT; };
@@ -158,6 +161,7 @@
 			isa = PBXGroup;
 			children = (
 				AC0000010000000000000012 /* AttachmentSaveDirectory.swift */,
+				AC0000010000000000000030 /* FilesystemAccess.swift */,
 				AC000001000000000000000E /* ServiceAccessPolicy.swift */,
 				AC0000010000000000000018 /* ServicePermissionInventory.swift */,
 			);
@@ -337,6 +341,7 @@
 			files = (
 				AC0000010000000000000013 /* AttachmentSaveDirectory.swift in Sources */,
 				AC0000010000000000000016 /* OAuthSupport.swift in Sources */,
+				AC0000010000000000000031 /* FilesystemAccess.swift in Sources */,
 				AC000001000000000000000F /* ServiceAccessPolicy.swift in Sources */,
 				AC000001000000000000001A /* ServicePermissionInventory.swift in Sources */,
 			);
@@ -347,6 +352,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				AC0000010000000000000011 /* AttachmentSaveDirectory.swift in Sources */,
+				AC0000010000000000000032 /* FilesystemAccess.swift in Sources */,
 				AC000001000000000000000D /* ServiceAccessPolicy.swift in Sources */,
 				AC0000010000000000000019 /* ServicePermissionInventory.swift in Sources */,
 			);

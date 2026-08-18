@@ -68,6 +68,7 @@ enum ServiceRegistry {
             CalendarService.shared,
             CaptureService.shared,
             ContactsService.shared,
+            FilesystemService.shared,
             LocationService.shared,
             MailService.shared,
             MapsService.shared,
@@ -87,6 +88,7 @@ enum ServiceRegistry {
         calendarEnabled: Binding<Bool>,
         captureEnabled: Binding<Bool>,
         contactsEnabled: Binding<Bool>,
+        filesystemEnabled: Binding<Bool>,
         locationEnabled: Binding<Bool>,
         mailEnabled: Binding<Bool>,
         mapsEnabled: Binding<Bool>,
@@ -118,6 +120,13 @@ enum ServiceRegistry {
                 color: .brown,
                 service: ContactsService.shared,
                 binding: contactsEnabled
+            ),
+            ServiceConfig(
+                name: "Filesystem",
+                iconName: "folder.fill",
+                color: .teal,
+                service: FilesystemService.shared,
+                binding: filesystemEnabled
             ),
             ServiceConfig(
                 name: "Location",
@@ -208,6 +217,7 @@ final class ServerController: ObservableObject {
     @AppStorage("calendarEnabled") private var calendarEnabled = false
     @AppStorage("captureEnabled") private var captureEnabled = false
     @AppStorage("contactsEnabled") private var contactsEnabled = false
+    @AppStorage("filesystemEnabled") private var filesystemEnabled = false
     @AppStorage("locationEnabled") private var locationEnabled = false
     @AppStorage("mailEnabled") private var mailEnabled = false
     @AppStorage("mapsEnabled") private var mapsEnabled = true  // Default enabled
@@ -227,6 +237,7 @@ final class ServerController: ObservableObject {
             calendarEnabled: $calendarEnabled,
             captureEnabled: $captureEnabled,
             contactsEnabled: $contactsEnabled,
+            filesystemEnabled: $filesystemEnabled,
             locationEnabled: $locationEnabled,
             mailEnabled: $mailEnabled,
             mapsEnabled: $mapsEnabled,

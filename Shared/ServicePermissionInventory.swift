@@ -56,6 +56,11 @@ enum ServicePermissionInventory {
         "CalendarService": [.calendar],
         "CaptureService": [.camera, .microphone, .screenRecording],
         "ContactsService": [.contacts],
+        // No TCC grant of its own. macOS still prompts for Documents, Desktop
+        // and Downloads the first time one is actually touched, but that is
+        // per-folder and driven by the user's own choice of shared folders
+        // rather than by enabling the surface.
+        "FilesystemService": [],
         "LocationService": [.location],
         "MailService": [.mailAutomation],
         "MapsService": [.location],
