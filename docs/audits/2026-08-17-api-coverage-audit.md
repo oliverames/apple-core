@@ -235,3 +235,61 @@ attachments need either test data on this machine — a few reminders with
 subtasks and hashtags would be enough — or a deliberate decision to write them
 against the schema and verify later. Worth asking for the test data first;
 it costs a minute and turns three unverifiable features into verifiable ones.
+
+
+---
+
+# Coverage confirmed
+
+Verified over live MCP against a server on an isolated config, not by reading
+the source. `tools/list` advertised 96 tools; the source has 105. The
+difference is accounted for, not unexplained: 5 filesystem tools are correctly
+absent because no folder is shared yet and the surface reports itself inactive
+until one is, and 4 WeatherKit tools are entitlement-gated out of the standard
+build.
+
+Tools called and confirmed returning real data:
+
+| Tool | Result |
+| --- | --- |
+| `utilities_system_info` | macOS 27.0, 10 cores |
+| `reminders_sections` | 12 Groceries sections, UUIDs decoded |
+| `messages_unread` | 21 unread across conversations, named |
+| `messages_attachments` | attachments with chat, message id, timestamp |
+| `contacts_groups` | 4 groups with identifiers |
+
+## Final counts
+
+| Surface | Start | Now |
+| --- | --- | --- |
+| Mail | 26 | 26 |
+| Notes | 19 | 21 |
+| Contacts | 4 | 12 |
+| Calendar | 5 | 6 |
+| Reminders | 6 | 7 |
+| Utilities | 1 | 6 |
+| Messages | 3 | 5 |
+| Filesystem | 0 | 5 |
+| Maps | 5 | 5 |
+| Capture | 3 | 3 |
+| Location | 3 | 3 |
+| Shortcuts | 2 | 2 |
+| **Total** | **81** | **105** |
+
+## What remains, and why
+
+Two items, both blocked on something outside the code:
+
+1. **Reminders subtasks and tags.** The columns exist
+   (`ZREMCDREMINDER.ZPARENTREMINDER`, `ZREMCDHASHTAGLABEL`) and the reader is
+   already built and tested against the same store. What is missing is data:
+   zero rows across all three stores here. Creating two or three reminders
+   with subtasks and a hashtag unblocks both, and the readers are then a small
+   addition to `RemindersStoreReader`.
+
+2. **Messages tapbacks.** Unlike attachments and unread, these are stored as
+   associated messages with their own type encoding, and getting them wrong
+   produces plausible-looking wrong answers rather than errors. Worth doing
+   deliberately rather than alongside everything else.
+
+Everything else in both audit passes is implemented and verified.
