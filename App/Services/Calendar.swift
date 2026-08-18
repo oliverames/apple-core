@@ -721,6 +721,70 @@ final class CalendarService: Service {
         }
 
         Tool(
+            name: "calendar_event_attendees",
+            description:
+                "List the people invited to an event, with each one's response status and role. "
+                + "Read-only: EventKit does not allow adding or removing attendees programmatically, so "
+                + "invitations must be sent from Calendar itself.",
+            inputSchema: .object(
+                properties: [
+                    "id": .string(description: "Event identifier (from calendar_events_fetch)"),
+                    "occurrenceDate": .string(
+                        description:
+                            "ISO 8601 date of a specific occurrence, for a repeating event"
+                    ),
+                ],
+                required: ["id"],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "List Event Attendees",
+                readOnlyHint: true,
+                openWorldHint: false
+            )
+        ) { arguments in
+            guard let id = arguments["id"]?.stringValue else {
+                throw NSError(
+                    domain: "CalendarService",
+                    code: 1,
+                    userInfo: [NSLocalizedDescriptionKey: "Missing event identifier"]
+                )
+            }
+            let occurrenceDate = arguments["occurrenceDate"]?.stringValue
+                .flatMap { ISO8601DateFormatter().date(from: $0) }
+
+            let event = try self.resolveEvent(withIdentifier: id, occurrenceDate: occurrenceDate)
+
+            let described: [Value] = (event.attendees ?? []).map { participant in
+                var entry: [String: Value] = [
+                    "role": .string(Self.describe(participant.participantRole)),
+                    "status": .string(Self.describe(participant.participantStatus)),
+                    "isCurrentUser": .bool(participant.isCurrentUser),
+                ]
+                if let name = participant.name { entry["name"] = .string(name) }
+                // The URL is mailto: for an email invitee; the address is the
+                // useful half and the scheme is noise.
+                if let email = participant.url.absoluteString
+                    .replacingOccurrences(of: "mailto:", with: "")
+                    .nilIfEmpty
+                {
+                    entry["email"] = .string(email)
+                }
+                return .object(entry)
+            }
+
+            var result: [String: Value] = [
+                "eventId": .string(id),
+                "attendees": .array(described),
+                "count": .int(described.count),
+            ]
+            if let organizer = event.organizer?.name {
+                result["organizer"] = .string(organizer)
+            }
+            return Value.object(result)
+        }
+
+        Tool(
             name: "calendar_events_update",
             description:
                 "Update an existing calendar event. For recurring events, use occurrence_date to target a specific occurrence and span to choose whether the change applies to that occurrence only or to it and all future occurrences. The recurrence parameter sets, replaces, or clears (\"none\") the event's recurrence rule.",
@@ -1565,5 +1629,36 @@ enum RecurrenceRuleParser {
             setPositions: nil,
             end: end
         )
+    }
+}
+
+extension String {
+    fileprivate var nilIfEmpty: String? { isEmpty ? nil : self }
+}
+
+extension CalendarService {
+    fileprivate static func describe(_ role: EKParticipantRole) -> String {
+        switch role {
+        case .required: "required"
+        case .optional: "optional"
+        case .chair: "chair"
+        case .nonParticipant: "non-participant"
+        case .unknown: "unknown"
+        @unknown default: "unknown"
+        }
+    }
+
+    fileprivate static func describe(_ status: EKParticipantStatus) -> String {
+        switch status {
+        case .accepted: "accepted"
+        case .declined: "declined"
+        case .tentative: "tentative"
+        case .pending: "pending"
+        case .delegated: "delegated"
+        case .completed: "completed"
+        case .inProcess: "in-process"
+        case .unknown: "unknown"
+        @unknown default: "unknown"
+        }
     }
 }

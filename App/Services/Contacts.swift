@@ -137,6 +137,40 @@ final class ContactsService: Service {
         }
     }
 
+    private static func requiredIdentifier(_ key: String, from arguments: [String: Value]) throws -> String {
+        guard let value = arguments[key]?.stringValue, !value.isEmpty else {
+            throw NSError(
+                domain: "ContactsService",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Missing required argument: \(key)"]
+            )
+        }
+        return value
+    }
+
+    /// Membership changes need the group and the contact as live objects, and
+    /// CNSaveRequest rejects the immutable contact `unifiedContact` returns.
+    private func resolveGroupAndContact(
+        _ groupID: String,
+        _ contactID: String
+    ) throws -> (CNGroup, CNContact) {
+        let groups = try contactStore.groups(
+            matching: CNGroup.predicateForGroups(withIdentifiers: [groupID])
+        )
+        guard let group = groups.first else {
+            throw NSError(
+                domain: "ContactsService",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "No group with identifier \(groupID)"]
+            )
+        }
+        let contact = try contactStore.unifiedContact(
+            withIdentifier: contactID,
+            keysToFetch: contactKeys
+        )
+        return (group, contact)
+    }
+
     var tools: [Tool] {
         Tool(
             name: "contacts_me",
@@ -473,6 +507,101 @@ final class ContactsService: Service {
                 )
             }
             return members.compactMap { Person($0) }
+        }
+
+        Tool(
+            name: "contacts_create_group",
+            description: "Create a contact group",
+            inputSchema: .object(
+                properties: [
+                    "name": .string(description: "Name for the new group")
+                ],
+                required: ["name"],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Create Contact Group",
+                readOnlyHint: false,
+                openWorldHint: false
+            )
+        ) { arguments in
+            guard let name = arguments["name"]?.stringValue, !name.isEmpty else {
+                throw NSError(
+                    domain: "ContactsService",
+                    code: 1,
+                    userInfo: [NSLocalizedDescriptionKey: "A group name is required"]
+                )
+            }
+            let identifier: String = try await self.runContactStore {
+                let group = CNMutableGroup()
+                group.name = name
+                let request = CNSaveRequest()
+                request.add(group, toContainerWithIdentifier: nil)
+                try self.contactStore.execute(request)
+                return group.identifier
+            }
+            return Value.object([
+                "identifier": .string(identifier),
+                "name": .string(name),
+            ])
+        }
+
+        Tool(
+            name: "contacts_group_add",
+            description: "Add a contact to a group",
+            inputSchema: .object(
+                properties: [
+                    "group": .string(description: "Group identifier from contacts_groups"),
+                    "contact": .string(description: "Contact identifier"),
+                ],
+                required: ["group", "contact"],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Add Contact to Group",
+                readOnlyHint: false,
+                idempotentHint: true,
+                openWorldHint: false
+            )
+        ) { arguments in
+            let groupID = try Self.requiredIdentifier("group", from: arguments)
+            let contactID = try Self.requiredIdentifier("contact", from: arguments)
+            try await self.runContactStore {
+                let (group, contact) = try self.resolveGroupAndContact(groupID, contactID)
+                let request = CNSaveRequest()
+                request.addMember(contact, to: group)
+                try self.contactStore.execute(request)
+            }
+            return Value.object(["added": .bool(true), "group": .string(groupID)])
+        }
+
+        Tool(
+            name: "contacts_group_remove",
+            description: "Remove a contact from a group. The contact itself is not deleted.",
+            inputSchema: .object(
+                properties: [
+                    "group": .string(description: "Group identifier from contacts_groups"),
+                    "contact": .string(description: "Contact identifier"),
+                ],
+                required: ["group", "contact"],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Remove Contact from Group",
+                readOnlyHint: false,
+                idempotentHint: true,
+                openWorldHint: false
+            )
+        ) { arguments in
+            let groupID = try Self.requiredIdentifier("group", from: arguments)
+            let contactID = try Self.requiredIdentifier("contact", from: arguments)
+            try await self.runContactStore {
+                let (group, contact) = try self.resolveGroupAndContact(groupID, contactID)
+                let request = CNSaveRequest()
+                request.removeMember(contact, from: group)
+                try self.contactStore.execute(request)
+            }
+            return Value.object(["removed": .bool(true), "group": .string(groupID)])
         }
 
         Tool(
