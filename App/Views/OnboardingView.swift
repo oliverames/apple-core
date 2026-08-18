@@ -45,9 +45,12 @@ struct OnboardingView: View {
             case .services:
                 OnboardingServicesStep(serverController: serverController)
             case .done:
+                // Keyed off the tunnel actually running, not off publicBaseURL
+                // being non-empty: a stale or derived value there would show a
+                // public address to someone who chose this Mac only.
                 OnboardingDoneStep(
-                    address: model.publicBaseURL.isEmpty
-                        ? "\(model.localBaseURL)/mcp" : "\(model.clientBaseURL)/mcp",
+                    address: isRemoteConfigured
+                        ? "\(model.clientBaseURL)/mcp" : "\(model.localBaseURL)/mcp",
                     token: model.token
                 )
             }

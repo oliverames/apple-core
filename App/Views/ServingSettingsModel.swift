@@ -213,9 +213,11 @@ final class ServingSettingsModel: ObservableObject {
         cloudflaredVersion = CloudflaredInstaller.locateInstalled().flatMap {
             CloudflaredInstaller.installedVersion(at: $0)
         }
-        if cloudflareAccount == nil, CloudflareAccount.isSignedIn() {
-            await refreshCloudflareAccount()
-        }
+        // Deliberately does NOT derive the Cloudflare account here. Doing so
+        // whenever a cert.pem happened to exist wrote a hostname and a public
+        // base URL into the config of someone who had chosen this Mac only,
+        // and then showed them that address as if it were live. Deriving is
+        // part of setting up remote access, so it happens there.
     }
 
     // MARK: - cloudflared installation
@@ -283,7 +285,11 @@ final class ServingSettingsModel: ObservableObject {
         }
         if changed {
             cloudflare = settings
-            setPublicBaseURL(CloudflareManager.publicBaseURL(for: settings))
+            // The public base URL is what clients are told to use, so it is
+            // only recorded once remote access is actually being turned on.
+            if settings.enabled {
+                setPublicBaseURL(CloudflareManager.publicBaseURL(for: settings))
+            }
             save(restartServer: false)
         }
     }

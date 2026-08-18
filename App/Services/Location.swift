@@ -277,7 +277,7 @@ final class LocationService: NSObject, Service, CLLocationManagerDelegate {
         }
 
         Tool(
-            name: "location_reverse-geocode",
+            name: "location_reverse_geocode",
             description: "Convert geographic coordinates to an address",
             inputSchema: .object(
                 properties: [

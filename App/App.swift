@@ -195,7 +195,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// so there is one place the app is configured from.
     func showOnboarding() {
         openSettings()
-        settingsWindowController?.model.isOnboardingPresented = true
+        // Raising the sheet in the same runloop turn that installs the
+        // window's content view loses it: SwiftUI has not evaluated the body
+        // that owns the `.sheet` yet, so the presentation is dropped and the
+        // window just appears with no onboarding on it. Ask on the next turn,
+        // once the hosting controller has rendered.
+        DispatchQueue.main.async { [weak self] in
+            self?.settingsWindowController?.model.isOnboardingPresented = true
+        }
     }
 
     @objc private func openOnboardingFromMenu() {
