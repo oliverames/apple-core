@@ -84,8 +84,7 @@ recorded so they are not "fixed" again:
 1. Messages: decide whether to contribute upstream to madrid or add a direct
    `chat.db` read path. Blocked on that decision, not on effort.
 2. Contacts: group creation and membership editing, and setting a photo.
-3. Calendar prefix rename, below.
-4. A documentation-driven second pass. This audit was written from the source,
+3. A documentation-driven second pass. This audit was written from the source,
    which finds what is missing against what is there — it does not find what
    neither the code nor the reader thought of. Apple's framework references,
    the local `apple-notes-mcp` project, and the `remctl` reminders CLI are all
@@ -103,15 +102,19 @@ legible in Claude and other clients, and it is already right.
 Defect 1, fixed: `location_reverse-geocode` was the only hyphenated tool name
 of 81. Renamed to `location_reverse_geocode`.
 
-Defect 2, needs a decision: Calendar is the only surface whose tools do not
+Defect 2, fixed on Oliver's instruction: Calendar is the only surface whose tools do not
 share one prefix. It ships `calendars_list` plus `events_fetch`,
 `events_create`, `events_update`, `events_delete`, so its five tools sort into
 two unrelated places in an alphabetical tool list and neither sorts near
 "calendar". Every other surface uses a single prefix matching its name.
 
-The fix is to rename to `calendar_list`, `calendar_events_fetch`,
+Renamed to `calendar_list`, `calendar_events_fetch`,
 `calendar_events_create`, `calendar_events_update`, `calendar_events_delete`.
-That is a breaking change for anything already calling the old names, which is
-why it is recorded here rather than applied: Oliver has agent skills and
-automations that may reference them. Pre-launch is the cheapest moment to do
-it.
+
+This is a breaking change. Anything calling `calendars_list` or `events_*`
+must be updated, and it will fail with "tool not found" rather than
+misbehaving quietly. Worth checking any agent skills or saved automations that
+drive the Calendar surface.
+
+After both fixes, all 96 tools use underscores and every surface has exactly
+one prefix matching its name.

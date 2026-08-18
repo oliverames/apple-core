@@ -188,7 +188,7 @@ final class CalendarService: Service {
 
     var tools: [Tool] {
         Tool(
-            name: "calendars_list",
+            name: "calendar_list",
             description: "List available calendars",
             inputSchema: .object(
                 properties: [:],
@@ -224,7 +224,7 @@ final class CalendarService: Service {
         }
 
         Tool(
-            name: "events_fetch",
+            name: "calendar_events_fetch",
             description: "Get events from the calendar with flexible filtering options",
             inputSchema: .object(
                 properties: [
@@ -382,7 +382,7 @@ final class CalendarService: Service {
             }
 
             // Expose the EventKit identifier so callers can feed it back to
-            // events_update / events_delete, which resolve by eventIdentifier.
+            // calendar_events_update / calendar_events_delete, which resolve by eventIdentifier.
             return events.map { ekEvent in
                 var event = Event(ekEvent)
                 event.identifier = ekEvent.eventIdentifier
@@ -390,7 +390,7 @@ final class CalendarService: Service {
             }
         }
         Tool(
-            name: "events_create",
+            name: "calendar_events_create",
             description: "Create a new calendar event with specified properties",
             inputSchema: .object(
                 properties: [
@@ -721,13 +721,13 @@ final class CalendarService: Service {
         }
 
         Tool(
-            name: "events_update",
+            name: "calendar_events_update",
             description:
                 "Update an existing calendar event. For recurring events, use occurrence_date to target a specific occurrence and span to choose whether the change applies to that occurrence only or to it and all future occurrences. The recurrence parameter sets, replaces, or clears (\"none\") the event's recurrence rule.",
             inputSchema: .object(
                 properties: [
                     "id": .string(
-                        description: "Event identifier (from events_fetch)"
+                        description: "Event identifier (from calendar_events_fetch)"
                     ),
                     "occurrence_date": .string(
                         description:
@@ -1015,13 +1015,13 @@ final class CalendarService: Service {
         }
 
         Tool(
-            name: "events_delete",
+            name: "calendar_events_delete",
             description:
                 "Delete a calendar event. For recurring events, use occurrence_date to target a specific occurrence and span to choose whether to delete that occurrence only or it and all future occurrences.",
             inputSchema: .object(
                 properties: [
                     "id": .string(
-                        description: "Event identifier (from events_fetch)"
+                        description: "Event identifier (from calendar_events_fetch)"
                     ),
                     "occurrence_date": .string(
                         description:
@@ -1110,7 +1110,7 @@ enum ParsedRecurrence {
     case rule(EKRecurrenceRule)
 }
 
-/// Shared parser for the `recurrence` parameter on events_create/events_update
+/// Shared parser for the `recurrence` parameter on calendar_events_create/calendar_events_update
 /// and reminders_create/reminders_update (EKEvent and EKReminder share
 /// `EKRecurrenceRule`).
 ///
