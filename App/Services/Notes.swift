@@ -51,6 +51,12 @@ private struct NoteSummary: Codable, Sendable {
     let isLocked: Bool
 }
 
+private struct NoteShown: Codable, Sendable {
+    let id: String
+    let name: String
+    let shown: Bool
+}
+
 private struct NoteContent: Codable, Sendable {
     let id: String
     let name: String
@@ -325,6 +331,48 @@ private let getNoteScript = """
             bodyHTML: isLocked ? '' : (note.body() || ''),
             bodyText: isLocked ? '' : (note.plaintext() || ''),
         });
+    }
+    """
+
+private let selectedNotesScript = """
+    function run() {
+        const Notes = Application('Notes');
+        let selection = [];
+        try { selection = Notes.selection(); } catch (e) { selection = []; }
+
+        const notes = [];
+        for (let i = 0; i < selection.length; i++) {
+            const note = selection[i];
+            let container = null;
+            try { container = note.container().name(); } catch (e) {}
+            const isLocked = note.passwordProtected() === true;
+            notes.push({
+                id: note.id(),
+                name: note.name(),
+                folderName: container,
+                creationDate: note.creationDate() ? note.creationDate().toISOString() : null,
+                modificationDate: note.modificationDate() ? note.modificationDate().toISOString() : null,
+                isLocked: isLocked,
+                bodyHTML: '',
+                bodyText: isLocked ? '' : (note.plaintext() || ''),
+            });
+        }
+        return JSON.stringify(notes);
+    }
+    """
+
+private let showNoteScript = """
+    function run(argv) {
+        const noteId = argv[0];
+        const Notes = Application('Notes');
+        const note = Notes.notes.byId(noteId);
+        let name;
+        try { name = note.name(); } catch (e) {
+            throw new Error('NOT_FOUND: no note with id ' + noteId);
+        }
+        Notes.activate();
+        Notes.show(note);
+        return JSON.stringify({ id: note.id(), name: name, shown: true });
     }
     """
 
@@ -943,6 +991,72 @@ final class NotesService: Service {
             )
             log.notice("Deleted note \(id, privacy: .private)")
             return NoteDeleteResult(deleted: true, id: id)
+        }
+
+        Tool(
+            name: "notes_selected",
+            description:
+                "Get the notes currently selected in the Notes app. Use this when the user refers to "
+                + "\"this note\" or \"the note I have open\" without naming it.",
+            inputSchema: .object(properties: [:], additionalProperties: false),
+            annotations: .init(
+                title: "Get Selected Notes",
+                readOnlyHint: true,
+                openWorldHint: false
+            )
+        ) { _ in
+            let selected = try await AppleScriptRunner.shared.runJSON(
+                .jxa,
+                script: selectedNotesScript,
+                arguments: [],
+                as: [NoteContent].self
+            )
+            // Bodies are deliberately not fetched here: a selection can be
+            // large, and the caller can ask for any one of these by id.
+            let summaries: [Value] = selected.map { note in
+                .object([
+                    "id": .string(note.id),
+                    "name": .string(note.name),
+                    "folderName": note.folderName.map { .string($0) } ?? .null,
+                    "isLocked": .bool(note.isLocked),
+                    "preview": .string(String(note.bodyText.prefix(200))),
+                ])
+            }
+            return Value.object([
+                "count": .int(summaries.count),
+                "notes": .array(summaries),
+            ])
+        }
+
+        Tool(
+            name: "notes_show",
+            description: "Open a note in the Notes app and bring it to the front for the user to look at",
+            inputSchema: .object(
+                properties: [
+                    "id": .string(description: "Note id (from notes_list or notes_search)")
+                ],
+                required: ["id"],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Show Note",
+                readOnlyHint: false,
+                idempotentHint: true,
+                openWorldHint: false
+            )
+        ) { arguments in
+            let id = try Self.requiredString("id", from: arguments)
+            let shown = try await AppleScriptRunner.shared.runJSON(
+                .jxa,
+                script: showNoteScript,
+                arguments: [id],
+                as: NoteShown.self
+            )
+            return Value.object([
+                "id": .string(shown.id),
+                "name": .string(shown.name),
+                "shown": .bool(shown.shown),
+            ])
         }
 
         Tool(

@@ -204,3 +204,34 @@ surface, additionally exposes:
 Every item here is additive. Nothing above is blocked on a decision except the
 choice of how defensively to read the private stores, and `remctl` is a
 working answer to that.
+
+## Reminders store: what can actually be verified here
+
+The store is readable on this Mac (macOS 27), so the approach is viable —
+`remctl lists --format json` returns real data, and the schema has the columns
+the rich features need: `ZREMCDREMINDER.ZPARENTREMINDER` for subtasks,
+`ZREMCDHASHTAGLABEL` for tags, `ZREMCDBASESECTION` for sections.
+
+But counting rows across all three stores on this machine:
+
+| Feature | Rows |
+| --- | --- |
+| Sections | 34 |
+| Subtasks | 0 |
+| Tags | 0 |
+| Attachments | 0 |
+| Templates | 0 |
+| Flagged | 0 |
+
+Only sections can be built and verified here. A subtasks or tags reader
+written against this schema would be untested against real data, and an
+untested SQLite reader against an undocumented Apple schema is precisely the
+kind of code that looks right and is not. It would also fail quietly rather
+than loudly, because an empty result is indistinguishable from a correct
+result when the source is empty.
+
+So: sections are implementable and verifiable now. Subtasks, tags and
+attachments need either test data on this machine — a few reminders with
+subtasks and hashtags would be enough — or a deliberate decision to write them
+against the schema and verify later. Worth asking for the test data first;
+it costs a minute and turns three unverifiable features into verifiable ones.
