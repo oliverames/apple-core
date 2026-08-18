@@ -306,6 +306,98 @@ final class MessageService: NSObject, Service, NSOpenSavePanelDelegate {
         }
 
         Tool(
+            name: "messages_attachments",
+            description:
+                "List attachments sent and received in Messages: photos, files and stickers, newest first. "
+                + "Returns each attachment's name, type and size, not its contents.",
+            inputSchema: .object(
+                properties: [
+                    "chat_id": .string(
+                        description: "Chat GUID from messages_list_chats. Omit to list across every conversation."
+                    ),
+                    "limit": .integer(
+                        description: "Maximum attachments to return",
+                        default: .int(50)
+                    ),
+                ],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "List Message Attachments",
+                readOnlyHint: true,
+                openWorldHint: false
+            )
+        ) { arguments in
+            let chatGUID = arguments["chat_id"]?.stringValue
+            let limit = min(max(arguments["limit"]?.intValue ?? 50, 1), 500)
+            try await self.activate()
+
+            let attachments = try self.withDatabaseReader { reader in
+                try reader.attachments(chatGUID: chatGUID, limit: limit)
+            }
+            let formatter = ISO8601DateFormatter()
+            let described: [Value] = attachments.map { attachment in
+                var entry: [String: Value] = [
+                    "isSticker": .bool(attachment.isSticker),
+                    "sizeBytes": .int(attachment.sizeBytes),
+                ]
+                if let name = attachment.name { entry["name"] = .string(name) }
+                if let mime = attachment.mimeType { entry["mimeType"] = .string(mime) }
+                if let uti = attachment.uti { entry["uti"] = .string(uti) }
+                if let chat = attachment.chatGUID { entry["chatId"] = .string(chat) }
+                if let message = attachment.messageGUID { entry["messageId"] = .string(message) }
+                if let created = attachment.created {
+                    entry["created"] = .string(formatter.string(from: created))
+                }
+                return .object(entry)
+            }
+            return Value.object([
+                "count": .int(described.count),
+                "attachments": .array(described),
+            ])
+        }
+
+        Tool(
+            name: "messages_unread",
+            description:
+                "Show unread message counts per conversation, busiest first. Use this to answer "
+                + "\"do I have any unread messages?\" without reading their contents.",
+            inputSchema: .object(
+                properties: [
+                    "limit": .integer(
+                        description: "Maximum conversations to return",
+                        default: .int(20)
+                    )
+                ],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Unread Messages",
+                readOnlyHint: true,
+                openWorldHint: false
+            )
+        ) { arguments in
+            let limit = min(max(arguments["limit"]?.intValue ?? 20, 1), 200)
+            try await self.activate()
+
+            let counts = try self.withDatabaseReader { reader in
+                try reader.unreadCounts(limit: limit)
+            }
+            let described: [Value] = counts.map { chat in
+                var entry: [String: Value] = [
+                    "chatId": .string(chat.chatGUID),
+                    "unreadCount": .int(chat.unreadCount),
+                ]
+                if let name = chat.displayName { entry["displayName"] = .string(name) }
+                return .object(entry)
+            }
+            return Value.object([
+                "totalUnread": .int(counts.reduce(0) { $0 + $1.unreadCount }),
+                "conversations": .array(described),
+            ])
+        }
+
+        Tool(
             name: "messages_send",
             description:
                 "Send a message via the Messages app. Provide either `recipient` (a phone number or email address) for a direct message, or `chat_id` (a chat GUID from messages_list_chats) to send to an existing conversation, including group chats.",
@@ -468,6 +560,20 @@ final class MessageService: NSObject, Service, NSOpenSavePanelDelegate {
             relativeTo: nil,
             bookmarkDataIsStale: &isStale
         )
+    }
+
+    /// The chat.db path, resolved the same way `createDatabaseConnection`
+    /// resolves it, for the direct reader that covers the columns madrid does
+    /// not model. Runs the bookmark's security scope for the duration of the
+    /// read rather than just to compute a path.
+    private func withDatabaseReader<T>(_ body: (MessagesDatabaseReader) throws -> T) throws -> T {
+        if canAccessDatabaseAtDefaultPath {
+            return try body(MessagesDatabaseReader(path: messagesDatabasePath))
+        }
+        let databaseURL = try resolveBookmarkURL()
+        return try withSecurityScopedAccess(databaseURL) { url in
+            try body(MessagesDatabaseReader(path: url.path))
+        }
     }
 
     private func createDatabaseConnection() throws -> iMessage.Database {
