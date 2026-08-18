@@ -8,7 +8,7 @@
 
 A personal macOS MCP (Model Context Protocol) server that exposes local Apple services, including Calendar, Reminders, Contacts, Mail, Notes, Messages, Maps, Location, Capture, and Shortcuts, to MCP clients such as Claude Desktop, Claude Code, and Cursor.
 
-**Status:** Apple Core 1.0 is the first public release. The app serves MCP locally and through an optional authenticated Cloudflare Tunnel, with 101 tools in the standard build. Apple Core began as a hard-fork of [`mattt/iMCP`](https://github.com/mattt/iMCP); it now runs those per-surface implementations plus expanded Notes and Mail surfaces behind the HTTP/SSE serving shell ported from [Bridgeport](https://github.com/oliverames/bridgeport), replacing the original Bonjour transport. The architecture pivot is recorded in [`docs/planning/BUILD_PLAN.md` §0a](docs/planning/BUILD_PLAN.md).
+**Status:** Apple Core 1.0 is the first public release. The app serves MCP locally and through an optional authenticated Cloudflare Tunnel, with 106 tools in the standard build. Apple Core began as a hard-fork of [`mattt/iMCP`](https://github.com/mattt/iMCP); it now runs those per-surface implementations plus expanded Notes and Mail surfaces behind the HTTP/SSE serving shell ported from [Bridgeport](https://github.com/oliverames/bridgeport), replacing the original Bonjour transport. The architecture pivot is recorded in [`docs/planning/BUILD_PLAN.md` §0a](docs/planning/BUILD_PLAN.md).
 
 Download the signed and notarized app from [GitHub Releases](https://github.com/oliverames/apple-core/releases/latest). Each installation creates its own bearer token and stores its configuration and OAuth state under that Mac user's `~/.config/apple-core/` folder. The release does not contain Oliver's token, Cloudflare tunnel credentials, OAuth clients, Apple account data, or service permissions. Remote access starts off; until you turn it on, Apple Core is reachable only from this Mac.
 
@@ -31,7 +31,7 @@ Full architecture rationale, per-surface deep dives, and the build sequence are 
 
 ## Surfaces
 
-The standard build exposes 101 tools: Mail (26), Notes (21), Contacts (12), Reminders (7), Calendar (6), Utilities (6), Filesystem (5), Maps (5), Messages (5), Capture (3), Location (3), and Shortcuts (2). Four WeatherKit tools remain entitlement-gated and are not part of the standard release build.
+The standard build exposes 106 tools: Mail (28), Notes (21), Contacts (12), Reminders (7), Calendar (6), Utilities (6), Filesystem (5), Maps (5), Messages (5), Capture (4), Shortcuts (4), and Location (3). The five Filesystem tools stay hidden until you share a folder, so a fresh install advertises 101. Six WeatherKit tools remain entitlement-gated and are not part of the standard release build.
 
 The Filesystem surface reports itself inactive and exposes nothing until you share a folder with it in Settings, so a fresh install has no filesystem access at all.
 

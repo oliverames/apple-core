@@ -513,10 +513,16 @@ final class CaptureService: NSObject, Service {
                     display = selectedDisplay
                 } else {
                     guard let mainDisplay = availableContent.displays.first else {
+                        // ScreenCaptureKit reports no displays while the screen
+                        // is locked, which reads as a broken capture rather
+                        // than the ordinary situation it is.
                         throw NSError(
                             domain: "CaptureServiceError",
                             code: 21,
-                            userInfo: [NSLocalizedDescriptionKey: "No displays available"]
+                            userInfo: [
+                                NSLocalizedDescriptionKey:
+                                    "No display is available to capture. The Mac's screen is probably locked."
+                            ]
                         )
                     }
                     display = mainDisplay
@@ -668,6 +674,95 @@ final class CaptureService: NSObject, Service {
                     }
                 }
             }
+        }
+
+        Tool(
+            name: "capture_list_windows",
+            description:
+                "List the displays, applications and windows that can be captured, with the identifiers "
+                + "capture_take_screenshot needs. Call this first to screenshot a particular window or display.",
+            inputSchema: .object(
+                properties: [
+                    "bundleId": .string(
+                        description: "Only list windows belonging to this application"
+                    )
+                ],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "List Capturable Windows",
+                readOnlyHint: true,
+                openWorldHint: false
+            )
+        ) { arguments in
+            if !CGPreflightScreenCaptureAccess() {
+                try await self.requestScreenRecordingPermission()
+            }
+
+            // Desktop windows and off-screen windows are excluded: neither is
+            // something a caller can meaningfully ask for a picture of, and
+            // including them buries the real windows in noise.
+            let content = try await SCShareableContent.excludingDesktopWindows(
+                true,
+                onScreenWindowsOnly: true
+            )
+
+            let wantedBundle = arguments["bundleId"]?.stringValue
+            let windows = content.windows.filter { window in
+                guard let wantedBundle, !wantedBundle.isEmpty else { return true }
+                return window.owningApplication?.bundleIdentifier == wantedBundle
+            }
+
+            let displays: [Value] = content.displays.map { display in
+                .object([
+                    "displayId": .int(Int(display.displayID)),
+                    "width": .int(display.width),
+                    "height": .int(display.height),
+                ])
+            }
+
+            let applications: [Value] = content.applications
+                .filter { application in
+                    guard let wantedBundle, !wantedBundle.isEmpty else { return true }
+                    return application.bundleIdentifier == wantedBundle
+                }
+                .map { application in
+                    .object([
+                        "bundleId": .string(application.bundleIdentifier),
+                        "name": .string(application.applicationName),
+                        "processId": .int(Int(application.processID)),
+                    ])
+                }
+
+            let windowValues: [Value] = windows.map { window in
+                var entry: [String: Value] = [
+                    "windowId": .int(Int(window.windowID)),
+                    "width": .int(Int(window.frame.width)),
+                    "height": .int(Int(window.frame.height)),
+                    "isActive": .bool(window.isActive),
+                ]
+                if let title = window.title, !title.isEmpty {
+                    entry["title"] = .string(title)
+                }
+                if let owner = window.owningApplication {
+                    entry["bundleId"] = .string(owner.bundleIdentifier)
+                    entry["application"] = .string(owner.applicationName)
+                }
+                return .object(entry)
+            }
+
+            var result: [String: Value] = [
+                "displays": .array(displays),
+                "applications": .array(applications),
+                "windows": .array(windowValues),
+            ]
+            if displays.isEmpty {
+                result["note"] = .string(
+                    "No display is available to capture. The Mac's screen is probably locked. "
+                        + "Individual windows can still be listed, but not captured."
+                )
+            }
+            return Value.object(result)
         }
 
     }

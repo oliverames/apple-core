@@ -212,6 +212,143 @@ final class WeatherService: Service {
 
             return minuteByMinuteForecast.prefix(minutes).map { WeatherForecast($0) }
         }
+
+        Tool(
+            name: "weather_alerts",
+            description:
+                "Get the severe weather alerts in force for a location, such as storm, flood or heat warnings. "
+                + "Returns an empty list when there are none.",
+            inputSchema: .object(
+                properties: [
+                    "latitude": .number(),
+                    "longitude": .number(),
+                ],
+                required: ["latitude", "longitude"],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Get Weather Alerts",
+                readOnlyHint: true,
+                openWorldHint: true
+            )
+        ) { arguments in
+            guard case let .double(latitude) = arguments["latitude"],
+                case let .double(longitude) = arguments["longitude"]
+            else {
+                log.error("Invalid coordinates")
+                throw NSError(
+                    domain: "WeatherServiceError",
+                    code: 1,
+                    userInfo: [NSLocalizedDescriptionKey: "Invalid coordinates"]
+                )
+            }
+
+            let location = CLLocation(latitude: latitude, longitude: longitude)
+            // Alerts are nil where the region has no alerting authority, which
+            // is not the same as "no alerts" and should not read as an error.
+            let alerts = try await self.weatherService.weather(for: location, including: .alerts)
+            guard let alerts else {
+                return Value.object([
+                    "alerts": .array([]),
+                    "note": .string("No alerting authority covers this location."),
+                ])
+            }
+
+            let described: [Value] = alerts.map { alert in
+                var entry: [String: Value] = [
+                    "summary": .string(alert.summary),
+                    "severity": .string(String(describing: alert.severity)),
+                    "source": .string(alert.source),
+                    "detailsURL": .string(alert.detailsURL.absoluteString),
+                ]
+                if let region = alert.region { entry["region"] = .string(region) }
+                return .object(entry)
+            }
+            return Value.object(["alerts": .array(described)])
+        }
+
+        Tool(
+            name: "weather_history",
+            description:
+                "Get the daily weather that was recorded for a location between two dates. Use this for past weather, "
+                + "not for the forecast.",
+            inputSchema: .object(
+                properties: [
+                    "latitude": .number(),
+                    "longitude": .number(),
+                    "startDate": .string(description: "First day, as an ISO 8601 date"),
+                    "endDate": .string(description: "Last day, as an ISO 8601 date"),
+                ],
+                required: ["latitude", "longitude", "startDate", "endDate"],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Get Past Weather",
+                readOnlyHint: true,
+                openWorldHint: true
+            )
+        ) { arguments in
+            guard case let .double(latitude) = arguments["latitude"],
+                case let .double(longitude) = arguments["longitude"]
+            else {
+                log.error("Invalid coordinates")
+                throw NSError(
+                    domain: "WeatherServiceError",
+                    code: 1,
+                    userInfo: [NSLocalizedDescriptionKey: "Invalid coordinates"]
+                )
+            }
+            guard let rawStart = arguments["startDate"]?.stringValue,
+                let rawEnd = arguments["endDate"]?.stringValue
+            else {
+                throw NSError(
+                    domain: "WeatherServiceError",
+                    code: 3,
+                    userInfo: [NSLocalizedDescriptionKey: "startDate and endDate are required"]
+                )
+            }
+            let start = try WeatherService.parseDate(rawStart, named: "startDate")
+            let end = try WeatherService.parseDate(rawEnd, named: "endDate")
+            guard start < end else {
+                throw NSError(
+                    domain: "WeatherServiceError",
+                    code: 4,
+                    userInfo: [NSLocalizedDescriptionKey: "startDate must come before endDate."]
+                )
+            }
+
+            let location = CLLocation(latitude: latitude, longitude: longitude)
+            let history = try await self.weatherService.weather(
+                for: location,
+                including: .daily(startDate: start, endDate: end)
+            )
+            return history.map { WeatherForecast($0) }
+        }
+    }
+
+    /// Accepts a bare day as well as a full timestamp: a question about past
+    /// weather is nearly always asked in whole days.
+    static func parseDate(_ raw: String, named argument: String) throws -> Date {
+        let withFraction = ISO8601DateFormatter()
+        withFraction.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = withFraction.date(from: raw) { return date }
+        if let date = ISO8601DateFormatter().date(from: raw) { return date }
+
+        let dayOnly = DateFormatter()
+        dayOnly.calendar = Calendar(identifier: .gregorian)
+        dayOnly.locale = Locale(identifier: "en_US_POSIX")
+        dayOnly.timeZone = TimeZone(secondsFromGMT: 0)
+        dayOnly.dateFormat = "yyyy-MM-dd"
+        if let date = dayOnly.date(from: raw) { return date }
+
+        throw NSError(
+            domain: "WeatherServiceError",
+            code: 5,
+            userInfo: [
+                NSLocalizedDescriptionKey:
+                    "\(argument) must be an ISO 8601 date, such as 2026-08-18."
+            ]
+        )
     }
 }
 

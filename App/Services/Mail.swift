@@ -730,6 +730,37 @@ private let saveAttachmentScript =
         }
         """
 
+private let selectedMessagesScript = """
+    function run() {
+        const Mail = Application('Mail');
+        const viewers = Mail.messageViewers();
+        if (viewers.length === 0) {
+            return JSON.stringify([]);
+        }
+        const selected = viewers[0].selectedMessages();
+        return JSON.stringify(selected.map(function (message) {
+            const mailbox = message.mailbox();
+            return {
+                id: message.id(),
+                subject: message.subject(),
+                sender: message.sender(),
+                dateSent: message.dateSent().toISOString(),
+                readStatus: message.readStatus(),
+                mailbox: mailbox ? mailbox.name() : null,
+                account: mailbox && mailbox.account() ? mailbox.account().name() : null,
+            };
+        }));
+    }
+    """
+
+private let checkMailScript = """
+    function run() {
+        const Mail = Application('Mail');
+        Mail.checkForNewMail();
+        return JSON.stringify({ status: 'checking' });
+    }
+    """
+
 private let createMailboxScript = """
     function run(argv) {
         const accountName = argv[0];
@@ -793,6 +824,10 @@ private let deleteMailboxScript =
 ///   silently drop qualifiers, and differ across macOS releases. A broken
 ///   rule mutates every future inbound message, so the risk/benefit is
 ///   poor; manage rules in Mail's own settings UI.
+/// - Signatures (list, or apply when composing): the `signature` element is
+///   gated behind Mail's `com.apple.mail.compose` access group, so an
+///   unentitled script reads it as null. Confirmed against Mail's own
+///   dictionary rather than assumed; there is no unentitled path to it.
 /// - Cross-mailbox and body search: deferred to the disk-first .emlx +
 ///   FTS5 index design in docs/planning/BUILD_PLAN.md §3.1, which this
 ///   file remains the scaffold for. Per-mailbox subject/sender search is
@@ -1156,6 +1191,48 @@ final class MailService: Service {
                 script: deleteMessagesScript,
                 arguments: [account, mailbox, try Self.encodeJSON(ids)],
                 timeout: 180
+            )
+        }
+
+        Tool(
+            name: "mail_selected",
+            description:
+                "Get the messages the user currently has selected in Mail. Use this when the user refers to "
+                + "\"this email\" or \"the message I am looking at\".",
+            inputSchema: .object(properties: [:], additionalProperties: false),
+            annotations: .init(
+                title: "Get Selected Messages",
+                readOnlyHint: true,
+                openWorldHint: false
+            )
+        ) { _ in
+            try await AppleScriptRunner.shared.runJSON(
+                .jxa,
+                script: selectedMessagesScript,
+                arguments: [],
+                as: [MailSelectedMessage].self,
+                timeout: 30
+            )
+        }
+
+        Tool(
+            name: "mail_check_for_new_mail",
+            description:
+                "Ask Mail to fetch new messages now. Returns as soon as the check starts, not when it finishes.",
+            inputSchema: .object(properties: [:], additionalProperties: false),
+            annotations: .init(
+                title: "Check for New Mail",
+                readOnlyHint: false,
+                idempotentHint: true,
+                openWorldHint: true
+            )
+        ) { _ in
+            try await AppleScriptRunner.shared.runJSON(
+                .jxa,
+                script: checkMailScript,
+                arguments: [],
+                as: MailCheckResult.self,
+                timeout: 30
             )
         }
 
@@ -2097,6 +2174,20 @@ final class MailService: Service {
             as: MailComposeResult.self,
             timeout: 120
         )
+    }
+
+    struct MailSelectedMessage: Codable {
+        let id: Int
+        let subject: String?
+        let sender: String?
+        let dateSent: String?
+        let readStatus: Bool?
+        let mailbox: String?
+        let account: String?
+    }
+
+    struct MailCheckResult: Codable {
+        let status: String
     }
 
     private struct ComposePayload: Encodable {

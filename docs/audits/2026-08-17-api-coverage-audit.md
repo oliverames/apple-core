@@ -293,3 +293,137 @@ Two items, both blocked on something outside the code:
    deliberately rather than alongside everything else.
 
 Everything else in both audit passes is implemented and verified.
+
+---
+
+# Third pass: the surfaces the earlier passes only glanced at
+
+Dated 2026-08-18.
+
+The first pass judged five surfaces in a single word each — Mail "Broad",
+Maps, Capture and Shortcuts "Reasonable" — and never returned to them. Those
+one-word verdicts were the only examination those surfaces ever had, so this
+pass audits each against its own framework or command-line tool rather than
+against an impression.
+
+## Shortcuts — the CLI was barely used
+
+`/usr/bin/shortcuts` has four subcommands and eight options. The service used
+two subcommands and one option, so the following were simply unreachable:
+
+| Missing | Consequence |
+| --- | --- |
+| `--show-identifiers` | Shortcuts were addressed by name, which is not unique. |
+| `--folders`, `--folder-name` | 8 folders of shortcuts were invisible. |
+| `--input-path` with a real file | Input could only ever be text typed into a temp file. |
+| `--output-path` | A shortcut producing an image or PDF had its result discarded. |
+| `--output-type` | No way to ask for a particular representation. |
+| `view` | No way to show the user how a shortcut is built. |
+
+All six are now covered, across four tools rather than two. File arguments
+resolve through `FilesystemAccess`, so a shortcut can only read and write
+inside a folder the user already shared.
+
+Verified live: `shortcuts_folders` returned 8 folders with identifiers, and
+`shortcuts_list` filtered to the Car folder returned its 4 shortcuts. The
+guards were verified too — a file outside the shared folders is refused, and
+passing both `input` and `inputPath` is refused.
+
+**Not verified:** a successful run with file input and output. The Shortcuts
+CLI itself hangs while the Mac's screen is locked, reproduced directly outside
+the app, so the happy path could not be exercised in this session.
+
+## Capture — identifiers with no way to discover them
+
+`capture_take_screenshot` accepted `displayId`, `windowId` and `bundleId`, and
+nothing in the app told a client what any of those values were. In practice
+only whole-screen capture was reachable. `capture_list_windows` now returns
+displays, applications and windows from `SCShareableContent`.
+
+This also explains the screenshot failures at the end of the previous session,
+which were read at the time as a display-topology problem. ScreenCaptureKit
+reports **no displays at all while the screen is locked**, and the error said
+"No displays available", which reads as a broken capture rather than a locked
+Mac. Both that error and the new listing now say so plainly.
+
+## Maps — directions never returned how long or how far
+
+`Trip`, the schema.org type the tool returned, has nowhere to put a distance or
+a duration and only ever describes the first route. So `maps_directions`
+returned turn-by-turn instructions with no answer to "how long does it take" —
+the substance of the question. `MKDirections.Request` also has three properties
+the tool never set: `requestsAlternateRoutes`, `departureDate` and
+`arrivalDate`, the last of which means transit directions were always
+calculated against "now".
+
+The tool now describes the response directly: every route, with distance,
+expected travel time, toll and highway flags, advisory notices, and per-step
+distances. This changes the shape of the tool's output, which is a deliberate
+break.
+
+Verified live: Union Square to the Golden Gate Bridge returned three routes —
+Van Ness Ave (7840 m, 802 s), Franklin St (7844 m, 891 s) and Geary Blvd
+(8962 m, 987 s). Both date guards were verified to reject.
+
+## Weather — no alerts and no past weather
+
+`weather_alerts` and `weather_history` are added. Alerts distinguish "no
+alerting authority covers this location" from "no alerts", because a bare empty
+list conflates the two. The surface is entitlement-gated out of the standard
+build, so verification here is compilation only, and it is stated as such.
+
+## Mail — mostly a correction to this audit's own assumptions
+
+Two things assumed missing turned out to be present or deliberate:
+
+- **Batch operations already exist.** `mail_set_read`, `mail_set_flagged`,
+  `mail_move_message` and `mail_delete_message` all take an array of ids and
+  report per-id success. The assumption that they were one-at-a-time was wrong.
+- **Rules are excluded on purpose**, with the reasoning already written down in
+  the source. Not a gap.
+
+Genuinely missing and now added: `mail_selected`, which answers "the message I
+am looking at", and `mail_check_for_new_mail`.
+
+**Attempted and withdrawn: signatures.** `mail_signatures` was built, and it
+failed live with `signatures.map` on null. Mail's dictionary explains why: the
+`signature` element carries
+`access-group identifier="com.apple.mail.compose"`, so an unentitled script
+reads it as null. There is no unentitled path to it, so the tool and the
+`signature` compose parameter were both removed rather than shipped broken, and
+the reason is now recorded with Mail's other deliberate exclusions.
+
+**Not verified:** `mail_selected` returning actual messages. Mail has no viewer
+window open on this locked Mac, so it correctly returns an empty list, but the
+populated case was not exercised.
+
+## Counts after this pass
+
+| Surface | Second pass | Now |
+| --- | --- | --- |
+| Mail | 26 | 28 |
+| Notes | 21 | 21 |
+| Contacts | 12 | 12 |
+| Reminders | 7 | 7 |
+| Weather | 4 | 6 |
+| Utilities | 6 | 6 |
+| Calendar | 6 | 6 |
+| Messages | 5 | 5 |
+| Maps | 5 | 5 |
+| Filesystem | 5 | 5 |
+| Shortcuts | 2 | 4 |
+| Capture | 3 | 4 |
+| Location | 3 | 3 |
+| **Total** | **105** | **112** |
+
+101 of those advertise over live MCP: 6 WeatherKit tools are entitlement-gated
+out of the build, and the 5 filesystem tools stay inactive until a folder is
+shared.
+
+## A false alarm worth recording
+
+An early probe showed roughly 1 in 12 `tools/call` requests failing with
+"Method not found". That was the test client's fault, not the server's: it sent
+no session header, so every request opened a fresh session and raced the
+initialize handshake. With a real session, 12 of 12 succeeded. Recorded here so
+it is not rediscovered and reported as a bug.

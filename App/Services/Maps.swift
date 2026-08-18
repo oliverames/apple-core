@@ -159,6 +159,18 @@ final class MapsService: NSObject, Service {
                         default: "automobile",
                         enum: ["automobile", "walking", "transit", "any"]
                     ),
+                    "departureDate": .string(
+                        description:
+                            "When the trip starts, as an ISO 8601 date and time. Transit directions depend on this."
+                    ),
+                    "arrivalDate": .string(
+                        description:
+                            "When the trip must end, as an ISO 8601 date and time. Cannot be combined with departureDate."
+                    ),
+                    "alternates": .boolean(
+                        description: "Return alternative routes as well as the fastest one",
+                        default: true
+                    ),
                 ],
                 additionalProperties: false
             ),
@@ -227,8 +239,32 @@ final class MapsService: NSObject, Service {
                 directionsRequest.transportType = .any
             }
 
+            // Without a date, transit directions are calculated against "now",
+            // which is the wrong answer for any question about a trip later
+            // today. MapKit accepts one anchor or the other, never both.
+            let departure = arguments["departureDate"]?.stringValue
+            let arrival = arguments["arrivalDate"]?.stringValue
+            if departure != nil, arrival != nil {
+                throw NSError(
+                    domain: "MapsServiceError",
+                    code: 6,
+                    userInfo: [
+                        NSLocalizedDescriptionKey:
+                            "Give either departureDate or arrivalDate, not both."
+                    ]
+                )
+            }
+            if let departure {
+                directionsRequest.departureDate = try MapsService.parseDate(departure, named: "departureDate")
+            }
+            if let arrival {
+                directionsRequest.arrivalDate = try MapsService.parseDate(arrival, named: "arrivalDate")
+            }
+
+            directionsRequest.requestsAlternateRoutes = arguments["alternates"]?.boolValue ?? true
+
             return try await withCheckedThrowingContinuation {
-                (continuation: CheckedContinuation<Trip, Error>) in
+                (continuation: CheckedContinuation<Value, Error>) in
 
                 let directions = MKDirections(request: directionsRequest)
                 directions.calculate { response, error in
@@ -248,9 +284,7 @@ final class MapsService: NSObject, Service {
                         return
                     }
 
-                    let trip = Trip(response)
-
-                    continuation.resume(returning: trip)
+                    continuation.resume(returning: MapsService.describe(response))
                 }
             }
         }
@@ -669,6 +703,62 @@ final class MapsService: NSObject, Service {
             )
         }
     }
+
+    /// ISO 8601 with and without fractional seconds. Clients send both, and a
+    /// silently ignored date would produce transit directions for the wrong
+    /// time of day rather than an error.
+    static func parseDate(_ raw: String, named argument: String) throws -> Date {
+        let withFraction = ISO8601DateFormatter()
+        withFraction.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = withFraction.date(from: raw) { return date }
+        if let date = ISO8601DateFormatter().date(from: raw) { return date }
+        throw NSError(
+            domain: "MapsServiceError",
+            code: 7,
+            userInfo: [
+                NSLocalizedDescriptionKey:
+                    "\(argument) must be an ISO 8601 date and time, such as 2026-08-18T09:30:00Z."
+            ]
+        )
+    }
+
+    /// The schema.org Trip type carries the turn instructions but has nowhere
+    /// to put how far or how long the trip is, and only ever describes the
+    /// first route. Both are the substance of a directions answer, so the
+    /// response is described directly.
+    static func describe(_ response: MKDirections.Response) -> Value {
+        let routes: [Value] = response.routes.map { route in
+            var entry: [String: Value] = [
+                "distanceMeters": .int(Int(route.distance.rounded())),
+                "expectedTravelSeconds": .int(Int(route.expectedTravelTime.rounded())),
+                "hasTolls": .bool(route.hasTolls),
+                "hasHighways": .bool(route.hasHighways),
+                "steps": .array(
+                    route.steps
+                        .filter { !$0.instructions.isEmpty }
+                        .map { step in
+                            .object([
+                                "instructions": .string(step.instructions),
+                                "distanceMeters": .int(Int(step.distance.rounded())),
+                            ])
+                        }
+                ),
+            ]
+            if !route.name.isEmpty { entry["name"] = .string(route.name) }
+            if !route.advisoryNotices.isEmpty {
+                entry["advisoryNotices"] = .array(route.advisoryNotices.map { .string($0) })
+            }
+            return .object(entry)
+        }
+
+        var result: [String: Value] = ["routes": .array(routes)]
+        if let origin = response.source.name { result["origin"] = .string(origin) }
+        if let destination = response.destination.name {
+            result["destination"] = .string(destination)
+        }
+        return .object(result)
+    }
+
 }
 
 // MARK: - MKLocalSearchCompleterDelegate
