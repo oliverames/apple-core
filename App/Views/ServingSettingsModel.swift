@@ -99,27 +99,6 @@ final class ServingSettingsModel: ObservableObject {
         set { config.cloudflare = newValue }
     }
 
-    var allowQueryTokenAuth: Bool {
-        get { config.allowQueryTokenAuth ?? false }
-        set { config.allowQueryTokenAuth = newValue }
-    }
-
-    func exposePubliclyBinding(forServiceID serviceID: String) -> Binding<Bool> {
-        Binding(
-            get: { self.config.settings(forServiceID: serviceID).exposePublicly },
-            set: { newValue in
-                var settings = self.config.serviceSettings ?? [:]
-                settings[serviceID] = ServingServiceSettings(exposePublicly: newValue)
-                self.config.serviceSettings = settings
-                self.save()
-            }
-        )
-    }
-
-    func publiclyExposedServiceCount(from configs: [ServiceConfig]) -> Int {
-        configs.filter { config.settings(forServiceID: $0.id).exposePublicly }.count
-    }
-
     // MARK: - Persistence
 
     /// Re-reads the config file so edits made outside the app (or by the
@@ -161,9 +140,6 @@ final class ServingSettingsModel: ObservableObject {
 
         if let token = config.token {
             merged.token = token
-        }
-        if let allowQueryTokenAuth = config.allowQueryTokenAuth {
-            merged.allowQueryTokenAuth = allowQueryTokenAuth
         }
         if let serviceSettings = config.serviceSettings {
             merged.serviceSettings = serviceSettings

@@ -939,13 +939,11 @@ public actor AppleCoreHTTPServer {
             }
         }
 
-        if config.allowQueryTokenAuth == true,
-            let queryToken = request.query.first(where: { $0.name == "token" })?.value,
-            Self.constantTimeEquals(queryToken, token)
-        {
-            return true
-        }
-
+        // Query-string token auth used to be available behind a setting. It
+        // is gone: a bearer token in a URL leaks into server logs, proxy logs,
+        // browser history and Referer headers, which is exactly what the
+        // Authorization header exists to avoid. It was described as a fallback
+        // for legacy clients, and no MCP client needs it.
         return false
     }
 
