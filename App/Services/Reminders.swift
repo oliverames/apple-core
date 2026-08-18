@@ -111,6 +111,44 @@ final class RemindersService: Service {
         }
 
         Tool(
+            name: "reminders_sections",
+            description:
+                "List the sections a Reminders list is divided into. Sections are not part of EventKit, so "
+                + "this reads the Reminders database directly and is unavailable if that cannot be read.",
+            inputSchema: .object(
+                properties: [
+                    "list": .string(
+                        description: "Restrict to one list by name. Omit for sections across every list."
+                    )
+                ],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "List Reminder Sections",
+                readOnlyHint: true,
+                openWorldHint: false
+            )
+        ) { arguments in
+            try await self.activate()
+            guard let storePath = RemindersStoreReader.locateStore() else {
+                throw RemindersStoreError.storeNotFound
+            }
+            let listName = arguments["list"]?.stringValue
+            let sections = try RemindersStoreReader(path: storePath).sections(listName: listName)
+
+            let described: [Value] = sections.map { section in
+                var entry: [String: Value] = ["name": .string(section.name)]
+                if let list = section.listName { entry["list"] = .string(list) }
+                if let identifier = section.identifier { entry["identifier"] = .string(identifier) }
+                return .object(entry)
+            }
+            return Value.object([
+                "count": .int(described.count),
+                "sections": .array(described),
+            ])
+        }
+
+        Tool(
             name: "reminders_fetch",
             description: "Get reminders from the reminders app with flexible filtering options",
             inputSchema: .object(
