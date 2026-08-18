@@ -220,6 +220,44 @@ final class ServingSettingsModel: ObservableObject {
         // part of setting up remote access, so it happens there.
     }
 
+    // MARK: - Filesystem roots
+
+    /// Folders the filesystem surface may touch. Empty by default; the
+    /// surface can reach nothing until the user adds one.
+    var filesystemRoots: [FilesystemRoot] {
+        get { config.filesystemRoots ?? [] }
+        set {
+            config.filesystemRoots = newValue.isEmpty ? nil : newValue
+            save(restartServer: false)
+        }
+    }
+
+    /// Adds a folder, refusing duplicates and folders already covered by an
+    /// existing root — sharing ~/Documents twice, or sharing it and then a
+    /// folder inside it, only makes the list harder to reason about.
+    func addFilesystemRoot(_ url: URL, writable: Bool) {
+        let path = FilesystemAccess.canonicalize(url.path)
+        var roots = filesystemRoots
+        if roots.contains(where: { FilesystemAccess.isContained(path, in: FilesystemAccess.canonicalize($0.path)) }) {
+            lastStatusMessage = "That folder is already covered by one you have shared."
+            return
+        }
+        // Drop any existing roots the new one now contains.
+        roots.removeAll { FilesystemAccess.isContained(FilesystemAccess.canonicalize($0.path), in: path) }
+        roots.append(FilesystemRoot(path: path, writable: writable))
+        filesystemRoots = roots.sorted { $0.path < $1.path }
+    }
+
+    func removeFilesystemRoot(_ root: FilesystemRoot) {
+        filesystemRoots = filesystemRoots.filter { $0.path != root.path }
+    }
+
+    func setFilesystemRoot(_ root: FilesystemRoot, writable: Bool) {
+        filesystemRoots = filesystemRoots.map {
+            $0.path == root.path ? FilesystemRoot(path: $0.path, writable: writable) : $0
+        }
+    }
+
     // MARK: - cloudflared installation
 
     var isCloudflaredInstalled: Bool {

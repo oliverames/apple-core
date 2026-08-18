@@ -332,8 +332,207 @@ final class ContactsService: Service {
             try await self.runContactStore {
                 try self.contactStore.execute(saveRequest)
             }
-
             return Person(newContact)
+        }
+
+        Tool(
+            name: "contacts_get",
+            description: "Fetch one contact by its unique identifier",
+            inputSchema: .object(
+                properties: [
+                    "identifier": .string(description: "Unique identifier of the contact")
+                ],
+                required: ["identifier"],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Get Contact",
+                readOnlyHint: true,
+                openWorldHint: false
+            )
+        ) { arguments in
+            guard let identifier = arguments["identifier"]?.stringValue else {
+                throw NSError(
+                    domain: "ContactsService",
+                    code: 1,
+                    userInfo: [NSLocalizedDescriptionKey: "Missing identifier"]
+                )
+            }
+            let contact = try await self.runContactStore {
+                try self.contactStore.unifiedContact(
+                    withIdentifier: identifier,
+                    keysToFetch: contactKeys
+                )
+            }
+            return Person(contact)
+        }
+
+        Tool(
+            name: "contacts_delete",
+            description:
+                "Delete a contact. This cannot be undone, so confirm with the user before calling it.",
+            inputSchema: .object(
+                properties: [
+                    "identifier": .string(description: "Unique identifier of the contact to delete")
+                ],
+                required: ["identifier"],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Delete Contact",
+                readOnlyHint: false,
+                destructiveHint: true,
+                idempotentHint: true,
+                openWorldHint: false
+            )
+        ) { arguments in
+            guard let identifier = arguments["identifier"]?.stringValue else {
+                throw NSError(
+                    domain: "ContactsService",
+                    code: 1,
+                    userInfo: [NSLocalizedDescriptionKey: "Missing identifier"]
+                )
+            }
+            let name: String = try await self.runContactStore {
+                let existing = try self.contactStore.unifiedContact(
+                    withIdentifier: identifier,
+                    keysToFetch: contactKeys
+                )
+                // `delete` needs a mutable copy; the fetched contact is
+                // immutable and passing it through throws at execute time.
+                guard let mutable = existing.mutableCopy() as? CNMutableContact else {
+                    throw NSError(
+                        domain: "ContactsService",
+                        code: 1,
+                        userInfo: [NSLocalizedDescriptionKey: "Could not prepare the contact for deletion"]
+                    )
+                }
+                let request = CNSaveRequest()
+                request.delete(mutable)
+                try self.contactStore.execute(request)
+                return [existing.givenName, existing.familyName]
+                    .filter { !$0.isEmpty }
+                    .joined(separator: " ")
+            }
+            return Value.object([
+                "deleted": .bool(true),
+                "identifier": .string(identifier),
+                "name": .string(name),
+            ])
+        }
+
+        Tool(
+            name: "contacts_groups",
+            description: "List contact groups",
+            inputSchema: .object(properties: [:], additionalProperties: false),
+            annotations: .init(
+                title: "List Contact Groups",
+                readOnlyHint: true,
+                openWorldHint: false
+            )
+        ) { _ in
+            let groups = try await self.runContactStore {
+                try self.contactStore.groups(matching: nil)
+            }
+            let described: [Value] = groups.map { group in
+                .object([
+                    "identifier": .string(group.identifier),
+                    "name": .string(group.name),
+                ])
+            }
+            return Value.object(["groups": .array(described)])
+        }
+
+        Tool(
+            name: "contacts_group_members",
+            description: "List the contacts in a group. Get the group identifier from contacts_groups.",
+            inputSchema: .object(
+                properties: [
+                    "identifier": .string(description: "Group identifier")
+                ],
+                required: ["identifier"],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "List Group Members",
+                readOnlyHint: true,
+                openWorldHint: false
+            )
+        ) { arguments in
+            guard let identifier = arguments["identifier"]?.stringValue else {
+                throw NSError(
+                    domain: "ContactsService",
+                    code: 1,
+                    userInfo: [NSLocalizedDescriptionKey: "Missing identifier"]
+                )
+            }
+            let members = try await self.runContactStore {
+                try self.contactStore.unifiedContacts(
+                    matching: CNContact.predicateForContactsInGroup(withIdentifier: identifier),
+                    keysToFetch: contactKeys
+                )
+            }
+            return members.compactMap { Person($0) }
+        }
+
+        Tool(
+            name: "contacts_photo",
+            description:
+                "Get a contact's photo as a base64-encoded PNG or JPEG. Returns nothing when the contact has no photo.",
+            inputSchema: .object(
+                properties: [
+                    "identifier": .string(description: "Unique identifier of the contact"),
+                    "thumbnail": .boolean(
+                        description: "Return the small thumbnail instead of the full-size image",
+                        default: .bool(true)
+                    ),
+                ],
+                required: ["identifier"],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Get Contact Photo",
+                readOnlyHint: true,
+                openWorldHint: false
+            )
+        ) { arguments in
+            guard let identifier = arguments["identifier"]?.stringValue else {
+                throw NSError(
+                    domain: "ContactsService",
+                    code: 1,
+                    userInfo: [NSLocalizedDescriptionKey: "Missing identifier"]
+                )
+            }
+            let wantsThumbnail = arguments["thumbnail"]?.boolValue ?? true
+            // Image data is a separate key set: fetching it for every contact
+            // search would be wasteful, so it is only requested here.
+            let imageKeys = [
+                CNContactImageDataKey,
+                CNContactThumbnailImageDataKey,
+                CNContactImageDataAvailableKey,
+            ] as [CNKeyDescriptor]
+
+            let data: Data? = try await self.runContactStore {
+                let contact = try self.contactStore.unifiedContact(
+                    withIdentifier: identifier,
+                    keysToFetch: imageKeys
+                )
+                guard contact.imageDataAvailable else { return nil }
+                return wantsThumbnail ? contact.thumbnailImageData : contact.imageData
+            }
+
+            guard let data else {
+                return Value.object([
+                    "identifier": .string(identifier),
+                    "hasPhoto": .bool(false),
+                ])
+            }
+            return Value.object([
+                "identifier": .string(identifier),
+                "hasPhoto": .bool(true),
+                "sizeBytes": .int(data.count),
+                "base64": .string(data.base64EncodedString()),
+            ])
         }
     }
 }

@@ -88,7 +88,7 @@ struct SettingsView: View {
     private var detail: some View {
         switch selection {
         case .services:
-            ServicesPane(serverController: serverController)
+            ServicesPane(serverController: serverController, model: model)
         case .access:
             AccessPane(model: model)
         case .clients:
@@ -101,6 +101,7 @@ struct SettingsView: View {
 
 private struct ServicesPane: View {
     @ObservedObject var serverController: ServerController
+    @ObservedObject var model: ServingSettingsModel
 
     var body: some View {
         Form {
@@ -116,6 +117,8 @@ private struct ServicesPane: View {
             } footer: {
                 TipFooter(text: "macOS asks your permission the first time each service is switched on.")
             }
+
+            SharedFoldersSection(model: model)
         }
         .formStyle(.grouped)
         .groupedPageLayout()
@@ -447,5 +450,101 @@ private struct TrustedClientsSection: View {
                 subtitle: "These connect without asking again."
             )
         }
+    }
+}
+
+// MARK: - Shared folders
+
+/// The filesystem surface's allowlist. This is the one service whose scope the
+/// user has to define, because macOS does not define it for us, so it gets a
+/// section rather than just a switch.
+private struct SharedFoldersSection: View {
+    @ObservedObject var model: ServingSettingsModel
+
+    var body: some View {
+        Section {
+            if model.filesystemRoots.isEmpty {
+                Text("No folders shared. The Filesystem service can reach nothing until you add one.")
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .padding(.vertical, 10)
+            } else {
+                ForEach(model.filesystemRoots) { root in
+                    SharedFolderRow(
+                        root: root,
+                        onSetWritable: { model.setFilesystemRoot(root, writable: $0) },
+                        onRemove: { model.removeFilesystemRoot(root) }
+                    )
+                }
+            }
+
+            Button {
+                chooseFolder()
+            } label: {
+                Label("Share a Folder…", systemImage: "folder.badge.plus")
+            }
+        } header: {
+            SectionHeader(
+                title: "Shared Folders",
+                subtitle: "What the Filesystem service can reach. Everything else on this Mac stays private."
+            )
+        } footer: {
+            TipFooter(
+                text: "Folders are read-only until you allow writing. Sharing a folder also shares everything "
+                    + "inside it."
+            )
+        }
+    }
+
+    private func chooseFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Share"
+        panel.message = "Choose a folder Apple Core may read."
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        model.addFilesystemRoot(url, writable: false)
+    }
+}
+
+private struct SharedFolderRow: View {
+    let root: FilesystemRoot
+    let onSetWritable: (Bool) -> Void
+    let onRemove: () -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "folder.fill")
+                .foregroundStyle(.teal)
+                .frame(width: 22)
+                .accessibilityHidden(true)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(URL(fileURLWithPath: root.path).lastPathComponent)
+                    .fontWeight(.medium)
+                Text(abbreviatedPath)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.head)
+            }
+
+            Spacer(minLength: 12)
+
+            Toggle("Allow writing", isOn: Binding(get: { root.writable }, set: onSetWritable))
+                .toggleStyle(.checkbox)
+                .accessibilityLabel("Allow writing to \(root.path)")
+
+            Button("Remove", action: onRemove)
+        }
+        .padding(.vertical, 4)
+    }
+
+    private var abbreviatedPath: String {
+        let home = NSHomeDirectory()
+        return root.path.hasPrefix(home)
+            ? "~" + root.path.dropFirst(home.count)
+            : root.path
     }
 }
