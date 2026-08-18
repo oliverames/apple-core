@@ -118,3 +118,89 @@ drive the Calendar surface.
 
 After both fixes, all 96 tools use underscores and every surface has exactly
 one prefix matching its name.
+
+---
+
+# Second pass: documentation and reference-implementation driven
+
+The first pass above was written from our own source, which only finds what is
+missing against what is already there. This pass compares each surface against
+a reference implementation or Apple's own framework, which finds the things
+nobody had thought of. It is a longer list, as expected.
+
+## The structural finding
+
+Three surfaces have their richest data in Apple's private CoreData/SQLite
+stores rather than in the public frameworks:
+
+- **Reminders.** EventKit exposes no subtasks, sections, tags, or attachments.
+  `remctl` gets all of them by reading the iCloud Reminders CoreData store
+  (`Data-*.sqlite`) directly and writing through EventKit with an AppleScript
+  fallback.
+- **Messages.** Attachments, tapbacks and unread state are all in `chat.db`.
+- **Notes.** Checklist state and some metadata are similarly not in the
+  scripting interface.
+
+This reframes the Messages item in the first pass. Apple Core **already reads
+`chat.db` directly** — the surface has a file picker for it and a stored
+security bookmark. So a direct store read is not a new architectural
+departure; it is an established pattern in this codebase that one surface
+uses and the others do not. That makes the Reminders and Messages gaps a
+matter of applying an existing pattern rather than adopting a new one.
+
+The read-only, defensive posture that pattern needs is already written down in
+`remctl`: open the store read-only, tolerate schema drift across macOS
+releases, and degrade to the public framework when the store cannot be read.
+
+## Reminders — the largest gap in the app
+
+Six tools today: lists, fetch, create, update, complete, delete. `remctl`
+exposes all of the following, none of which Apple Core has:
+
+- Subtasks, sections, and hashtag tags
+- List groups (create, rename, add/remove child lists)
+- Smart lists and saved templates
+- Flagged and urgent views, and a due-today/overdue view
+- Attachments, including image attachments
+- Deep links to a specific reminder
+- Sharees, for assignment inside a shared list
+- Statistics
+
+Priority, recurrence and alarms are already covered, as the first pass found.
+
+## Notes — about ten gaps against apple-notes-mcp
+
+Nineteen tools today. `apple-notes-mcp`, which is the reference for this
+surface, additionally exposes:
+
+- Plaintext extraction, distinct from the markdown we already emit
+- A deep link to a note
+- The notes currently selected in Notes.app
+- Checklist state
+- Note metadata, separate from full content
+- Sync status, and a list of shared notes
+- Reveal-in-app for a note, folder, or account
+- The default save location
+- Inline attachment fetch, as opposed to saving to disk
+- Health-check and doctor diagnostics
+
+## Calendar and Contacts, against the frameworks
+
+- **Calendar**: no attendees or invitation handling (`EKParticipant`), no
+  calendar creation or deletion, no free/busy query, no event attachments, no
+  moving an event between calendars.
+- **Contacts**: group creation and membership editing, and setting a photo,
+  remain open — the surface can now read both.
+
+## Recommended order
+
+1. Reminders subtasks, sections and tags, via a read-only store read modelled
+   on `remctl`. Biggest single gain in the app.
+2. Notes plaintext, deep link, selected notes, checklist state. All cheap.
+3. Messages attachments and unread, extending the existing `chat.db` access.
+4. Calendar attendees and calendar management.
+5. Contacts group and photo writes.
+
+Every item here is additive. Nothing above is blocked on a decision except the
+choice of how defensively to read the private stores, and `remctl` is a
+working answer to that.
