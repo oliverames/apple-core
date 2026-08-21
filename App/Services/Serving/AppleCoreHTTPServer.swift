@@ -335,7 +335,7 @@ public actor AppleCoreHTTPServer {
                 return Self.oauthErrorResponse(
                     .badRequest,
                     "invalid_redirect_uri",
-                    "Redirect URIs must be https URLs or localhost callback URLs.",
+                    "Redirect URIs must use HTTPS, a localhost callback, or a reverse-domain native app scheme.",
                     request: request
                 )
             }

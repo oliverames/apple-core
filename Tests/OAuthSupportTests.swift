@@ -3,6 +3,29 @@ import Testing
 
 @Suite("OAuth refresh tokens")
 struct OAuthSupportTests {
+    @Test("Native callbacks require a reverse-domain scheme without an authority")
+    func nativeRedirectURIs() {
+        for accepted in [
+            "https://client.example/callback",
+            "http://localhost/callback",
+            "http://127.0.0.1:49152/callback",
+            "com.oliverames.amesutilities:/mcp-oauth",
+        ] {
+            #expect(OAuthSupport.isAllowedRedirectURI(accepted), "Expected \(accepted) to be accepted")
+        }
+
+        for rejected in [
+            "http://client.example/callback",
+            "amesutilities:/mcp-oauth",
+            "com.oliverames.amesutilities://mcp-oauth",
+            "javascript:alert(1)",
+            "com.example.app:",
+            "com.example.app:/callback#fragment",
+        ] {
+            #expect(!OAuthSupport.isAllowedRedirectURI(rejected), "Expected \(rejected) to be rejected")
+        }
+    }
+
     @Test("Refresh tokens rotate after an access token expires")
     func refreshTokensRotate() async {
         let store = OAuthTokenStore()

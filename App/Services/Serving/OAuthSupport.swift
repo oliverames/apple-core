@@ -415,21 +415,34 @@ public enum OAuthSupport {
 
     public static func isAllowedRedirectURI(_ value: String) -> Bool {
         guard let components = URLComponents(string: value),
-            let scheme = components.scheme?.lowercased(),
-            let host = components.host?.lowercased()
+            let scheme = components.scheme?.lowercased()
         else {
             return false
         }
 
         if scheme == "https" {
-            return true
+            return components.host?.isEmpty == false
         }
 
         if scheme == "http" {
+            guard let host = components.host?.lowercased() else {
+                return false
+            }
             return host == "localhost" || host == "127.0.0.1" || host == "::1"
         }
 
-        return false
+        // RFC 8252 private-use redirects use a reverse-domain scheme and no
+        // URI authority, for example com.example.app:/oauth2redirect. The
+        // authorization request still has to match this complete registered
+        // URI exactly before a code is issued.
+        return scheme.contains(".")
+            && components.host == nil
+            && components.user == nil
+            && components.password == nil
+            && components.port == nil
+            && components.path.hasPrefix("/")
+            && components.path.count > 1
+            && components.fragment == nil
     }
 
     public static func isAppleCoreGeneratedClientID(_ value: String) -> Bool {
