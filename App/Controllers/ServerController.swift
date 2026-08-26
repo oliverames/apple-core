@@ -206,11 +206,6 @@ final class ServerController: ObservableObject {
     @Published var pendingConnectionID: String?
     @Published var pendingClientName: String = ""
 
-    private var activeApprovalDialogs: Set<String> = []
-    private var pendingApprovals: [(String, () -> Void, () -> Void)] = []
-    private var currentApprovalHandlers: (approve: () -> Void, deny: () -> Void)?
-    private let approvalWindowController = ConnectionApprovalWindowController()
-
     private let networkManager = ServerNetworkManager()
 
     // MARK: - AppStorage for Service Enablement States
@@ -293,15 +288,21 @@ final class ServerController: ObservableObject {
     }
 
     // MARK: - Connection Approval Methods
-    private func cleanupApprovalState() {
-        pendingClientName = ""
-        currentApprovalHandlers = nil
 
-        if let clientID = pendingConnectionID {
-            activeApprovalDialogs.remove(clientID)
-            pendingConnectionID = nil
-        }
+    /// One queued approval request. The window controller is shared, so
+    /// dialogs are presented strictly one at a time; concurrent requests
+    /// wait here instead of overwriting each other's callbacks.
+    private struct ApprovalRequest {
+        let clientID: String
+        let approve: () -> Void
+        let deny: () -> Void
     }
+
+    private var activeApprovalDialogs: Set<String> = []
+    private var pendingApprovals: [(String, () -> Void, () -> Void)] = []
+    private var approvalDialogQueue: [ApprovalRequest] = []
+    private var isApprovalDialogVisible = false
+    private let approvalWindowController = ConnectionApprovalWindowController()
 
     private func handlePendingApprovals(for clientID: String, approved: Bool) {
         while let pendingIndex = pendingApprovals.firstIndex(where: { $0.0 == clientID }) {
@@ -316,15 +317,75 @@ final class ServerController: ObservableObject {
         }
     }
 
+    /// Resolves the dialog that is currently on screen, then presents the
+    /// next queued one, if any.
+    private func finishActiveApproval(for request: ApprovalRequest, approved: Bool) {
+        isApprovalDialogVisible = false
+        activeApprovalDialogs.remove(request.clientID)
+
+        if pendingConnectionID == request.clientID {
+            pendingConnectionID = nil
+            pendingClientName = ""
+        }
+
+        handlePendingApprovals(for: request.clientID, approved: approved)
+        presentNextApprovalIfNeeded()
+    }
+
+    private func presentNextApprovalIfNeeded() {
+        guard !isApprovalDialogVisible, let next = approvalDialogQueue.first else {
+            return
+        }
+        approvalDialogQueue.removeFirst()
+
+        isApprovalDialogVisible = true
+        pendingConnectionID = next.clientID
+        pendingClientName = next.clientID
+
+        approvalWindowController.showApprovalWindow(
+            clientName: next.clientID,
+            onApprove: { [weak self] alwaysTrust in
+                guard let self else { return }
+                if alwaysTrust {
+                    self.addTrustedClient(next.clientID)
+
+                    // Ask for notification permission to alert on future trusted connections.
+                    UNUserNotificationCenter.current().requestAuthorization(options: [
+                        .alert, .sound, .badge,
+                    ]) { granted, error in
+                        if let error = error {
+                            log.error(
+                                "Failed to request notification permissions: \(error.localizedDescription)"
+                            )
+                        } else {
+                            log.info("Notification permissions granted: \(granted)")
+                        }
+                    }
+                }
+
+                next.approve()
+                self.finishActiveApproval(for: next, approved: true)
+            },
+            onDeny: { [weak self] in
+                guard let self else { return }
+                next.deny()
+                self.finishActiveApproval(for: next, approved: false)
+            }
+        )
+
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
     init() {
         Task { [weak self] in
             guard let self else { return }
 
             // Initialize bindings from AppStorage before the server starts.
             await networkManager.updateServiceBindings(self.currentServiceBindings)
-            await self.networkManager.start()
-            self.updateServerStatus("Running")
 
+            // Install the approval handler before the listener opens. A
+            // client arriving in the gap between listen and handler-install
+            // used to be rejected outright by the nil-handler guard.
             await networkManager.setConnectionApprovalHandler {
                 [weak self] connectionID, clientInfo in
                 guard let self = self else {
@@ -354,6 +415,15 @@ final class ServerController: ObservableObject {
                     }
                 }
             }
+
+            let started = await self.networkManager.start()
+            if started {
+                self.updateServerStatus("Running")
+            } else if let failure = await self.networkManager.lastStartError {
+                self.updateServerStatus("Failed to start: \(failure)")
+            } else {
+                self.updateServerStatus("Failed to start")
+            }
         }
     }
 
@@ -363,8 +433,22 @@ final class ServerController: ObservableObject {
     }
 
     func startServer() async {
-        await networkManager.start()
-        updateServerStatus("Running")
+        let started = await networkManager.start()
+        if started {
+            updateServerStatus("Running")
+        } else if let failure = await networkManager.lastStartError {
+            updateServerStatus("Failed to start: \(failure)")
+        } else {
+            updateServerStatus("Failed to start")
+        }
+    }
+
+    /// Startup reconciliation can rewrite serving config after the server
+    /// froze its snapshot at launch; bounce the listener so the on-disk
+    /// truth wins without waiting for the next relaunch.
+    func restartForConfigChange() async {
+        await stopServer()
+        await startServer()
     }
 
     func stopServer() async {
@@ -421,53 +505,20 @@ final class ServerController: ObservableObject {
             return
         }
 
-        self.pendingConnectionID = clientID
-
-        // Coalesce concurrent approvals for the same client.
+        // Coalesce concurrent approvals for the same client: one dialog
+        // resolves every queued request from that client.
         guard !activeApprovalDialogs.contains(clientID) else {
             log.info("Adding to pending approvals for client: \(clientID)")
             pendingApprovals.append((clientID, approve, deny))
             return
         }
-
         activeApprovalDialogs.insert(clientID)
 
-        // Present the approval window and wire callbacks.
-        pendingClientName = clientID
-        currentApprovalHandlers = (approve: approve, deny: deny)
-
-        approvalWindowController.showApprovalWindow(
-            clientName: clientID,
-            onApprove: { alwaysTrust in
-                if alwaysTrust {
-                    self.addTrustedClient(clientID)
-
-                    // Ask for notification permission to alert on future trusted connections.
-                    UNUserNotificationCenter.current().requestAuthorization(options: [
-                        .alert, .sound, .badge,
-                    ]) { granted, error in
-                        if let error = error {
-                            log.error(
-                                "Failed to request notification permissions: \(error.localizedDescription)"
-                            )
-                        } else {
-                            log.info("Notification permissions granted: \(granted)")
-                        }
-                    }
-                }
-
-                approve()
-                self.cleanupApprovalState()
-                self.handlePendingApprovals(for: clientID, approved: true)
-            },
-            onDeny: {
-                deny()
-                self.cleanupApprovalState()
-                self.handlePendingApprovals(for: clientID, approved: false)
-            }
-        )
-
-        NSApp.activate(ignoringOtherApps: true)
+        // One shared window controller means dialogs must be serialized.
+        // Queue the request; a second client's dialog appears as soon as the
+        // first is answered instead of overwriting its callbacks.
+        approvalDialogQueue.append(ApprovalRequest(clientID: clientID, approve: approve, deny: deny))
+        presentNextApprovalIfNeeded()
     }
 }
 
@@ -578,6 +629,30 @@ actor ServerNetworkManager {
     private var serverTask: Task<Void, Never>?
     private var connections: [UUID: MCPConnectionManager] = [:]
     private var connectionTasks: [UUID: Task<Void, Never>] = [:]
+    private var connectionsAwaitingApproval: Set<UUID> = []
+
+    /// Set when the most recent `start()` failed to bind. The controller
+    /// reads it to report the truth instead of a green "Running".
+    private(set) var lastStartError: String?
+
+    /// Thread-safe handoff from the server task (which learns of bind
+    /// failures) back to `start()` (which reports status).
+    private final class StartFailureBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var message: String?
+
+        func store(_ message: String) {
+            lock.lock()
+            defer { lock.unlock() }
+            self.message = message
+        }
+
+        func peek() -> String? {
+            lock.lock()
+            defer { lock.unlock() }
+            return message
+        }
+    }
 
     typealias ConnectionApprovalHandler = @Sendable (UUID, MCP.Client.Info) async -> Bool
     private var connectionApprovalHandler: ConnectionApprovalHandler?
@@ -595,9 +670,17 @@ actor ServerNetworkManager {
         self.connectionApprovalHandler = handler
     }
 
-    func start() async {
+    /// Starts the HTTP listener. Returns false when the bind failed; the
+    /// reason is in `lastStartError`.
+    @discardableResult
+    func start() async -> Bool {
+        // Stop any previous instance first. Overlapping starts used to
+        // strand the old listener holding the port while the new one died
+        // of EADDRINUSE with nothing but a log line.
+        await stop()
         log.info("Starting network manager")
         isRunningState = true
+        lastStartError = nil
 
         let servingConfig = Self.bootstrappedServingConfig()
         self.servingConfig = servingConfig
@@ -620,13 +703,28 @@ actor ServerNetworkManager {
             Task { await self.removeConnection(connectionID) }
         }
 
+        let failureBox = StartFailureBox()
         serverTask = Task {
             do {
                 try await httpServer.start()
             } catch {
+                failureBox.store(error.localizedDescription)
                 log.error("HTTP/SSE server failed: \(error.localizedDescription)")
             }
         }
+
+        // FlyingFox binds its socket inside run(): a failed bind throws
+        // within moments while a successful listen stays suspended there.
+        // Give the bind a brief window to fail before reporting Running;
+        // the alternative was a menu bar that claimed "Running" over an
+        // EADDRINUSE corpse.
+        try? await Task.sleep(nanoseconds: 250_000_000)
+        if let failure = failureBox.peek() {
+            lastStartError = failure
+            isRunningState = false
+            return false
+        }
+        return true
     }
 
     /// Loads the persisted serving config, generating and persisting a
@@ -684,6 +782,8 @@ actor ServerNetworkManager {
     func removeConnection(_ id: UUID) async {
         log.debug("Removing connection: \(id)")
 
+        connectionsAwaitingApproval.remove(id)
+
         if let connectionManager = connections[id] {
             await connectionManager.stop()
         }
@@ -730,7 +830,14 @@ actor ServerNetworkManager {
                 }
 
                 try await connectionManager.start { clientInfo in
-                    await approvalHandler(connectionID, clientInfo)
+                    // While the human decides, this connection must not be
+                    // treated as stalled: the 10-second setup timeout used
+                    // to tear down sessions mid-dialog and strand the
+                    // approval continuation forever.
+                    self.markApprovalPending(connectionID, true)
+                    let approved = await approvalHandler(connectionID, clientInfo)
+                    self.markApprovalPending(connectionID, false)
+                    return approved
                 }
 
                 log.notice("Connection \(connectionID) successfully established")
@@ -742,12 +849,14 @@ actor ServerNetworkManager {
 
         connectionTasks[connectionID] = task
 
-        // Time out stalled setups to avoid orphaned connections.
+        // Time out stalled setups to avoid orphaned connections. A pending
+        // human decision is not a stall.
         Task {
             try? await Task.sleep(nanoseconds: 10_000_000_000)  // 10 seconds
 
             // If the setup task is still registered, treat it as timed out.
-            if self.connectionTasks[connectionID] != nil,
+            if !self.connectionsAwaitingApproval.contains(connectionID),
+                self.connectionTasks[connectionID] != nil,
                 self.connections[connectionID] != nil
             {
                 log.warning(
@@ -758,6 +867,14 @@ actor ServerNetworkManager {
         }
 
         return connectionManager.sseSession
+    }
+
+    private func markApprovalPending(_ connectionID: UUID, _ pending: Bool) {
+        if pending {
+            connectionsAwaitingApproval.insert(connectionID)
+        } else {
+            connectionsAwaitingApproval.remove(connectionID)
+        }
     }
 
     func registerHandlers(

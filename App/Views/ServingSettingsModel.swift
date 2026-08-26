@@ -123,6 +123,7 @@ final class ServingSettingsModel: ObservableObject {
     /// edits — and overlays optional sub-blocks only when the model actually
     /// has a value for them. Unknown/untouched keys keep their disk values.
     func save(restartServer: Bool = true) {
+        let before = config
         var merged = ServingConfigManager.load()
 
         if let parsedPort = UInt16(portText.trimmingCharacters(in: .whitespacesAndNewlines)), parsedPort > 0 {
@@ -155,7 +156,19 @@ final class ServingSettingsModel: ObservableObject {
         ServingConfigManager.save(merged)
         lastStatusMessage = "Saved"
 
-        if restartServer {
+        // The HTTP server reads its config once at startup, so a wizard step
+        // that saves with restartServer:false still has to bounce it when a
+        // field the server froze actually changed — otherwise the live server
+        // keeps advertising the pre-tunnel OAuth issuer and enforcing the
+        // stale origin allowlist until relaunch.
+        let serverVisibleFieldsChanged =
+            before.publicBaseURL != merged.publicBaseURL
+            || before.allowedOrigins != merged.allowedOrigins
+            || before.port != merged.port
+            || before.bindHost != merged.bindHost
+            || before.token != merged.token
+
+        if restartServer || serverVisibleFieldsChanged {
             Task {
                 await serverController?.stopServer()
                 await serverController?.startServer()
@@ -518,14 +531,30 @@ final class ServingSettingsModel: ObservableObject {
 
     // MARK: - LaunchAgent
 
+    private static func loadLaunchAgentStatusOffMain() async -> Bool {
+        await Task.detached(priority: .userInitiated) {
+            LaunchAgentManager.isLoaded(label: AppLaunchAgent.label, uid: getuid())
+        }.value
+    }
+
     func refreshAppLaunchAgentStatus() {
-        isAppLaunchAgentLoaded = LaunchAgentManager.isLoaded(label: AppLaunchAgent.label, uid: getuid())
+        // `launchctl print` blocks; run it off the main thread so opening
+        // Settings or Diagnostics never waits on launchd.
+        Task(priority: .userInitiated) {
+            isAppLaunchAgentLoaded = await Self.loadLaunchAgentStatusOffMain()
+        }
     }
 
     func installAppLaunchAgent() {
-        AppLaunchAgent.installIfNeeded()
-        refreshAppLaunchAgentStatus()
-        lastStatusMessage = isAppLaunchAgentLoaded ? "LaunchAgent installed" : "LaunchAgent install failed; see log"
+        Task(priority: .userInitiated) {
+            await Task.detached(priority: .userInitiated) {
+                AppLaunchAgent.installIfNeeded()
+            }.value
+            let loaded = await Self.loadLaunchAgentStatusOffMain()
+            isAppLaunchAgentLoaded = loaded
+            lastStatusMessage =
+                loaded ? "LaunchAgent installed" : "LaunchAgent install failed; see log"
+        }
     }
 
     func removeAppLaunchAgent() {

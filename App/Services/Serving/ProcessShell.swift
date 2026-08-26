@@ -64,6 +64,12 @@ func runShellDetached(_ executable: String, _ arguments: [String]) -> String? {
     process.standardOutput = FileHandle.nullDevice
     process.standardError = FileHandle.nullDevice
 
+    // Foundation reaps a child only when someone waits on it. Dropping the
+    // process on the floor left one zombie per login attempt parented to the
+    // app until quit; the handler keeps a reference alive so the child is
+    // reaped when it exits after the browser round trip.
+    process.terminationHandler = { _ in }
+
     do {
         try process.run()
         return nil

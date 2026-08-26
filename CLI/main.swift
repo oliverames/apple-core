@@ -75,6 +75,18 @@ actor StdioHTTPBridge {
                 FileHandle.standardError.write(Data("apple-core-cli: non-HTTP response\n".utf8))
                 return nil
             }
+            if http.statusCode == 404, sessionID != nil {
+                // The server reaped this session after ten idle minutes.
+                // Replay the stored header forever and every future request
+                // 404s with no recovery path; drop it so the next initialize
+                // starts a fresh session, and tell the client why this one
+                // died instead of answering with silence.
+                sessionID = nil
+                FileHandle.standardError.write(
+                    Data("apple-core-cli: session expired on server; will start a new one\n".utf8)
+                )
+                return Self.sessionLostError(for: line)
+            }
             if let newSessionID = http.value(forHTTPHeaderField: "Mcp-Session-Id") {
                 sessionID = newSessionID
             }
@@ -92,6 +104,34 @@ actor StdioHTTPBridge {
             FileHandle.standardError.write(Data("apple-core-cli: request failed: \(error)\n".utf8))
             return nil
         }
+    }
+
+    /// Builds a JSON-RPC error response matching `line`'s request id, so a
+    /// stdio client whose session expired sees a protocol-level failure it
+    /// can react to (by re-initializing) rather than an endless hang. A
+    /// notification has no id and expects no reply.
+    private static func sessionLostError(for line: String) -> String? {
+        guard let data = line.data(using: .utf8),
+            let request = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let id = request["id"]
+        else {
+            return nil
+        }
+
+        let payload: [String: Any] = [
+            "jsonrpc": "2.0",
+            "id": id,
+            "error": [
+                "code": -32000,
+                "message": "Apple Core session expired; reconnect by re-initializing",
+            ],
+        ]
+        guard
+            let responseData = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
+        else {
+            return nil
+        }
+        return String(data: responseData, encoding: .utf8)
     }
 
     /// The `/mcp` endpoint replies to request-carrying POSTs with a single
@@ -125,7 +165,10 @@ guard let token = servingConfig.token, !token.isEmpty else {
 
 let port = servingConfig.port ?? 8756
 let bindHost = servingConfig.bindHost ?? "127.0.0.1"
-guard let baseURL = URL(string: "http://\(bindHost):\(port)/") else {
+// IPv6 literals need brackets in a URL authority: URL(string:) rejects
+// "http://::1:8756/" outright even though the app binds ::1 deliberately.
+let urlHost = bindHost.contains(":") && !bindHost.hasPrefix("[") ? "[\(bindHost)]" : bindHost
+guard let baseURL = URL(string: "http://\(urlHost):\(port)/") else {
     FileHandle.standardError.write(Data("apple-core-cli: invalid bind host/port\n".utf8))
     exit(1)
 }

@@ -22,7 +22,9 @@ import SwiftUI
 enum AppLaunchAgent {
     static let label = "com.oliverames.applecore.launchagent"
 
-    @MainActor
+    // Deliberately not @MainActor: every call here is Bundle/FileManager/
+    // launchctl work that can block for seconds, and applicationDidFinish-
+    // Launching runs it off the main thread. Nothing in the body touches UI.
     static func installIfNeeded() {
         // A keep-alive job must never point into DerivedData or another
         // disposable build directory. Install the app first so updates and
@@ -144,7 +146,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if runAsLaunchAgent {
-            AppLaunchAgent.installIfNeeded()
+            // launchctl rounds block; run them off the main thread so first
+            // frame never waits on launchd.
+            Task.detached(priority: .utility) {
+                AppLaunchAgent.installIfNeeded()
+            }
         }
 
         // LSUIElement=true makes the app an accessory (no Dock icon) by
@@ -171,6 +177,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 Logger.server.info(
                     "Cloudflare startup reconciliation: \(result.status.message, privacy: .public)"
                 )
+                // Reconciliation may rewrite publicBaseURL or allowed origins
+                // after the server froze its config snapshot at start; bounce
+                // the listener so the merged truth is what it serves.
+                if result.didChangeSettings {
+                    await serverController.restartForConfigChange()
+                }
             }
         }
 

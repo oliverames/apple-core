@@ -257,6 +257,7 @@ public actor CloudflareManager {
 
     public func bootstrapTunnel() -> CloudflareOperationResult {
         let before = settings
+        var dnsRouteForNewTunnel = false
         guard settings.enabled else {
             let status = status(messageOverride: "Enable Cloudflare before creating a tunnel.", forcedState: .disabled)
             return CloudflareOperationResult(settings: settings, status: status, didChangeSettings: before != settings)
@@ -281,11 +282,14 @@ public actor CloudflareManager {
         }
 
         if settings.tunnelId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let createdThisRun: Bool
             if let existingTunnelId = existingTunnelID(named: settings.tunnelName) {
                 settings.tunnelId = existingTunnelId
+                createdThisRun = false
             } else if let createdTunnelId = createTunnel() {
                 settings.tunnelId = createdTunnelId
                 settings.createdByAppleCore = true
+                createdThisRun = true
             } else {
                 let status = status(
                     messageOverride:
@@ -298,6 +302,11 @@ public actor CloudflareManager {
                     didChangeSettings: before != settings
                 )
             }
+            // A record that already exists is only suspicious when this run
+            // just minted a brand-new tunnel: for it, any pre-existing CNAME
+            // points somewhere else. For a rerun or a linked tunnel the
+            // record is expected to be ours.
+            dnsRouteForNewTunnel = createdThisRun
         }
 
         if settings.credentialsFilePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -311,7 +320,7 @@ public actor CloudflareManager {
         } else if let invalid = Self.hostnameValidationError(for: settings.hostname) {
             routingWarning = invalid
         } else {
-            routingWarning = ensureDNSRoute()
+            routingWarning = ensureDNSRoute(createdThisRun: dnsRouteForNewTunnel)
         }
 
         writeCloudflaredConfigIfPossible()
@@ -571,7 +580,12 @@ public actor CloudflareManager {
             ? settings.tunnelName
             : settings.tunnelId
         let hostname = settings.hostname.trimmingCharacters(in: .whitespacesAndNewlines)
-        let serviceHost = bindHost == "0.0.0.0" ? "127.0.0.1" : bindHost
+        var serviceHost = bindHost == "0.0.0.0" ? "127.0.0.1" : bindHost
+        // A bare IPv6 literal is not a valid URL authority; cloudflared
+        // would refuse to dial `http://::1:8756`. Bracket it.
+        if serviceHost.contains(":") && !serviceHost.hasPrefix("[") {
+            serviceHost = "[\(serviceHost)]"
+        }
         let service = "http://\(serviceHost):\(port)"
 
         var lines = [
@@ -815,7 +829,7 @@ public actor CloudflareManager {
     /// not be created. The caller surfaces that in the pane: routing failures
     /// used to be logged and discarded, so a tunnel that could never resolve
     /// still reported itself as started.
-    private func ensureDNSRoute() -> String? {
+    private func ensureDNSRoute(createdThisRun: Bool) -> String? {
         let tunnel =
             settings.tunnelId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ? settings.tunnelName
@@ -827,6 +841,14 @@ public actor CloudflareManager {
 
         let combined = "\(result.stdout)\n\(result.stderr)".lowercased()
         if combined.contains("already exists") || combined.contains("record exists") {
+            // For a brand-new tunnel, an existing record cannot be ours: it
+            // points at another tunnel or origin, and reporting success sent
+            // users chasing ghosts on a setup that looked healthy and could
+            // never work. Reruns and linked tunnels expect the record.
+            if createdThisRun {
+                return
+                    "\(settings.hostname) already has a DNS record pointing elsewhere. Verify it points at tunnel \(tunnel), or delete the record and retry."
+            }
             return nil
         }
 
