@@ -5,7 +5,7 @@ import OSLog
 
 private let log = Logger.integration("claude-desktop")
 private let configPath =
-    "/Users/\(NSUserName())/Library/Application Support/Claude/claude_desktop_config.json"
+    NSHomeDirectory() + "/Library/Application Support/Claude/claude_desktop_config.json"
 private let configBookmarkKey = "com.oliverames.applecore.claudeConfigBookmark"
 
 private let jsonEncoder: JSONEncoder = {
@@ -17,14 +17,21 @@ private let jsonEncoder: JSONEncoder = {
 private let jsonDecoder = JSONDecoder()
 
 enum ClaudeDesktop {
-    struct Config: Codable {
-        struct MCPServer: Codable {
-            var command: String
-            var args: [String]?
-            var env: [String: String]?
-        }
+    struct MCPServer: Codable {
+        var command: String
+        var args: [String]?
+        var env: [String: String]?
+    }
 
-        var mcpServers: [String: MCPServer]
+    /// The config file exists but does not parse. Aborting beats proceeding
+    /// with an empty server map: writing that over the file would destroy
+    /// every unrelated entry, despite the dialog promising otherwise.
+    struct UndecodableConfigError: LocalizedError {
+        let path: String
+
+        var errorDescription: String? {
+            "\(path) could not be parsed as JSON. Fix or remove that file, then run setup again."
+        }
     }
 
     enum Error: LocalizedError {
@@ -114,9 +121,9 @@ private func saveSecurityScopedAccess(for url: URL) throws {
     log.debug("Successfully saved security-scoped bookmark")
 }
 
-private func loadConfig() throws -> ([String: Value], ClaudeDesktop.Config.MCPServer) {
+private func loadConfig() throws -> ([String: Value], ClaudeDesktop.MCPServer) {
     log.debug("Creating default Apple Core server configuration")
-    let appleCoreServer = ClaudeDesktop.Config.MCPServer(
+    let appleCoreServer = ClaudeDesktop.MCPServer(
         command: Bundle.main.bundleURL
             .appendingPathComponent("Contents/MacOS/apple-core")
             .path
@@ -138,6 +145,8 @@ private func loadConfig() throws -> ([String: Value], ClaudeDesktop.Config.MCPSe
                         "Successfully loaded from security-scoped URL. Attempting to refresh bookmark."
                     )
                     try saveSecurityScopedAccess(for: secureURL)  // Refresh bookmark
+                } catch is DecodingError {
+                    throw ClaudeDesktop.UndecodableConfigError(path: secureURL.path)
                 } catch {
                     log.error(
                         "Failed to load or decode from security-scoped URL \(secureURL.path): \(error.localizedDescription)"
@@ -169,6 +178,8 @@ private func loadConfig() throws -> ([String: Value], ClaudeDesktop.Config.MCPSe
                     "Successfully loaded from default path. Attempting to save security bookmark for it."
                 )
                 try saveSecurityScopedAccess(for: defaultURL)  // Establish bookmark if loaded directly
+            } catch is DecodingError {
+                throw ClaudeDesktop.UndecodableConfigError(path: defaultURL.path)
             } catch {
                 log.error(
                     "Failed to load or decode from default path \(defaultURL.path): \(error.localizedDescription)"
@@ -194,7 +205,7 @@ private func loadConfig() throws -> ([String: Value], ClaudeDesktop.Config.MCPSe
 
 private func updateConfig(
     _ config: [String: Value],
-    upserting appleCoreServer: ClaudeDesktop.Config.MCPServer
+    upserting appleCoreServer: ClaudeDesktop.MCPServer
 )
     throws
 {

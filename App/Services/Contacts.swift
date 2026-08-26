@@ -317,7 +317,7 @@ final class ContactsService: Service {
             }
 
             // Update all properties
-            updatedContact.populate(from: arguments)
+            try updatedContact.populate(from: arguments)
 
             // Create a save request
             let saveRequest = CNSaveRequest()
@@ -347,7 +347,7 @@ final class ContactsService: Service {
         ) { arguments in
             // Create and populate a new contact
             let newContact = CNMutableContact()
-            newContact.populate(from: arguments)
+            try newContact.populate(from: arguments)
 
             // Validate that given name is provided and not empty
             if newContact.givenName.isEmpty {

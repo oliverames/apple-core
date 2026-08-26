@@ -152,6 +152,26 @@ public enum ServingConfigManager {
         }
     }
 
+    /// True when config.json exists but does not decode. Bootstrap paths
+    /// that generate defaults for missing fields must check this before
+    /// saving: treating a corrupt-but-recoverable file as "fresh install"
+    /// and persisting those defaults would overwrite it.
+    public static func persistedConfigIsUndecodable(
+        from url: URL = AppleCoreServingPaths.configURL()
+    ) -> Bool {
+        guard FileManager.default.fileExists(atPath: url.path),
+            let data = try? Data(contentsOf: url)
+        else {
+            return false
+        }
+        do {
+            _ = try JSONDecoder().decode(AppleCoreServingConfig.self, from: data)
+            return false
+        } catch {
+            return true
+        }
+    }
+
     public static func clientEndpointBaseURL(port: UInt16, publicBaseURL: String?) -> String {
         var trimmed = (publicBaseURL ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty {

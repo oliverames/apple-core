@@ -756,7 +756,16 @@ actor ServerNetworkManager {
         }
 
         if changed {
-            ServingConfigManager.save(config)
+            // A corrupt config decodes as all-nil here, which looks exactly
+            // like a fresh install. Saving would overwrite the user's
+            // recoverable file with generated defaults, so leave it alone.
+            if ServingConfigManager.persistedConfigIsUndecodable() {
+                log.error(
+                    "Serving config on disk is not decodable; running with in-memory defaults and leaving the file untouched"
+                )
+            } else {
+                ServingConfigManager.save(config)
+            }
         }
         return config
     }

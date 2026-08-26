@@ -27,7 +27,7 @@ enum CNContactLabel {
 
 extension CNMutableContact {
     /// Populate a contact from provided arguments dictionary
-    func populate(from arguments: [String: Value]) {
+    func populate(from arguments: [String: Value]) throws {
         // Set given name
         if case let .string(givenName) = arguments["givenName"] {
             self.givenName = givenName
@@ -105,6 +105,19 @@ extension CNMutableContact {
             case let .int(day) = birthdayData["day"],
             case let .int(month) = birthdayData["month"]
         {
+            // Validate here rather than at save time, where an out-of-range
+            // component surfaces as an opaque framework error.
+            guard (1 ... 12).contains(month), (1 ... 31).contains(day) else {
+                throw NSError(
+                    domain: "ContactsService",
+                    code: 3,
+                    userInfo: [
+                        NSLocalizedDescriptionKey:
+                            "Birthday month must be 1-12 and day must be 1-31 (got month \(month), day \(day))."
+                    ]
+                )
+            }
+
             var dateComponents = DateComponents()
             dateComponents.day = day
             dateComponents.month = month
