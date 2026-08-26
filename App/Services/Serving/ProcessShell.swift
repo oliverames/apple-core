@@ -51,6 +51,18 @@ func runShell(_ executable: String, _ arguments: [String]) -> (status: Int32, st
     }
 }
 
+/// Runs `runShell` off the cooperative thread pool. cloudflared list/create/
+/// route round trips take seconds of wall time each; an actor that called
+/// the blocking variant directly pinned a pool worker for all of it and
+/// starved every other task in the process, including live HTTP handlers.
+/// Await this instead so the actor suspends while the child runs.
+func runShellAsync(_ executable: String, _ arguments: [String]) async -> (status: Int32, stdout: String, stderr: String)
+{
+    await Task.detached(priority: .userInitiated) {
+        runShell(executable, arguments)
+    }.value
+}
+
 /// Starts a child process without waiting for it to exit. Used for
 /// `cloudflared tunnel login`, which opens a browser and blocks until the
 /// person finishes authorizing — waiting on that inside an actor would hang

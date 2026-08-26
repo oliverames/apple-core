@@ -210,8 +210,8 @@ public actor CloudflareManager {
         self.fileManager = fileManager
     }
 
-    public func status() -> CloudflareTunnelStatus {
-        status(messageOverride: nil, forcedState: nil)
+    public func status() async -> CloudflareTunnelStatus {
+        await status(messageOverride: nil, forcedState: nil)
     }
 
     public static func reconcilePersistedConfiguration() async -> CloudflareOperationResult? {
@@ -243,19 +243,22 @@ public actor CloudflareManager {
         return result
     }
 
-    public func reconcileTunnel() -> CloudflareOperationResult {
-        settings.enabled ? bootstrapTunnel() : disableTunnel()
+    public func reconcileTunnel() async -> CloudflareOperationResult {
+        settings.enabled ? await bootstrapTunnel() : await disableTunnel()
     }
 
-    public func bootstrapTunnel() -> CloudflareOperationResult {
+    public func bootstrapTunnel() async -> CloudflareOperationResult {
         let before = settings
         var dnsRouteForNewTunnel = false
         guard settings.enabled else {
-            let status = status(messageOverride: "Enable Cloudflare before creating a tunnel.", forcedState: .disabled)
+            let status = await status(
+                messageOverride: "Enable Cloudflare before creating a tunnel.",
+                forcedState: .disabled
+            )
             return CloudflareOperationResult(settings: settings, status: status, didChangeSettings: before != settings)
         }
         guard fileManager.fileExists(atPath: settings.cloudflaredPath) else {
-            let status = status(
+            let status = await status(
                 messageOverride: "cloudflared is not installed at \(settings.cloudflaredPath).",
                 forcedState: .missingCloudflared
             )
@@ -265,7 +268,7 @@ public actor CloudflareManager {
         // certificate. Checking here turns an opaque cloudflared failure into
         // the one instruction that actually unblocks setup.
         guard fileManager.fileExists(atPath: Self.originCertificatePath()) else {
-            let status = status(
+            let status = await status(
                 messageOverride:
                     "Log in to Cloudflare first — Apple Core needs your account certificate to create a tunnel and route a hostname.",
                 forcedState: .needsLogin
@@ -275,15 +278,15 @@ public actor CloudflareManager {
 
         if settings.tunnelId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             let createdThisRun: Bool
-            if let existingTunnelId = existingTunnelID(named: settings.tunnelName) {
+            if let existingTunnelId = await existingTunnelID(named: settings.tunnelName) {
                 settings.tunnelId = existingTunnelId
                 createdThisRun = false
-            } else if let createdTunnelId = createTunnel() {
+            } else if let createdTunnelId = await createTunnel() {
                 settings.tunnelId = createdTunnelId
                 settings.createdByAppleCore = true
                 createdThisRun = true
             } else {
-                let status = status(
+                let status = await status(
                     messageOverride:
                         "Apple Core could not create the Cloudflare tunnel. Run cloudflared tunnel login or configure a tunnel token, then try again.",
                     forcedState: .needsTunnel
@@ -312,12 +315,12 @@ public actor CloudflareManager {
         } else if let invalid = Self.hostnameValidationError(for: settings.hostname) {
             routingWarning = invalid
         } else {
-            routingWarning = ensureDNSRoute(createdThisRun: dnsRouteForNewTunnel)
+            routingWarning = await ensureDNSRoute(createdThisRun: dnsRouteForNewTunnel)
         }
 
         writeCloudflaredConfigIfPossible()
         writeLaunchAgentIfPossible()
-        var startStatus = startTunnel()
+        var startStatus = await startTunnel()
         // A tunnel that starts but routes nothing is not a success; say so
         // rather than letting "started" stand as the whole story.
         if let routingWarning {
@@ -330,49 +333,56 @@ public actor CloudflareManager {
     }
 
     @discardableResult
-    public func startTunnel() -> CloudflareTunnelStatus {
+    public func startTunnel() async -> CloudflareTunnelStatus {
         writeCloudflaredConfigIfPossible()
         writeLaunchAgentIfPossible()
 
         guard fileManager.fileExists(atPath: launchAgentURL.path) else {
-            return status(messageOverride: "Cloudflare LaunchAgent is not installed yet.", forcedState: .needsConfig)
+            return await status(
+                messageOverride: "Cloudflare LaunchAgent is not installed yet.",
+                forcedState: .needsConfig
+            )
         }
 
-        if isLaunchAgentRunning() {
-            return status(messageOverride: "Cloudflare tunnel is already running.", forcedState: .running)
+        if await isLaunchAgentRunning() {
+            return await status(messageOverride: "Cloudflare tunnel is already running.", forcedState: .running)
         }
 
-        let result = LaunchAgentManager.bootstrap(label: settings.launchAgentLabel, uid: uid, plistURL: launchAgentURL)
+        let result = await LaunchAgentManager.bootstrapAsync(
+            label: settings.launchAgentLabel,
+            uid: uid,
+            plistURL: launchAgentURL
+        )
         if result.status != 0 {
             let message = "Cloudflare tunnel failed to start: \(sanitized(result.stderr))"
-            return status(messageOverride: message, forcedState: .error)
+            return await status(messageOverride: message, forcedState: .error)
         }
         // launchctl bootstrap succeeding only means the job was loaded. If
         // cloudflared then exits — bad config, unroutable hostname — reporting
         // "started" next to a Stopped badge is worse than saying nothing.
-        guard isLaunchAgentRunning() else {
-            return status(
+        guard await isLaunchAgentRunning() else {
+            return await status(
                 messageOverride:
                     "Cloudflare tunnel was loaded but is not running. Check \(settings.configFilePath) and the cloudflared log.",
                 forcedState: .error
             )
         }
-        return status(messageOverride: "Cloudflare tunnel started.", forcedState: nil)
+        return await status(messageOverride: "Cloudflare tunnel started.", forcedState: nil)
     }
 
     @discardableResult
-    public func disableTunnel() -> CloudflareOperationResult {
+    public func disableTunnel() async -> CloudflareOperationResult {
         let before = settings
         settings.enabled = false
 
-        if isLaunchAgentRunning() {
-            let result = LaunchAgentManager.bootout(
+        if await isLaunchAgentRunning() {
+            let result = await LaunchAgentManager.bootoutAsync(
                 label: settings.launchAgentLabel,
                 uid: uid,
                 plistURL: launchAgentURL
             )
             if result.status != 0 {
-                let tunnelStatus = status(
+                let tunnelStatus = await status(
                     messageOverride: "Cloudflare tunnel failed to disable: \(sanitized(result.stderr))",
                     forcedState: .error
                 )
@@ -389,7 +399,7 @@ public actor CloudflareManager {
                 try fileManager.removeItem(at: launchAgentURL)
             }
         } catch {
-            let tunnelStatus = status(
+            let tunnelStatus = await status(
                 messageOverride:
                     "Cloudflare tunnel stopped, but its LaunchAgent could not be removed: \(error.localizedDescription)",
                 forcedState: .error
@@ -401,7 +411,7 @@ public actor CloudflareManager {
             )
         }
 
-        let tunnelStatus = status(messageOverride: "Cloudflare tunnel disabled.", forcedState: .disabled)
+        let tunnelStatus = await status(messageOverride: "Cloudflare tunnel disabled.", forcedState: .disabled)
         return CloudflareOperationResult(
             settings: settings,
             status: tunnelStatus,
@@ -427,17 +437,17 @@ public actor CloudflareManager {
     /// Kicks off the browser-based Cloudflare login. The child process is not
     /// awaited — it stays alive until the person finishes authorizing in the
     /// browser — so the caller polls `status()` to notice the certificate.
-    public func logInToCloudflare() -> CloudflareTunnelStatus {
+    public func logInToCloudflare() async -> CloudflareTunnelStatus {
         guard fileManager.fileExists(atPath: settings.cloudflaredPath) else {
-            return status(
+            return await status(
                 messageOverride: "cloudflared is not installed at \(settings.cloudflaredPath).",
                 forcedState: .missingCloudflared
             )
         }
         if let failure = runShellDetached(settings.cloudflaredPath, ["tunnel", "login"]) {
-            return status(messageOverride: "Could not start Cloudflare login: \(failure)", forcedState: .error)
+            return await status(messageOverride: "Could not start Cloudflare login: \(failure)", forcedState: .error)
         }
-        return status(
+        return await status(
             messageOverride:
                 "Finish the Cloudflare login in your browser, then choose Check Login. Apple Core is waiting for \(Self.originCertificatePath()).",
             forcedState: .needsLogin
@@ -606,13 +616,13 @@ public actor CloudflareManager {
         return try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
     }
 
-    private func status(messageOverride: String?, forcedState: CloudflareTunnelState?) -> CloudflareTunnelStatus {
+    private func status(messageOverride: String?, forcedState: CloudflareTunnelState?) async -> CloudflareTunnelStatus {
         let cloudflaredInstalled = fileManager.fileExists(atPath: settings.cloudflaredPath)
         let configFileExists = fileManager.fileExists(atPath: settings.configFilePath)
         let credentialsPath = effectiveCredentialsPath()
         let credentialsFileExists = !credentialsPath.isEmpty && fileManager.fileExists(atPath: credentialsPath)
         let launchAgentInstalled = fileManager.fileExists(atPath: launchAgentURL.path)
-        let launchAgentRunning = isLaunchAgentRunning()
+        let launchAgentRunning = await isLaunchAgentRunning()
         let originCertificatePath = Self.originCertificatePath()
         let loggedIn = fileManager.fileExists(atPath: originCertificatePath)
         let hostnameError = Self.hostnameValidationError(for: settings.hostname)
@@ -723,8 +733,11 @@ public actor CloudflareManager {
         }
     }
 
-    private func existingTunnelID(named name: String) -> String? {
-        let result = runShell(settings.cloudflaredPath, ["tunnel", "list", "--name", name, "--output", "json"])
+    private func existingTunnelID(named name: String) async -> String? {
+        let result = await runShellAsync(
+            settings.cloudflaredPath,
+            ["tunnel", "list", "--name", name, "--output", "json"]
+        )
         guard result.status == 0,
             let data = result.stdout.data(using: .utf8),
             let tunnels = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]
@@ -747,7 +760,7 @@ public actor CloudflareManager {
             .first
     }
 
-    private func createTunnel() -> String? {
+    private func createTunnel() async -> String? {
         let credentialsPath =
             settings.credentialsFilePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ? defaultCredentialsPath(forTunnelID: settings.tunnelName)
@@ -761,7 +774,7 @@ public actor CloudflareManager {
             return nil
         }
 
-        let result = runShell(
+        let result = await runShellAsync(
             settings.cloudflaredPath,
             [
                 "tunnel",
@@ -803,12 +816,15 @@ public actor CloudflareManager {
     /// not be created. The caller surfaces that in the pane: routing failures
     /// used to be logged and discarded, so a tunnel that could never resolve
     /// still reported itself as started.
-    private func ensureDNSRoute(createdThisRun: Bool) -> String? {
+    private func ensureDNSRoute(createdThisRun: Bool) async -> String? {
         let tunnel =
             settings.tunnelId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ? settings.tunnelName
             : settings.tunnelId
-        let result = runShell(settings.cloudflaredPath, ["tunnel", "route", "dns", tunnel, settings.hostname])
+        let result = await runShellAsync(
+            settings.cloudflaredPath,
+            ["tunnel", "route", "dns", tunnel, settings.hostname]
+        )
         if result.status == 0 {
             return nil
         }
@@ -834,8 +850,8 @@ public actor CloudflareManager {
         return "Could not route \(settings.hostname) to this tunnel: \(detail)"
     }
 
-    private func isLaunchAgentRunning() -> Bool {
-        let result = runShell("/bin/launchctl", ["print", "gui/\(uid)/\(settings.launchAgentLabel)"])
+    private func isLaunchAgentRunning() async -> Bool {
+        let result = await runShellAsync("/bin/launchctl", ["print", "gui/\(uid)/\(settings.launchAgentLabel)"])
         return result.status == 0 && result.stdout.contains("state = running")
     }
 
