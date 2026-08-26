@@ -226,8 +226,11 @@ final class ContactsService: Service {
             }
 
             if case let .string(phone) = arguments["phone"] {
-                let phoneNumber = CNPhoneNumber(stringValue: phone)
-                predicates.append(CNContact.predicateForContacts(matching: phoneNumber))
+                let normalizedPhone = phone.trimmingCharacters(in: .whitespaces)
+                if !normalizedPhone.isEmpty {
+                    let phoneNumber = CNPhoneNumber(stringValue: normalizedPhone)
+                    predicates.append(CNContact.predicateForContacts(matching: phoneNumber))
+                }
             }
 
             if case let .string(email) = arguments["email"] {
@@ -250,17 +253,21 @@ final class ContactsService: Service {
                 )
             }
 
-            // Combine predicates with AND if multiple criteria are provided
-            let finalPredicate =
-                predicates.count == 1
-                ? predicates[0]
-                : NSCompoundPredicate(andPredicateWithSubpredicates: predicates)
-
             let contacts = try await self.runContactStore {
-                try self.contactStore.unifiedContacts(
-                    matching: finalPredicate,
-                    keysToFetch: contactKeys
-                )
+                var intersection: [CNContact]?
+                for predicate in predicates {
+                    let matches = try self.contactStore.unifiedContacts(
+                        matching: predicate,
+                        keysToFetch: contactKeys
+                    )
+                    if let existing = intersection {
+                        let identifiers = Set(matches.map(\.identifier))
+                        intersection = existing.filter { identifiers.contains($0.identifier) }
+                    } else {
+                        intersection = matches
+                    }
+                }
+                return intersection ?? []
             }
 
             return contacts.compactMap { Person($0) }

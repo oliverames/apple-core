@@ -144,6 +144,7 @@ public actor OAuthTokenStore {
             issuedAt: Int(now.timeIntervalSince1970)
         )
         clients[clientID] = client
+        pruneClientsIfNeeded()
         persistClients()
         return client
     }

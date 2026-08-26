@@ -45,7 +45,7 @@ public struct CloudflareSettings: Codable, Sendable, Equatable {
         credentialsFilePath: String = "",
         configFilePath: String = "",
         cloudflaredPath: String = "",
-        launchAgentLabel: String = "com.oliverames.applecore.cloudflared",
+        launchAgentLabel: String = AppleCoreServingPaths.cloudflareLaunchAgentLabel(),
         routeMode: String = "single-hostname-path-routing",
         createdByAppleCore: Bool = false
     ) {
@@ -215,32 +215,85 @@ public actor CloudflareManager {
     }
 
     public static func reconcilePersistedConfiguration() async -> CloudflareOperationResult? {
-        var config = ServingConfigManager.load()
-        guard let settings = config.cloudflare else { return nil }
+        var desiredConfig = ServingConfigManager.load()
 
-        let manager = CloudflareManager(
-            settings: settings,
-            port: config.port ?? 8756,
-            bindHost: config.bindHost ?? "127.0.0.1"
-        )
-        let result = await manager.reconcileTunnel()
-        config.cloudflare = result.settings
-        let publicBaseURL = CloudflareManager.publicBaseURL(for: result.settings)
-        config.publicBaseURL = publicBaseURL
-        // The OAuth issuer and the CORS origin list are both derived from the
-        // public base URL, so a config saved before the hostname existed keeps
-        // serving discovery metadata pointing at localhost. Re-merge on every
-        // startup reconciliation rather than only when the pane is used.
-        var origins = config.allowedOrigins ?? []
-        for origin in ServingConfigManager.defaultAllowedOrigins(
-            port: config.port ?? 8756,
-            publicBaseURL: publicBaseURL
-        ) where !origins.contains(origin) {
-            origins.append(origin)
+        while !Task.isCancelled {
+            guard let desiredSettings = desiredConfig.cloudflare else { return nil }
+            let desiredPort = desiredConfig.port ?? 8756
+            let desiredBindHost = desiredConfig.bindHost ?? "127.0.0.1"
+            let manager = CloudflareManager(
+                settings: desiredSettings,
+                port: desiredPort,
+                bindHost: desiredBindHost
+            )
+            var result = await manager.reconcileTunnel()
+
+            func matchesDesiredSnapshot(_ config: AppleCoreServingConfig) -> Bool {
+                config.cloudflare == desiredSettings
+                    && (config.port ?? 8756) == desiredPort
+                    && (config.bindHost ?? "127.0.0.1") == desiredBindHost
+            }
+
+            let publicBaseURL =
+                result.settings.enabled
+                ? CloudflareManager.publicBaseURL(for: result.settings)
+                : nil
+            if let update = ServingConfigManager.update(
+                onlyIf: matchesDesiredSnapshot,
+                { config in
+                    config.cloudflare = result.settings
+                    if let staleOrigin = ServingConfigManager.origin(for: config.publicBaseURL) {
+                        config.allowedOrigins?.removeAll { $0 == staleOrigin }
+                    }
+                    config.publicBaseURL = publicBaseURL
+                    // The OAuth issuer and CORS origins are derived from the
+                    // public URL, so merge them into the locked latest snapshot.
+                    var origins = config.allowedOrigins ?? []
+                    for origin in ServingConfigManager.defaultAllowedOrigins(
+                        port: config.port ?? 8756,
+                        publicBaseURL: publicBaseURL
+                    ) where !origins.contains(origin) {
+                        origins.append(origin)
+                    }
+                    config.allowedOrigins = origins.sorted()
+                }
+            ) {
+                result.didChangeSettings = result.didChangeSettings || update.before != update.after
+                return result
+            }
+
+            // A nil update means either the compare failed or persistence
+            // failed. A fresh read distinguishes them without overwriting the
+            // newer snapshot.
+            let latestConfig = ServingConfigManager.load()
+            if matchesDesiredSnapshot(latestConfig) {
+                result.didChangeSettings = false
+                return result
+            }
+
+            logMessage(
+                "CloudflareManager: Config changed during startup reconciliation; reconciling the newer settings"
+            )
+            if desiredSettings.enabled {
+                var disabledSettings = result.settings
+                disabledSettings.enabled = false
+                let cleanupManager = CloudflareManager(
+                    settings: disabledSettings,
+                    port: desiredPort,
+                    bindHost: desiredBindHost
+                )
+                let cleanup = await cleanupManager.disableTunnel()
+                if cleanup.status.state == .error {
+                    logMessage(
+                        "CloudflareManager: Failed to clean up a stale profile: \(cleanup.status.message)"
+                    )
+                    return cleanup
+                }
+            }
+            desiredConfig = latestConfig
         }
-        config.allowedOrigins = origins.sorted()
-        ServingConfigManager.save(config)
-        return result
+
+        return nil
     }
 
     public func reconcileTunnel() async -> CloudflareOperationResult {
@@ -375,13 +428,14 @@ public actor CloudflareManager {
         let before = settings
         settings.enabled = false
 
-        if await isLaunchAgentRunning() {
+        if await isLaunchAgentLoaded() {
             let result = await LaunchAgentManager.bootoutAsync(
                 label: settings.launchAgentLabel,
                 uid: uid,
                 plistURL: launchAgentURL
             )
-            if result.status != 0 {
+            if result.status != 0, await isLaunchAgentLoaded() {
+                settings = before
                 let tunnelStatus = await status(
                     messageOverride: "Cloudflare tunnel failed to disable: \(sanitized(result.stderr))",
                     forcedState: .error
@@ -389,7 +443,7 @@ public actor CloudflareManager {
                 return CloudflareOperationResult(
                     settings: settings,
                     status: tunnelStatus,
-                    didChangeSettings: before != settings
+                    didChangeSettings: false
                 )
             }
         }
@@ -549,8 +603,11 @@ public actor CloudflareManager {
         if !normalized.credentialsFilePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             normalized.credentialsFilePath = expandedPath(normalized.credentialsFilePath)
         }
-        if normalized.launchAgentLabel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            normalized.launchAgentLabel = "com.oliverames.applecore.cloudflared"
+        let profileLabel = AppleCoreServingPaths.cloudflareLaunchAgentLabel()
+        if AppleCoreServingPaths.usesConfigHomeOverride()
+            || normalized.launchAgentLabel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        {
+            normalized.launchAgentLabel = profileLabel
         }
         if normalized.routeMode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             normalized.routeMode = "single-hostname-path-routing"
@@ -855,6 +912,11 @@ public actor CloudflareManager {
         return result.status == 0 && result.stdout.contains("state = running")
     }
 
+    private func isLaunchAgentLoaded() async -> Bool {
+        let result = await runShellAsync("/bin/launchctl", ["print", "gui/\(uid)/\(settings.launchAgentLabel)"])
+        return result.status == 0
+    }
+
     private var launchAgentURL: URL {
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/LaunchAgents/\(settings.launchAgentLabel).plist")
@@ -908,15 +970,14 @@ public actor CloudflareManager {
     }
 
     private func sanitized(_ value: String) -> String {
-        var sanitized = value
-        for key in [
-            "TUNNEL_TOKEN",
-            "TUNNEL_CRED_CONTENTS",
-            "CLOUDFLARE_API_TOKEN",
-        ] where !key.isEmpty {
-            sanitized = sanitized.replacingOccurrences(of: key + "=", with: key + "=[redacted]")
-        }
-        return sanitized
+        SensitiveTextSanitizer.redactAssignmentsAndValues(
+            in: value,
+            keys: [
+                "TUNNEL_TOKEN",
+                "TUNNEL_CRED_CONTENTS",
+                "CLOUDFLARE_API_TOKEN",
+            ]
+        )
     }
 
     private static func yamlScalar(_ value: String) -> String {

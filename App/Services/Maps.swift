@@ -8,6 +8,7 @@ private let log = Logger.service("maps")
 private let defaultSearchRadius: CLLocationDistance = 5000  // Default 5km
 private let defaultSearchLimit: Int = 10
 private let defaultMapImageSize: CGSize = CGSize(width: 1024, height: 1024)
+private let maximumMapImageDimension = 4096
 
 final class MapsService: NSObject, Service {
     private let searchCompleter = MKLocalSearchCompleter()
@@ -229,14 +230,20 @@ final class MapsService: NSObject, Service {
 
             // Set transport type
             switch arguments["transportType"]?.stringValue {
-            case "automobile":
+            case nil, "automobile":
                 directionsRequest.transportType = .automobile
             case "walking":
                 directionsRequest.transportType = .walking
             case "transit":
                 directionsRequest.transportType = .transit
-            default:
+            case "any":
                 directionsRequest.transportType = .any
+            default:
+                throw NSError(
+                    domain: "MapsServiceError",
+                    code: 5,
+                    userInfo: [NSLocalizedDescriptionKey: "Unknown transport type."]
+                )
             }
 
             // Without a date, transit directions are calculated against "now",
@@ -498,11 +505,15 @@ final class MapsService: NSObject, Service {
                     ),
                     "width": .integer(
                         description: "Image width in pixels",
-                        default: .int(Int(defaultMapImageSize.width))
+                        default: .int(Int(defaultMapImageSize.width)),
+                        minimum: 1,
+                        maximum: maximumMapImageDimension
                     ),
                     "height": .integer(
                         description: "Image height in pixels",
-                        default: .int(Int(defaultMapImageSize.height))
+                        default: .int(Int(defaultMapImageSize.height)),
+                        minimum: 1,
+                        maximum: maximumMapImageDimension
                     ),
                     "mapType": .string(
                         description: "Map type",
@@ -557,6 +568,18 @@ final class MapsService: NSObject, Service {
 
             let width = arguments["width"]?.intValue ?? Int(defaultMapImageSize.width)
             let height = arguments["height"]?.intValue ?? Int(defaultMapImageSize.height)
+            guard (1 ... maximumMapImageDimension).contains(width),
+                (1 ... maximumMapImageDimension).contains(height)
+            else {
+                throw NSError(
+                    domain: "MapsServiceError",
+                    code: 13,
+                    userInfo: [
+                        NSLocalizedDescriptionKey:
+                            "Map width and height must each be between 1 and \(maximumMapImageDimension) pixels."
+                    ]
+                )
+            }
             let mapTypeString = arguments["mapType"]?.stringValue ?? "standard"
 
             let options = MKMapSnapshotter.Options()

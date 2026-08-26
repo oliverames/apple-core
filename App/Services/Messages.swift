@@ -5,7 +5,10 @@ import UniformTypeIdentifiers
 import iMessage
 
 private let log = Logger.service("messages")
-private let messagesDatabasePath = "/Users/\(NSUserName())/Library/Messages/chat.db"
+private let messagesDatabasePath =
+    FileManager.default.homeDirectoryForCurrentUser
+    .appendingPathComponent("Library/Messages/chat.db")
+    .path
 private let messagesDatabaseBookmarkKey: String = "me.mattt.iMCP.messagesDatabaseBookmark"
 private let defaultLimit = 30
 
@@ -49,45 +52,6 @@ private let sendToChatScript = """
         return "sent"
     end run
     """
-
-/// Produces candidate handle formats for a phone number, per the pattern
-/// documented in docs/planning/DONORS.md (Dhravya) and BUILD_PLAN.md §3.6:
-/// Messages may store the same buddy as "+14155551234", "14155551234",
-/// or "4155551234". Emails pass through lowercased.
-func messagesRecipientCandidates(for recipient: String) -> [String] {
-    let trimmed = recipient.trimmingCharacters(in: .whitespacesAndNewlines)
-    if trimmed.contains("@") {
-        return [trimmed.lowercased()]
-    }
-
-    let digits = trimmed.filter(\.isNumber)
-    guard !digits.isEmpty else { return [trimmed] }
-
-    var candidates: [String] = []
-    func add(_ candidate: String) {
-        if !candidates.contains(candidate) {
-            candidates.append(candidate)
-        }
-    }
-
-    if trimmed.hasPrefix("+") {
-        add("+\(digits)")
-        add(digits)
-    } else if digits.count == 10 {
-        // Bare US/CA number: try E.164 first, then prefixed and bare forms.
-        add("+1\(digits)")
-        add("1\(digits)")
-        add(digits)
-    } else if digits.count == 11 && digits.hasPrefix("1") {
-        add("+\(digits)")
-        add(digits)
-        add(String(digits.dropFirst()))
-    } else {
-        add("+\(digits)")
-        add(digits)
-    }
-    return candidates
-}
 
 final class MessageService: NSObject, Service, NSOpenSavePanelDelegate {
     static let shared = MessageService()
@@ -173,31 +137,109 @@ final class MessageService: NSObject, Service, NSOpenSavePanelDelegate {
             log.debug("Starting message fetch with arguments: \(arguments)")
             try await self.activate()
 
-            let participants =
-                arguments["participants"]?.arrayValue?.compactMap({
-                    $0.stringValue
-                }) ?? []
+            let participants: [String]
+            if let participantValue = arguments["participants"] {
+                guard case .array(let values) = participantValue else {
+                    throw NSError(
+                        domain: "MessagesServiceError",
+                        code: 3,
+                        userInfo: [
+                            NSLocalizedDescriptionKey:
+                                "Participants must be an array of phone numbers or email addresses."
+                        ]
+                    )
+                }
+                participants = try values.map { value in
+                    guard case .string(let rawParticipant) = value else {
+                        throw NSError(
+                            domain: "MessagesServiceError",
+                            code: 3,
+                            userInfo: [
+                                NSLocalizedDescriptionKey: "Each participant must be a phone number or email address."
+                            ]
+                        )
+                    }
+                    let participant = rawParticipant.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard isValidMessageParticipant(participant) else {
+                        throw NSError(
+                            domain: "MessagesServiceError",
+                            code: 3,
+                            userInfo: [
+                                NSLocalizedDescriptionKey:
+                                    "Each participant must be a nonempty phone number or email address."
+                            ]
+                        )
+                    }
+                    return participant
+                }
+            } else {
+                participants = []
+            }
 
+            let startInput: String?
+            if let startValue = arguments["start"] {
+                guard case .string(let start) = startValue else {
+                    throw NSError(
+                        domain: "MessagesServiceError",
+                        code: 3,
+                        userInfo: [NSLocalizedDescriptionKey: "Start must be an ISO 8601 string."]
+                    )
+                }
+                startInput = start
+            } else {
+                startInput = nil
+            }
+            let endInput: String?
+            if let endValue = arguments["end"] {
+                guard case .string(let end) = endValue else {
+                    throw NSError(
+                        domain: "MessagesServiceError",
+                        code: 3,
+                        userInfo: [NSLocalizedDescriptionKey: "End must be an ISO 8601 string."]
+                    )
+                }
+                endInput = end
+            } else {
+                endInput = nil
+            }
             var dateRange: Range<Date>?
-            let parsedStart = arguments["start"]?.stringValue.flatMap {
-                ISO8601DateFormatter.parsedLenientISO8601Date(fromISO8601String: $0)
-            }
-            let parsedEnd = arguments["end"]?.stringValue.flatMap {
-                ISO8601DateFormatter.parsedLenientISO8601Date(fromISO8601String: $0)
-            }
-            switch (parsedStart, parsedEnd) {
-            case (let start?, let end?):
+            switch (startInput, endInput) {
+            case (let startInput?, let endInput?):
+                guard
+                    let start = ISO8601DateFormatter.parsedLenientISO8601Date(
+                        fromISO8601String: startInput
+                    ),
+                    let end = ISO8601DateFormatter.parsedLenientISO8601Date(
+                        fromISO8601String: endInput
+                    )
+                else {
+                    throw NSError(
+                        domain: "MessagesServiceError",
+                        code: 3,
+                        userInfo: [
+                            NSLocalizedDescriptionKey:
+                                "Start and end must be valid ISO 8601 dates or date-times."
+                        ]
+                    )
+                }
                 // Both bounds: normalize date-only values to local midnight.
                 let calendar = Calendar.current
-                dateRange =
-                    calendar.normalizedStartDate(
-                        from: start.date,
-                        isDateOnly: start.isDateOnly
+                let normalizedStart = calendar.normalizedStartDate(
+                    from: start.date,
+                    isDateOnly: start.isDateOnly
+                )
+                let normalizedEnd = calendar.normalizedEndDate(
+                    from: end.date,
+                    isDateOnly: end.isDateOnly
+                )
+                guard normalizedStart <= normalizedEnd else {
+                    throw NSError(
+                        domain: "MessagesServiceError",
+                        code: 3,
+                        userInfo: [NSLocalizedDescriptionKey: "Start must not be after end."]
                     )
-                    ..< calendar.normalizedEndDate(
-                        from: end.date,
-                        isDateOnly: end.isDateOnly
-                    )
+                }
+                dateRange = normalizedStart ..< normalizedEnd
             case (nil, nil):
                 break
             default:
@@ -224,7 +266,20 @@ final class MessageService: NSObject, Service, NSOpenSavePanelDelegate {
             var messages: [[String: Value]] = []
 
             log.debug("Fetching handles for participants: \(participants)")
-            let handles = try db.fetchParticipant(matching: participants)
+            let handles = try Set(
+                self.withDatabaseReader {
+                    try $0.participantHandles(matching: participants)
+                }.map {
+                    Account.Handle(rawValue: $0)
+                }
+            )
+            if !participants.isEmpty, handles.isEmpty {
+                return [
+                    "@context": "https://schema.org",
+                    "@type": "Conversation",
+                    "hasPart": Value.array([]),
+                ]
+            }
 
             log.debug(
                 "Fetching messages with date range: \(String(describing: dateRange)), limit: \(limit)"
@@ -482,6 +537,9 @@ final class MessageService: NSObject, Service, NSOpenSavePanelDelegate {
             guard let recipient, !recipient.isEmpty else {
                 throw SendError.missingRecipient
             }
+            guard isValidMessageParticipant(recipient) else {
+                throw SendError.invalidRecipient
+            }
 
             let service = arguments["service"]?.stringValue ?? "iMessage"
             let address = self.resolveRecipientAddress(for: recipient)
@@ -503,6 +561,7 @@ final class MessageService: NSObject, Service, NSOpenSavePanelDelegate {
     private enum SendError: LocalizedError {
         case emptyBody
         case missingRecipient
+        case invalidRecipient
 
         var errorDescription: String? {
             switch self {
@@ -510,6 +569,8 @@ final class MessageService: NSObject, Service, NSOpenSavePanelDelegate {
                 return "Message body must not be empty"
             case .missingRecipient:
                 return "Provide either `recipient` (phone/email) or `chat_id` (chat GUID)"
+            case .invalidRecipient:
+                return "Recipient must be a valid phone number or email address"
             }
         }
     }
@@ -523,11 +584,11 @@ final class MessageService: NSObject, Service, NSOpenSavePanelDelegate {
     private func resolveRecipientAddress(for recipient: String) -> String {
         let candidates = messagesRecipientCandidates(for: recipient)
 
-        if let db = try? createDatabaseConnection(),
-            let match = try? db.fetchParticipant(matching: candidates).first
-        {
-            log.debug("Matched recipient to existing handle \(match.rawValue)")
-            return match.rawValue
+        if let matches = try? withDatabaseReader({
+            try $0.participantHandles(matching: [recipient], limit: 1)
+        }), let match = matches.first {
+            log.debug("Matched recipient to existing handle \(match)")
+            return match
         }
 
         return candidates.first ?? recipient

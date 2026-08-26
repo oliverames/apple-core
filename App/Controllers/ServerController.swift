@@ -786,29 +786,27 @@ actor ServerNetworkManager {
     /// exposure; see `AppleCoreHTTPServer.isAuthorized`.
     private static func bootstrappedServingConfig() -> AppleCoreServingConfig {
         var config = ServingConfigManager.load()
-        var changed = false
-
-        if config.token?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true {
-            config.token = ServingConfigManager.generateSecureToken()
-            changed = true
-        }
-        if config.port == nil {
-            config.port = 8756
-            changed = true
-        }
-        if config.bindHost == nil {
-            config.bindHost = "127.0.0.1"
-            changed = true
-        }
-        if config.allowedOrigins == nil {
-            config.allowedOrigins = ServingConfigManager.defaultAllowedOrigins(
-                port: config.port ?? 8756,
-                publicBaseURL: config.publicBaseURL
-            )
-            changed = true
+        func fillDefaults(_ config: inout AppleCoreServingConfig) -> Bool {
+            let before = config
+            if config.token?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true {
+                config.token = ServingConfigManager.generateSecureToken()
+            }
+            if config.port == nil {
+                config.port = 8756
+            }
+            if config.bindHost == nil {
+                config.bindHost = "127.0.0.1"
+            }
+            if config.allowedOrigins == nil {
+                config.allowedOrigins = ServingConfigManager.defaultAllowedOrigins(
+                    port: config.port ?? 8756,
+                    publicBaseURL: config.effectivePublicBaseURL
+                )
+            }
+            return before != config
         }
 
-        if changed {
+        if fillDefaults(&config) {
             // A corrupt config decodes as all-nil here, which looks exactly
             // like a fresh install. Saving would overwrite the user's
             // recoverable file with generated defaults, so leave it alone.
@@ -817,7 +815,10 @@ actor ServerNetworkManager {
                     "Serving config on disk is not decodable; running with in-memory defaults and leaving the file untouched"
                 )
             } else {
-                ServingConfigManager.save(config)
+                config =
+                    ServingConfigManager.update { latest in
+                        _ = fillDefaults(&latest)
+                    }?.after ?? config
             }
         }
         return config

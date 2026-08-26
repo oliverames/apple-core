@@ -6,6 +6,22 @@ import Ontology
 private let log = Logger.service("location")
 
 final class LocationService: NSObject, Service, CLLocationManagerDelegate {
+    private static let cachedLocationMaximumAge: TimeInterval = 60
+
+    private static func isAuthorized(_ status: CLAuthorizationStatus) -> Bool {
+        switch status {
+        case .authorizedWhenInUse, .authorizedAlways:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private static func isUsableCachedLocation(_ location: CLLocation, now: Date = Date()) -> Bool {
+        location.horizontalAccuracy >= 0
+            && now.timeIntervalSince(location.timestamp) <= cachedLocationMaximumAge
+    }
+
     private let locationManager = {
         let manager = CLLocationManager()
         manager.activityType = .other
@@ -54,7 +70,7 @@ final class LocationService: NSObject, Service, CLLocationManagerDelegate {
 
         // Check authorization status first to avoid any permission prompts
         let status = locationManager.authorizationStatus
-        if (status == .authorizedAlways) && CLLocationManager.locationServicesEnabled() {
+        if Self.isAuthorized(status) && CLLocationManager.locationServicesEnabled() {
             log.debug("Starting location updates with existing authorization...")
             locationManager.startUpdatingLocation()
         }
@@ -67,7 +83,8 @@ final class LocationService: NSObject, Service, CLLocationManagerDelegate {
 
     var isActivated: Bool {
         get async {
-            return locationManager.authorizationStatus == .authorizedAlways
+            Self.isAuthorized(locationManager.authorizationStatus)
+                && CLLocationManager.locationServicesEnabled()
         }
     }
 
@@ -137,7 +154,7 @@ final class LocationService: NSObject, Service, CLLocationManagerDelegate {
                 Task {
                     let status = self.locationManager.authorizationStatus
 
-                    guard status == .authorizedAlways else {
+                    guard Self.isAuthorized(status) else {
                         log.error("Location access not authorized")
                         continuation.resume(
                             throwing: NSError(
@@ -152,12 +169,15 @@ final class LocationService: NSObject, Service, CLLocationManagerDelegate {
                     }
 
                     // If we already have a recent location, use it
-                    if let location = self.latestLocation {
+                    if let location = self.latestLocation,
+                        Self.isUsableCachedLocation(location)
+                    {
                         continuation.resume(
                             returning: GeoCoordinates(location)
                         )
                         return
                     }
+                    self.latestLocation = nil
 
                     // Otherwise, request a new location update
                     self.locationManager.desiredAccuracy = kCLLocationAccuracyHundredMeters
@@ -410,7 +430,7 @@ final class LocationService: NSObject, Service, CLLocationManagerDelegate {
 
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         log.debug("Location manager did update locations")
-        if let location = locations.last {
+        if let location = locations.last(where: { Self.isUsableCachedLocation($0) }) {
             self.latestLocation = location
         }
     }
@@ -423,10 +443,17 @@ final class LocationService: NSObject, Service, CLLocationManagerDelegate {
         _ manager: CLLocationManager,
         didChangeAuthorization status: CLAuthorizationStatus
     ) {
+        if Self.isAuthorized(status) {
+            log.debug("Location access authorized")
+            if CLLocationManager.locationServicesEnabled() {
+                manager.startUpdatingLocation()
+            }
+            settleAuthorization(.success(()))
+            return
+        }
         switch status {
         case .authorizedWhenInUse, .authorizedAlways:
-            log.debug("Location access authorized")
-            settleAuthorization(.success(()))
+            break
         case .denied, .restricted:
             log.error("Location access denied")
             settleAuthorization(

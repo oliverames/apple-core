@@ -705,8 +705,11 @@ public actor AppleCoreHTTPServer {
     private func statusResponse() async -> HTTPResponse {
         let port = config.port ?? 8756
         let bindHost = config.bindHost ?? "127.0.0.1"
-        let baseURL = ServingConfigManager.clientEndpointBaseURL(port: port, publicBaseURL: config.publicBaseURL)
-        let hasPublicBaseURL = config.publicBaseURL?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+        let baseURL = ServingConfigManager.clientEndpointBaseURL(
+            port: port,
+            publicBaseURL: config.effectivePublicBaseURL
+        )
+        let hasPublicBaseURL = config.effectivePublicBaseURL != nil
 
         let status = AppleCoreRuntimeStatus(
             activeSessions: sessions.count,
@@ -796,7 +799,10 @@ public actor AppleCoreHTTPServer {
     // MARK: - Shared helpers
 
     private var oauthIssuer: String {
-        ServingConfigManager.clientEndpointBaseURL(port: config.port ?? 8756, publicBaseURL: config.publicBaseURL)
+        ServingConfigManager.clientEndpointBaseURL(
+            port: config.port ?? 8756,
+            publicBaseURL: config.effectivePublicBaseURL
+        )
     }
 
     /// Every MCP transport this server exposes -- `/mcp`, plus the legacy

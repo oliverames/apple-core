@@ -118,4 +118,63 @@ struct MessagesDatabaseReaderTests {
             try MessagesDatabaseReader(path: url.path).attachments(chatGUID: nil, limit: 10)
         }
     }
+
+    @Test("Committed WAL rows are visible before the writer closes")
+    func committedWALRowsAreVisible() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("chat.db")
+
+        var writer: OpaquePointer?
+        #expect(sqlite3_open(url.path, &writer) == SQLITE_OK)
+        defer { sqlite3_close(writer) }
+        let setup = """
+            PRAGMA journal_mode=WAL;
+            CREATE TABLE message (ROWID INTEGER PRIMARY KEY, is_read INTEGER, is_from_me INTEGER);
+            PRAGMA wal_checkpoint(TRUNCATE);
+            INSERT INTO message VALUES (1, 0, 0);
+            """
+        #expect(sqlite3_exec(writer, setup, nil, nil, nil) == SQLITE_OK)
+
+        #expect(try MessagesDatabaseReader(path: url.path).totalUnreadCount() == 1)
+    }
+
+    @Test("Participant lookup filters wildcard aliases before applying its limit")
+    func participantLookupDoesNotStarveExactMatch() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("chat.db")
+
+        var writer: OpaquePointer?
+        #expect(sqlite3_open(url.path, &writer) == SQLITE_OK)
+        defer { sqlite3_close(writer) }
+        #expect(
+            sqlite3_exec(
+                writer,
+                "CREATE TABLE handle (id TEXT, uncanonicalized_id TEXT);",
+                nil,
+                nil,
+                nil
+            ) == SQLITE_OK
+        )
+        for index in 0 ..< 100 {
+            let sql = "INSERT INTO handle VALUES ('name\(index)tag@example.com', NULL);"
+            #expect(sqlite3_exec(writer, sql, nil, nil, nil) == SQLITE_OK)
+        }
+        #expect(
+            sqlite3_exec(
+                writer,
+                "INSERT INTO handle VALUES ('name_tag@example.com', NULL);",
+                nil,
+                nil,
+                nil
+            ) == SQLITE_OK
+        )
+
+        let handles = try MessagesDatabaseReader(path: url.path)
+            .participantHandles(matching: ["name_tag@example.com"])
+        #expect(handles == ["name_tag@example.com"])
+    }
 }

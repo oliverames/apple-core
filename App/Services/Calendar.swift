@@ -98,17 +98,41 @@ final class CalendarService: Service {
     private func parseAlarms(_ alarmConfigs: [Value]) throws -> [EKAlarm] {
         var alarms: [EKAlarm] = []
 
+        func invalidAlarm(_ description: String) -> NSError {
+            NSError(
+                domain: "CalendarError",
+                code: 6,
+                userInfo: [NSLocalizedDescriptionKey: description]
+            )
+        }
+
         for alarmConfig in alarmConfigs {
-            guard case .object(let config) = alarmConfig else { continue }
+            guard case .object(let config) = alarmConfig else {
+                throw invalidAlarm("Each alarm must be an object.")
+            }
 
-            var alarm: EKAlarm?
-
-            let alarmType = config["type"]?.stringValue ?? "relative"
+            let alarmType: String
+            if let typeValue = config["type"] {
+                guard case .string(let type) = typeValue else {
+                    throw invalidAlarm("Alarm type must be a string.")
+                }
+                alarmType = type
+            } else if config["datetime"] != nil {
+                alarmType = "absolute"
+            } else if config["locationTitle"] != nil || config["latitude"] != nil
+                || config["longitude"] != nil
+            {
+                alarmType = "proximity"
+            } else {
+                alarmType = "relative"
+            }
+            let alarm: EKAlarm
             switch alarmType {
             case "relative":
-                if case .int(let minutes) = config["minutes"] {
-                    alarm = EKAlarm(relativeOffset: TimeInterval(-minutes * 60))
+                guard case .int(let minutes) = config["minutes"] else {
+                    throw invalidAlarm("A relative alarm requires integer minutes.")
                 }
+                alarm = EKAlarm(relativeOffset: TimeInterval(minutes) * 60)
 
             case "absolute":
                 guard case .string(let datetimeStr) = config["datetime"],
@@ -117,66 +141,83 @@ final class CalendarService: Service {
                         fromISO8601String: datetimeStr
                     )
                 else {
-                    throw NSError(
-                        domain: "CalendarError",
-                        code: 6,
-                        userInfo: [
-                            NSLocalizedDescriptionKey:
-                                "Absolute alarm datetime must be a valid ISO 8601 date/time with a time component"
-                        ]
+                    throw invalidAlarm(
+                        "Absolute alarm datetime must be a valid ISO 8601 date/time with a time component."
                     )
                 }
                 guard absoluteDate > Date() else {
-                    throw NSError(
-                        domain: "CalendarError",
-                        code: 6,
-                        userInfo: [
-                            NSLocalizedDescriptionKey:
-                                "Absolute alarm date \(datetimeStr) is in the past; macOS rejects past alarms silently, so it was not set"
-                        ]
+                    throw invalidAlarm(
+                        "Absolute alarm date \(datetimeStr) is in the past; macOS rejects past alarms silently, so it was not set."
                     )
                 }
                 alarm = EKAlarm(absoluteDate: absoluteDate)
 
             case "proximity":
-                if case .string(let locationTitle) = config["locationTitle"],
+                guard case .string(let locationTitle) = config["locationTitle"],
+                    !locationTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                     let latitude = config["latitude"]?.doubleCoerced,
-                    let longitude = config["longitude"]?.doubleCoerced
-                {
-                    let proximityAlarm = EKAlarm()
-
-                    let structuredLocation = EKStructuredLocation(title: locationTitle)
-                    structuredLocation.geoLocation = CLLocation(
-                        latitude: latitude,
-                        longitude: longitude
+                    (-90.0 ... 90.0).contains(latitude),
+                    let longitude = config["longitude"]?.doubleCoerced,
+                    (-180.0 ... 180.0).contains(longitude)
+                else {
+                    throw invalidAlarm(
+                        "A proximity alarm requires a title and valid latitude and longitude."
                     )
-
-                    if case .double(let radius) = config["radius"] {
-                        structuredLocation.radius = radius
-                    } else if case .int(let radiusInt) = config["radius"] {
-                        structuredLocation.radius = Double(radiusInt)
+                }
+                let radius: Double
+                if let radiusValue = config["radius"] {
+                    guard let parsedRadius = radiusValue.doubleCoerced else {
+                        throw invalidAlarm("A proximity alarm radius must be a number.")
                     }
-
-                    let proximityType = config["proximity"]?.stringValue ?? "enter"
-                    proximityAlarm.proximity = proximityType == "enter" ? .enter : .leave
-                    proximityAlarm.structuredLocation = structuredLocation
-                    alarm = proximityAlarm
+                    radius = parsedRadius
+                } else {
+                    radius = 200
+                }
+                guard radius >= 0 else {
+                    throw invalidAlarm("A proximity alarm radius must not be negative.")
+                }
+                let proximityType: String
+                if let proximityValue = config["proximity"] {
+                    guard case .string(let parsedProximity) = proximityValue else {
+                        throw invalidAlarm("A proximity alarm trigger must be a string.")
+                    }
+                    proximityType = parsedProximity
+                } else {
+                    proximityType = "enter"
+                }
+                guard proximityType == "enter" || proximityType == "leave" else {
+                    throw invalidAlarm("A proximity alarm must use enter or leave.")
                 }
 
+                let structuredLocation = EKStructuredLocation(title: locationTitle)
+                structuredLocation.geoLocation = CLLocation(
+                    latitude: latitude,
+                    longitude: longitude
+                )
+                structuredLocation.radius = radius
+
+                let proximityAlarm = EKAlarm()
+                proximityAlarm.proximity = proximityType == "enter" ? .enter : .leave
+                proximityAlarm.structuredLocation = structuredLocation
+                alarm = proximityAlarm
+
             default:
-                log.error("Unexpected alarm type encountered: \(alarmType, privacy: .public)")
-                continue
+                throw invalidAlarm("Unknown alarm type \(alarmType).")
             }
 
-            guard let alarm = alarm else { continue }
-
-            if case .string(let soundName) = config["sound"],
-                Sound(rawValue: soundName) != nil
-            {
+            if let soundValue = config["sound"] {
+                guard case .string(let soundName) = soundValue,
+                    Sound(rawValue: soundName) != nil
+                else {
+                    throw invalidAlarm("Alarm sound must be a supported sound name.")
+                }
                 alarm.soundName = soundName
             }
 
-            if case .string(let email) = config["emailAddress"], !email.isEmpty {
+            if let emailValue = config["emailAddress"] {
+                guard case .string(let email) = emailValue, !email.isEmpty else {
+                    throw invalidAlarm("Alarm emailAddress must be a nonempty string.")
+                }
                 alarm.emailAddress = email
             }
 
@@ -296,21 +337,49 @@ final class CalendarService: Service {
             var startIsDateOnly = false
             var endIsDateOnly = false
 
-            if case .string(let start) = arguments["start"],
-                let parsedStart = ISO8601DateFormatter.parsedLenientISO8601Date(
-                    fromISO8601String: start
-                )
-            {
+            if let startValue = arguments["start"] {
+                guard case .string(let start) = startValue else {
+                    throw NSError(
+                        domain: "CalendarError",
+                        code: 2,
+                        userInfo: [NSLocalizedDescriptionKey: "Start must be an ISO 8601 string."]
+                    )
+                }
+                guard
+                    let parsedStart = ISO8601DateFormatter.parsedLenientISO8601Date(
+                        fromISO8601String: start
+                    )
+                else {
+                    throw NSError(
+                        domain: "CalendarError",
+                        code: 2,
+                        userInfo: [NSLocalizedDescriptionKey: "Start must be a valid ISO 8601 date or date-time."]
+                    )
+                }
                 hasStart = true
                 startDate = parsedStart.date
                 startIsDateOnly = parsedStart.isDateOnly
             }
 
-            if case .string(let end) = arguments["end"],
-                let parsedEnd = ISO8601DateFormatter.parsedLenientISO8601Date(
-                    fromISO8601String: end
-                )
-            {
+            if let endValue = arguments["end"] {
+                guard case .string(let end) = endValue else {
+                    throw NSError(
+                        domain: "CalendarError",
+                        code: 2,
+                        userInfo: [NSLocalizedDescriptionKey: "End must be an ISO 8601 string."]
+                    )
+                }
+                guard
+                    let parsedEnd = ISO8601DateFormatter.parsedLenientISO8601Date(
+                        fromISO8601String: end
+                    )
+                else {
+                    throw NSError(
+                        domain: "CalendarError",
+                        code: 2,
+                        userInfo: [NSLocalizedDescriptionKey: "End must be a valid ISO 8601 date or date-time."]
+                    )
+                }
                 hasEnd = true
                 endDate = parsedEnd.date
                 endIsDateOnly = parsedEnd.isDateOnly
@@ -335,6 +404,14 @@ final class CalendarService: Service {
                 ) {
                     endDate = nextWeek
                 }
+            }
+
+            guard startDate <= endDate else {
+                throw NSError(
+                    domain: "CalendarError",
+                    code: 2,
+                    userInfo: [NSLocalizedDescriptionKey: "Start must not be after end."]
+                )
             }
 
             // Create base predicate for date range and calendars
@@ -461,7 +538,7 @@ final class CalendarService: Service {
                                             description: "Email address to send notification to"
                                         ),
                                     ],
-                                    required: ["minutes"],
+                                    required: ["type", "minutes"],
                                     additionalProperties: false
                                 ),
                                 // Absolute alarm (specific date/time)
@@ -472,7 +549,7 @@ final class CalendarService: Service {
                                         ),
                                         "datetime": .string(
                                             description:
-                                                "Alarm date/time. If timezone is omitted, local time is assumed. Date-only uses local midnight.",
+                                                "Alarm date/time with a time component. If timezone is omitted, local time is assumed.",
                                             format: .dateTime
                                         ),
                                         "sound": .string(
@@ -483,7 +560,7 @@ final class CalendarService: Service {
                                             description: "Email address to send notification to"
                                         ),
                                     ],
-                                    required: ["datetime"],
+                                    required: ["type", "datetime"],
                                     additionalProperties: false
                                 ),
                                 // Proximity alarm (location-based)
@@ -512,7 +589,7 @@ final class CalendarService: Service {
                                             description: "Email address to send notification to"
                                         ),
                                     ],
-                                    required: ["locationTitle", "latitude", "longitude"],
+                                    required: ["type", "locationTitle", "latitude", "longitude"],
                                     additionalProperties: false
                                 ),
                             ]
@@ -607,6 +684,13 @@ final class CalendarService: Service {
                 event.startDate = startDate
                 event.endDate = endDate
             }
+            guard event.startDate <= event.endDate else {
+                throw NSError(
+                    domain: "CalendarError",
+                    code: 2,
+                    userInfo: [NSLocalizedDescriptionKey: "Start must not be after end."]
+                )
+            }
 
             // Set calendar. A requested calendar that matches nothing throws
             // (matching the update path) instead of silently filing the event
@@ -670,86 +754,16 @@ final class CalendarService: Service {
                 event.availability = availabilityValue
             }
 
-            // Set alarms
-            if case .array(let alarmConfigs) = arguments["alarms"] {
-                var alarms: [EKAlarm] = []
-
-                for alarmConfig in alarmConfigs {
-                    guard case .object(let config) = alarmConfig else { continue }
-
-                    var alarm: EKAlarm?
-
-                    let alarmType = config["type"]?.stringValue ?? "relative"
-                    switch alarmType {
-                    case "relative":
-                        if case .int(let minutes) = config["minutes"] {
-                            alarm = EKAlarm(relativeOffset: TimeInterval(-minutes * 60))
-                        }
-
-                    case "absolute":
-                        if case .string(let datetimeStr) = config["datetime"] {
-                            if ISO8601DateFormatter.isDateOnlyISO8601String(datetimeStr) {
-                                log.error(
-                                    "Absolute alarm datetime must include time component: \(datetimeStr, privacy: .public)"
-                                )
-                            } else if let absoluteDate = ISO8601DateFormatter.lenientDate(
-                                fromISO8601String: datetimeStr
-                            ) {
-                                alarm = EKAlarm(absoluteDate: absoluteDate)
-                            }
-                        }
-
-                    case "proximity":
-                        if case .string(let locationTitle) = config["locationTitle"],
-                            let latitude = config["latitude"]?.doubleCoerced,
-                            let longitude = config["longitude"]?.doubleCoerced
-                        {
-                            alarm = EKAlarm()
-
-                            // Create structured location
-                            let structuredLocation = EKStructuredLocation(title: locationTitle)
-                            structuredLocation.geoLocation = CLLocation(
-                                latitude: latitude,
-                                longitude: longitude
-                            )
-
-                            if case .double(let radius) = config["radius"] {
-                                structuredLocation.radius = radius
-                            } else if case .int(let radiusInt) = config["radius"] {
-                                structuredLocation.radius = Double(radiusInt)
-                            }
-
-                            // Set proximity type
-                            let proximityType = config["proximity"]?.stringValue ?? "enter"
-                            let proximity: EKAlarmProximity =
-                                proximityType == "enter" ? .enter : .leave
-                            alarm?.proximity = proximity
-                            alarm?.structuredLocation = structuredLocation
-                        }
-
-                    default:
-                        log.error(
-                            "Unexpected alarm type encountered: \(alarmType, privacy: .public)"
-                        )
-                        continue
-                    }
-
-                    guard let alarm = alarm else { continue }
-
-                    if case .string(let soundName) = config["sound"],
-                        Sound(rawValue: soundName) != nil
-                    {
-                        alarm.soundName = soundName
-                    }
-
-                    if case .string(let email) = config["emailAddress"], !email.isEmpty {
-                        alarm.emailAddress = email
-                    }
-
-                    alarms.append(alarm)
+            // Set alarms through the same validated path used by updates.
+            if let alarmsValue = arguments["alarms"] {
+                guard case .array(let alarmConfigs) = alarmsValue else {
+                    throw NSError(
+                        domain: "CalendarError",
+                        code: 6,
+                        userInfo: [NSLocalizedDescriptionKey: "Alarms must be an array."]
+                    )
                 }
-
-                event.alarms = alarms
+                event.alarms = try self.parseAlarms(alarmConfigs)
             }
 
             // Set recurrence
@@ -800,8 +814,24 @@ final class CalendarService: Service {
                     userInfo: [NSLocalizedDescriptionKey: "Missing event identifier"]
                 )
             }
-            let occurrenceDate = arguments["occurrenceDate"]?.stringValue
-                .flatMap { ISO8601DateFormatter().date(from: $0) }
+            var occurrenceDate: Date? = nil
+            if let occurrenceValue = arguments["occurrenceDate"] {
+                guard case .string(let occurrenceInput) = occurrenceValue,
+                    let parsedOccurrence = ISO8601DateFormatter.parsedLenientISO8601Date(
+                        fromISO8601String: occurrenceInput
+                    )
+                else {
+                    throw NSError(
+                        domain: "CalendarService",
+                        code: 2,
+                        userInfo: [
+                            NSLocalizedDescriptionKey:
+                                "Occurrence date must be a valid ISO 8601 string."
+                        ]
+                    )
+                }
+                occurrenceDate = parsedOccurrence.date
+            }
 
             let event = try self.resolveEvent(withIdentifier: id, occurrenceDate: occurrenceDate)
 
@@ -900,7 +930,7 @@ final class CalendarService: Service {
                                             description: "Email address to send notification to"
                                         ),
                                     ],
-                                    required: ["minutes"],
+                                    required: ["type", "minutes"],
                                     additionalProperties: false
                                 ),
                                 .object(
@@ -921,7 +951,7 @@ final class CalendarService: Service {
                                             description: "Email address to send notification to"
                                         ),
                                     ],
-                                    required: ["datetime"],
+                                    required: ["type", "datetime"],
                                     additionalProperties: false
                                 ),
                                 .object(
@@ -949,7 +979,7 @@ final class CalendarService: Service {
                                             description: "Email address to send notification to"
                                         ),
                                     ],
-                                    required: ["locationTitle", "latitude", "longitude"],
+                                    required: ["type", "locationTitle", "latitude", "longitude"],
                                     additionalProperties: false
                                 ),
                             ]
@@ -986,7 +1016,14 @@ final class CalendarService: Service {
             }
 
             var occurrenceDate: Date? = nil
-            if case .string(let occurrenceDateStr) = arguments["occurrence_date"] {
+            if let occurrenceValue = arguments["occurrence_date"] {
+                guard case .string(let occurrenceDateStr) = occurrenceValue else {
+                    throw NSError(
+                        domain: "CalendarError",
+                        code: 2,
+                        userInfo: [NSLocalizedDescriptionKey: "Occurrence date must be an ISO 8601 string."]
+                    )
+                }
                 guard
                     let parsedOccurrence = ISO8601DateFormatter.parsedLenientISO8601Date(
                         fromISO8601String: occurrenceDateStr
@@ -1005,11 +1042,30 @@ final class CalendarService: Service {
             }
 
             let span: EKSpan
-            switch arguments["span"]?.stringValue ?? "this-event" {
+            let spanInput: String
+            if let spanValue = arguments["span"] {
+                guard case .string(let providedSpan) = spanValue else {
+                    throw NSError(
+                        domain: "CalendarError",
+                        code: 2,
+                        userInfo: [NSLocalizedDescriptionKey: "Span must be this-event or future-events."]
+                    )
+                }
+                spanInput = providedSpan
+            } else {
+                spanInput = "this-event"
+            }
+            switch spanInput {
             case "future-events":
                 span = .futureEvents
-            default:
+            case "this-event":
                 span = .thisEvent
+            default:
+                throw NSError(
+                    domain: "CalendarError",
+                    code: 2,
+                    userInfo: [NSLocalizedDescriptionKey: "Span must be this-event or future-events."]
+                )
             }
 
             let event = try self.resolveEvent(withIdentifier: id, occurrenceDate: occurrenceDate)
@@ -1022,7 +1078,14 @@ final class CalendarService: Service {
 
             let calendar = Calendar.current
 
-            if case .string(let startDateStr) = arguments["start"] {
+            if let startValue = arguments["start"] {
+                guard case .string(let startDateStr) = startValue else {
+                    throw NSError(
+                        domain: "CalendarError",
+                        code: 2,
+                        userInfo: [NSLocalizedDescriptionKey: "Start must be an ISO 8601 string."]
+                    )
+                }
                 guard
                     let parsedStart = ISO8601DateFormatter.parsedLenientISO8601Date(
                         fromISO8601String: startDateStr
@@ -1043,7 +1106,14 @@ final class CalendarService: Service {
                 )
             }
 
-            if case .string(let endDateStr) = arguments["end"] {
+            if let endValue = arguments["end"] {
+                guard case .string(let endDateStr) = endValue else {
+                    throw NSError(
+                        domain: "CalendarError",
+                        code: 2,
+                        userInfo: [NSLocalizedDescriptionKey: "End must be an ISO 8601 string."]
+                    )
+                }
                 guard
                     let parsedEnd = ISO8601DateFormatter.parsedLenientISO8601Date(
                         fromISO8601String: endDateStr
@@ -1061,6 +1131,14 @@ final class CalendarService: Service {
                 event.endDate = calendar.normalizedStartDate(
                     from: parsedEnd.date,
                     isDateOnly: parsedEnd.isDateOnly
+                )
+            }
+
+            guard event.startDate <= event.endDate else {
+                throw NSError(
+                    domain: "CalendarError",
+                    code: 2,
+                    userInfo: [NSLocalizedDescriptionKey: "Start must not be after end."]
                 )
             }
 
@@ -1114,7 +1192,14 @@ final class CalendarService: Service {
                 event.availability = availabilityValue
             }
 
-            if case .array(let alarmConfigs) = arguments["alarms"] {
+            if let alarmsValue = arguments["alarms"] {
+                guard case .array(let alarmConfigs) = alarmsValue else {
+                    throw NSError(
+                        domain: "CalendarError",
+                        code: 6,
+                        userInfo: [NSLocalizedDescriptionKey: "Alarms must be an array."]
+                    )
+                }
                 event.alarms = try self.parseAlarms(alarmConfigs)
             }
 
@@ -1188,7 +1273,14 @@ final class CalendarService: Service {
             }
 
             var occurrenceDate: Date? = nil
-            if case .string(let occurrenceDateStr) = arguments["occurrence_date"] {
+            if let occurrenceValue = arguments["occurrence_date"] {
+                guard case .string(let occurrenceDateStr) = occurrenceValue else {
+                    throw NSError(
+                        domain: "CalendarError",
+                        code: 2,
+                        userInfo: [NSLocalizedDescriptionKey: "Occurrence date must be an ISO 8601 string."]
+                    )
+                }
                 guard
                     let parsedOccurrence = ISO8601DateFormatter.parsedLenientISO8601Date(
                         fromISO8601String: occurrenceDateStr
@@ -1207,11 +1299,30 @@ final class CalendarService: Service {
             }
 
             let span: EKSpan
-            switch arguments["span"]?.stringValue ?? "this-event" {
+            let spanInput: String
+            if let spanValue = arguments["span"] {
+                guard case .string(let providedSpan) = spanValue else {
+                    throw NSError(
+                        domain: "CalendarError",
+                        code: 2,
+                        userInfo: [NSLocalizedDescriptionKey: "Span must be this-event or future-events."]
+                    )
+                }
+                spanInput = providedSpan
+            } else {
+                spanInput = "this-event"
+            }
+            switch spanInput {
             case "future-events":
                 span = .futureEvents
-            default:
+            case "this-event":
                 span = .thisEvent
+            default:
+                throw NSError(
+                    domain: "CalendarError",
+                    code: 2,
+                    userInfo: [NSLocalizedDescriptionKey: "Span must be this-event or future-events."]
+                )
             }
 
             let event = try self.resolveEvent(withIdentifier: id, occurrenceDate: occurrenceDate)
@@ -1333,8 +1444,10 @@ enum RecurrenceRuleParser {
         // Interval
         var interval = 1
         if let intervalString = parts.removeValue(forKey: "INTERVAL") {
-            guard let parsed = Int(intervalString), parsed >= 1 else {
-                throw invalidRecurrence("INTERVAL must be a positive integer, got \"\(intervalString)\"")
+            guard let parsed = Int(intervalString), (1 ... Int(Int32.max)).contains(parsed) else {
+                throw invalidRecurrence(
+                    "INTERVAL must be between 1 and \(Int32.max), got \"\(intervalString)\""
+                )
             }
             interval = parsed
         }
@@ -1456,7 +1569,7 @@ enum RecurrenceRuleParser {
         guard !ordinalString.isEmpty else {
             return EKRecurrenceDayOfWeek(weekday)
         }
-        guard let ordinal = Int(ordinalString), ordinal != 0, abs(ordinal) <= 53 else {
+        guard let ordinal = Int(ordinalString), ordinal != 0, (-53 ... 53).contains(ordinal) else {
             throw invalidRecurrence("malformed BYDAY ordinal in \"\(token)\"")
         }
         guard frequency == .monthly || frequency == .yearly else {
@@ -1545,7 +1658,8 @@ enum RecurrenceRuleParser {
                         "interval": .integer(
                             description: "Repeat every N frequency units",
                             default: .int(1),
-                            minimum: 1
+                            minimum: 1,
+                            maximum: Int(Int32.max)
                         ),
                         "days_of_week": .array(
                             description: "Weekdays the recurrence falls on",
@@ -1614,8 +1728,8 @@ enum RecurrenceRuleParser {
 
         var interval = 1
         if case .int(let intervalValue) = object["interval"] {
-            guard intervalValue >= 1 else {
-                throw invalidRecurrence("interval must be a positive integer")
+            guard (1 ... Int(Int32.max)).contains(intervalValue) else {
+                throw invalidRecurrence("interval must be between 1 and \(Int32.max)")
             }
             interval = intervalValue
         }

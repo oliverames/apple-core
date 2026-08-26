@@ -15,7 +15,16 @@ final class CaptureService: NSObject, Service {
     private var captureSession: AVCaptureSession?
     private var audioRecorder: AVAudioRecorder?
     private var photoOutput: AVCapturePhotoOutput?
-    private var currentPhotoDelegate: PhotoCaptureDelegate?
+    private let photoDelegateLock = NSLock()
+    private var photoDelegates: [UUID: PhotoCaptureDelegate] = [:]
+
+    private func retainPhotoDelegate(_ delegate: PhotoCaptureDelegate, for requestID: UUID) {
+        photoDelegateLock.withLock { photoDelegates[requestID] = delegate }
+    }
+
+    private func releasePhotoDelegate(for requestID: UUID) {
+        photoDelegateLock.withLock { _ = photoDelegates.removeValue(forKey: requestID) }
+    }
 
     override init() {
         super.init()
@@ -214,7 +223,15 @@ final class CaptureService: NSObject, Service {
             let autoExposure = arguments["autoExposure"]?.boolValue ?? true
             let autoFocus = arguments["autoFocus"]?.boolValue ?? true
             let autoWhiteBalance = arguments["autoWhiteBalance"]?.boolValue ?? true
-            let delay = arguments["delay"]?.doubleCoerced ?? 1.0
+            let requestedDelay = arguments["delay"]?.doubleCoerced ?? 1.0
+            guard requestedDelay.isFinite else {
+                throw NSError(
+                    domain: "CaptureServiceError",
+                    code: 2,
+                    userInfo: [NSLocalizedDescriptionKey: "Camera delay must be a finite number"]
+                )
+            }
+            let delay = min(max(requestedDelay, 0), 60)
 
             let captureSession = AVCaptureSession()
             captureSession.sessionPreset = preset.avPreset
@@ -270,6 +287,7 @@ final class CaptureService: NSObject, Service {
 
             return try await withCheckedThrowingContinuation { continuation in
                 let resumeGate = ResumeGate()
+                let requestID = UUID()
                 let resumeOnce: (Result<Value, Error>, (() async -> Void)?) async -> Void = {
                     result,
                     cleanup in
@@ -281,7 +299,7 @@ final class CaptureService: NSObject, Service {
                 }
 
                 let timeoutTask = Task {
-                    try await Task.sleep(for: .seconds(10))
+                    try await Task.sleep(for: .seconds(delay + 10))
                     await resumeOnce(
                         .failure(
                             NSError(
@@ -293,7 +311,7 @@ final class CaptureService: NSObject, Service {
                         {
                             await MainActor.run {
                                 captureSession.stopRunning()
-                                self.currentPhotoDelegate = nil
+                                self.releasePhotoDelegate(for: requestID)
                             }
                         }
                     )
@@ -318,13 +336,13 @@ final class CaptureService: NSObject, Service {
                             Task { @MainActor in
                                 timeoutTask.cancel()
                                 captureSession.stopRunning()
-                                self.currentPhotoDelegate = nil
+                                self.releasePhotoDelegate(for: requestID)
                                 await resumeOnce(result, nil)
                             }
                         }
                     )
 
-                    self.currentPhotoDelegate = delegate
+                    self.retainPhotoDelegate(delegate, for: requestID)
                     photoOutput.capturePhoto(with: settings, delegate: delegate)
                 }
             }

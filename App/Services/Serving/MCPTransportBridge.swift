@@ -217,13 +217,7 @@ public actor MCPSSESession {
     }
 
     public static func jsonRPCID(from message: String) -> String? {
-        guard let data = message.data(using: .utf8),
-            let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-            let id = object["id"]
-        else {
-            return nil
-        }
-        return String(describing: id)
+        JSONRPCRequestKey.from(message: message)
     }
 }
 

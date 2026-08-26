@@ -105,6 +105,29 @@ struct RemindersStoreReaderTests {
         }
     }
 
+    @Test("Committed WAL rows are visible before the writer closes")
+    func committedWALRowsAreVisible() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("Data-test.sqlite")
+
+        var writer: OpaquePointer?
+        #expect(sqlite3_open(url.path, &writer) == SQLITE_OK)
+        defer { sqlite3_close(writer) }
+        let setup = """
+            PRAGMA journal_mode=WAL;
+            CREATE TABLE ZREMCDBASESECTION (Z_PK INTEGER PRIMARY KEY, ZDISPLAYNAME TEXT,
+                ZLIST INTEGER, ZMARKEDFORDELETION INTEGER, ZIDENTIFIER BLOB);
+            PRAGMA wal_checkpoint(TRUNCATE);
+            INSERT INTO ZREMCDBASESECTION VALUES (1, 'WAL Section', 1, 0, NULL);
+            """
+        #expect(sqlite3_exec(writer, setup, nil, nil, nil) == SQLITE_OK)
+
+        let sections = try RemindersStoreReader(path: url.path).sections(listName: nil)
+        #expect(sections.map(\.name) == ["WAL Section"])
+    }
+
     @Test("The real store on this machine still matches the expected schema")
     func realStoreStillReads() throws {
         // Skips rather than fails where there is no store or no access: this

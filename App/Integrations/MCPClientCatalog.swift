@@ -45,6 +45,14 @@ struct MCPClient: Identifiable, Sendable {
 enum MCPClientCatalog {
     private static var home: String { NSHomeDirectory() }
 
+    private static var bundledCLIPath: String {
+        Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/apple-core").path
+    }
+
+    private static func shellQuoted(_ value: String) -> String {
+        "'" + value.replacingOccurrences(of: "'", with: "'\"'\"'") + "'"
+    }
+
     /// Clients that run on this Mac and talk to the local address.
     static func local(address: String, token: String) -> [MCPClient] {
         [
@@ -71,7 +79,9 @@ enum MCPClientCatalog {
                 id: "codex",
                 name: "Codex",
                 iconName: "chevron.left.forwardslash.chevron.right",
-                setup: .command("codex mcp add apple-core --url \(address) --bearer-token \(token)"),
+                setup: .command(
+                    "codex mcp add apple-core -- \(shellQuoted(bundledCLIPath))"
+                ),
                 detectionPaths: ["\(home)/.codex/config.toml", "\(home)/.codex"]
             ),
             MCPClient(

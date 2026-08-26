@@ -64,10 +64,9 @@ struct MessagesDatabaseReader {
 
     private func open() throws -> OpaquePointer {
         var handle: OpaquePointer?
-        // immutable=1 avoids taking a lock on a database Messages.app is
-        // actively writing, and avoids creating -wal/-shm sidecars we would
-        // have no business creating in the user's Library.
-        let uri = "file:\(path)?immutable=1"
+        // A normal read-only connection participates in WAL snapshot reads.
+        // `immutable=1` ignored committed rows still present in chat.db-wal.
+        let uri = URL(fileURLWithPath: path).absoluteString + "?mode=ro"
         let flags = SQLITE_OPEN_READONLY | SQLITE_OPEN_URI
         guard sqlite3_open_v2(uri, &handle, flags, nil) == SQLITE_OK, let handle else {
             let detail = handle.map { String(cString: sqlite3_errmsg($0)) } ?? "unknown error"
@@ -97,6 +96,43 @@ struct MessagesDatabaseReader {
     private static func text(_ statement: OpaquePointer?, _ column: Int32) -> String? {
         guard let cString = sqlite3_column_text(statement, column) else { return nil }
         return String(cString: cString)
+    }
+
+    /// Resolves participant aliases without Madrid's unescaped suffix LIKE.
+    /// Filtering happens before the limit, so `_` and `%` in valid addresses
+    /// cannot fill the result window with unrelated handles.
+    func participantHandles(matching aliases: [String], limit: Int = 100) throws -> [String] {
+        guard !aliases.isEmpty else { return [] }
+        let handle = try open()
+        defer { sqlite3_close(handle) }
+
+        guard tableExists("handle", in: handle) else {
+            throw MessagesDatabaseReaderError.schemaMissing("the handle table")
+        }
+
+        var statement: OpaquePointer?
+        defer { sqlite3_finalize(statement) }
+        let sql = "SELECT id, uncanonicalized_id FROM handle WHERE id IS NOT NULL"
+        guard sqlite3_prepare_v2(handle, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw MessagesDatabaseReaderError.schemaMissing("the handle columns")
+        }
+
+        var matches: [String] = []
+        var seen = Set<String>()
+        while sqlite3_step(statement) == SQLITE_ROW, matches.count < max(limit, 1) {
+            guard let identifier = Self.text(statement, 0) else { continue }
+            let uncanonicalized = Self.text(statement, 1)
+            guard
+                messageHandle(identifier, matchesAny: aliases)
+                    || uncanonicalized.map({ messageHandle($0, matchesAny: aliases) }) == true
+            else {
+                continue
+            }
+            if seen.insert(identifier).inserted {
+                matches.append(identifier)
+            }
+        }
+        return matches
     }
 
     /// Attachments, newest first, optionally limited to one chat.

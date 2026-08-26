@@ -14,10 +14,34 @@ import SwiftUI
 
 @MainActor
 final class ServingSettingsModel: ObservableObject {
+    private enum PersistedField: Hashable {
+        case port
+        case bindHost
+        case allowedOrigins
+        case token
+        case cloudflare
+        case publicBaseURL
+        case filesystemRoots
+    }
+
+    private var dirtyFields: Set<PersistedField> = []
+
     @Published var config: AppleCoreServingConfig
-    @Published var portText: String
-    @Published var bindHost: String
-    @Published var allowedOriginsText: String
+    @Published var portText: String {
+        didSet {
+            if portText != oldValue { dirtyFields.insert(.port) }
+        }
+    }
+    @Published var bindHost: String {
+        didSet {
+            if bindHost != oldValue { dirtyFields.insert(.bindHost) }
+        }
+    }
+    @Published var allowedOriginsText: String {
+        didSet {
+            if allowedOriginsText != oldValue { dirtyFields.insert(.allowedOrigins) }
+        }
+    }
     @Published var cloudflareStatus: CloudflareTunnelStatus?
     @Published var registeredOAuthClients: [OAuthRegisteredClient] = []
     @Published var isShowingToken = false
@@ -84,16 +108,21 @@ final class ServingSettingsModel: ObservableObject {
     }
 
     var publicBaseURL: String {
-        config.publicBaseURL?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        config.effectivePublicBaseURL ?? ""
     }
 
     var clientBaseURL: String {
-        ServingConfigManager.clientEndpointBaseURL(port: port, publicBaseURL: config.publicBaseURL)
+        ServingConfigManager.clientEndpointBaseURL(port: port, publicBaseURL: config.effectivePublicBaseURL)
     }
 
     var cloudflare: CloudflareSettings {
         get { config.cloudflare ?? CloudflareSettings() }
-        set { config.cloudflare = newValue }
+        set {
+            if config.cloudflare != newValue {
+                config.cloudflare = newValue
+                dirtyFields.insert(.cloudflare)
+            }
+        }
     }
 
     // MARK: - Persistence
@@ -108,6 +137,7 @@ final class ServingSettingsModel: ObservableObject {
         portText = String(loaded.port ?? 8756)
         bindHost = loaded.bindHost ?? "127.0.0.1"
         allowedOriginsText = (loaded.allowedOrigins ?? []).joined(separator: "\n")
+        dirtyFields.removeAll()
     }
 
     /// Persists the model's edits and restarts the HTTP server so the new
@@ -119,38 +149,64 @@ final class ServingSettingsModel: ObservableObject {
     /// re-loads the on-disk config and overlays only the fields this window
     /// edits — and overlays optional sub-blocks only when the model actually
     /// has a value for them. Unknown/untouched keys keep their disk values.
-    func save(restartServer: Bool = true) {
-        let before = config
-        var merged = ServingConfigManager.load()
-
-        if let parsedPort = UInt16(portText.trimmingCharacters(in: .whitespacesAndNewlines)), parsedPort > 0 {
-            merged.port = parsedPort
+    @discardableResult
+    func save(restartServer: Bool = true) -> Bool {
+        let fieldsToPersist = dirtyFields
+        guard
+            let update = ServingConfigManager.update({ merged in
+                if fieldsToPersist.contains(.port),
+                    let parsedPort = UInt16(portText.trimmingCharacters(in: .whitespacesAndNewlines)),
+                    parsedPort > 0
+                {
+                    merged.port = parsedPort
+                }
+                if fieldsToPersist.contains(.bindHost) {
+                    let trimmedHost = bindHost.trimmingCharacters(in: .whitespacesAndNewlines)
+                    merged.bindHost = trimmedHost.isEmpty ? "127.0.0.1" : trimmedHost
+                }
+                if fieldsToPersist.contains(.allowedOrigins) {
+                    let origins =
+                        allowedOriginsText
+                        .split(whereSeparator: \.isNewline)
+                        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                        .filter { !$0.isEmpty }
+                    merged.allowedOrigins = origins.isEmpty ? nil : origins
+                }
+                if fieldsToPersist.contains(.token) {
+                    merged.token = config.token
+                }
+                if fieldsToPersist.contains(.cloudflare) {
+                    merged.cloudflare = config.cloudflare
+                }
+                if fieldsToPersist.contains(.publicBaseURL) {
+                    if let staleOrigin = ServingConfigManager.origin(for: merged.publicBaseURL) {
+                        merged.allowedOrigins?.removeAll { $0 == staleOrigin }
+                    }
+                    merged.publicBaseURL = config.publicBaseURL
+                    var origins = merged.allowedOrigins ?? []
+                    for origin in ServingConfigManager.defaultAllowedOrigins(
+                        port: merged.port ?? 8756,
+                        publicBaseURL: config.publicBaseURL
+                    ) where !origins.contains(origin) {
+                        origins.append(origin)
+                    }
+                    merged.allowedOrigins = origins.sorted()
+                }
+                if fieldsToPersist.contains(.filesystemRoots) {
+                    merged.filesystemRoots = config.filesystemRoots
+                }
+            })
+        else {
+            lastStatusMessage = "Config could not be saved; check the existing config file."
+            return false
         }
-        let trimmedHost = bindHost.trimmingCharacters(in: .whitespacesAndNewlines)
-        merged.bindHost = trimmedHost.isEmpty ? "127.0.0.1" : trimmedHost
-
-        let origins =
-            allowedOriginsText
-            .split(whereSeparator: \.isNewline)
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-        merged.allowedOrigins = origins.isEmpty ? nil : origins
-
-        if let token = config.token {
-            merged.token = token
-        }
-        if let serviceSettings = config.serviceSettings {
-            merged.serviceSettings = serviceSettings
-        }
-        if let cloudflare = config.cloudflare {
-            merged.cloudflare = cloudflare
-        }
-        if let publicBaseURL = config.publicBaseURL {
-            merged.publicBaseURL = publicBaseURL
-        }
-
+        let before = update.before
+        let merged = update.after
         config = merged
-        ServingConfigManager.save(merged)
+        portText = String(merged.port ?? 8756)
+        bindHost = merged.bindHost ?? "127.0.0.1"
+        allowedOriginsText = (merged.allowedOrigins ?? []).joined(separator: "\n")
+        dirtyFields.removeAll()
         lastStatusMessage = "Saved"
 
         // The HTTP server reads its config once at startup, so a wizard step
@@ -172,12 +228,15 @@ final class ServingSettingsModel: ObservableObject {
                 lastStatusMessage = "Saved; server restarted"
             }
         }
+        return true
     }
 
     func rotateToken() {
         config.token = ServingConfigManager.generateSecureToken()
-        save()
-        lastStatusMessage = "Token rotated"
+        dirtyFields.insert(.token)
+        if save() {
+            lastStatusMessage = "Token rotated"
+        }
     }
 
     // MARK: - Cloudflare
@@ -213,7 +272,11 @@ final class ServingSettingsModel: ObservableObject {
     var filesystemRoots: [FilesystemRoot] {
         get { config.filesystemRoots ?? [] }
         set {
-            config.filesystemRoots = newValue.isEmpty ? nil : newValue
+            let normalized = newValue.isEmpty ? nil : newValue
+            if config.filesystemRoots != normalized {
+                config.filesystemRoots = normalized
+                dirtyFields.insert(.filesystemRoots)
+            }
             save(restartServer: false)
         }
     }
@@ -431,17 +494,11 @@ final class ServingSettingsModel: ObservableObject {
     /// before the hostname existed kept a localhost-only origin list and an
     /// OAuth issuer of `http://localhost:<port>` — cloud clients then followed
     /// discovery metadata that pointed at the user's own machine.
-    private func setPublicBaseURL(_ url: String) {
-        config.publicBaseURL = url
-        let required = ServingConfigManager.defaultAllowedOrigins(
-            port: port,
-            publicBaseURL: url
-        )
-        var origins = config.allowedOrigins ?? []
-        for origin in required where !origins.contains(origin) {
-            origins.append(origin)
+    private func setPublicBaseURL(_ url: String?) {
+        if config.publicBaseURL != url {
+            config.publicBaseURL = url
+            dirtyFields.insert(.publicBaseURL)
         }
-        config.allowedOrigins = origins.sorted()
     }
 
     func stopCloudflareTunnel() async {
@@ -450,8 +507,12 @@ final class ServingSettingsModel: ObservableObject {
     }
 
     private func applyCloudflareResult(_ result: CloudflareOperationResult) {
-        if result.didChangeSettings {
-            config.cloudflare = result.settings
+        let before = config
+        cloudflare = result.settings
+        setPublicBaseURL(
+            result.settings.enabled ? CloudflareManager.publicBaseURL(for: result.settings) : nil
+        )
+        if result.didChangeSettings || before != config {
             save(restartServer: false)
         }
         cloudflareStatus = result.status

@@ -125,6 +125,7 @@ final class FilesystemService: Service {
                 roots: FilesystemService.shared.roots,
                 requiringWrite: false
             )
+            let metadataSize = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize
             // Read only the cap, not the file: Data(contentsOf:) loaded a
             // multi-gigabyte file whole before the old slice applied.
             let handle = try FileHandle(forReadingFrom: url)
@@ -133,7 +134,7 @@ final class FilesystemService: Service {
                 return Value.object([
                     "path": .string(url.path),
                     "isText": .bool(true),
-                    "sizeBytes": .int(0),
+                    "sizeBytes": .int(metadataSize ?? 0),
                     "content": .string(""),
                 ])
             }
@@ -161,11 +162,11 @@ final class FilesystemService: Service {
                 return Value.object([
                     "path": .string(url.path),
                     "isText": .bool(false),
-                    "sizeBytes": .int(data.count),
+                    "sizeBytes": .int(metadataSize ?? data.count),
                     "note": .string("This file is not UTF-8 text, so its contents were not read."),
                 ])
             }
-            let sizeBytes = ((try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0)
+            let sizeBytes = metadataSize ?? data.count
             var result: [String: Value] = [
                 "path": .string(url.path),
                 "isText": .bool(true),

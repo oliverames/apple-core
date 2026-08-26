@@ -147,17 +147,6 @@ final class ShortcutsService: Service {
 
     // MARK: - Private Implementation
 
-    /// Awaits process termination via the termination handler, mirroring
-    /// the pattern in AppleScriptRunner.
-    private func runProcess(_ process: Process) async throws {
-        try process.run()
-        await withCheckedContinuation { continuation in
-            process.terminationHandler = { _ in
-                continuation.resume()
-            }
-        }
-    }
-
     /// Generous ceiling for `shortcuts list` / `shortcuts view`, which are
     /// fast operations when healthy.
     private static let captureTimeout: Duration = .seconds(60)
@@ -322,27 +311,38 @@ final class ShortcutsService: Service {
         let errorHandle = errorPipe.fileHandleForReading
         defer { errorHandle.closeFile() }
 
-        var errorData = Data()
+        try process.run()
+        let errorTask = Task.detached {
+            (try? errorHandle.readToEnd()) ?? Data()
+        }
+
         do {
-            try await withThrowingTaskGroup(of: Void.self) { group in
+            let exitedBeforeTimeout = try await withThrowingTaskGroup(of: Bool.self) { group in
                 group.addTask {
-                    try await self.runProcess(process)
+                    await process.waitUntilTermination()
+                    return true
                 }
 
                 group.addTask {
                     try await Task.sleep(for: self.executionTimeout)
-                    process.terminate()
-                    throw ShortcutsError.timedOut(name)
+                    return false
                 }
 
-                _ = try await group.next()
+                let exited = try await group.next() ?? false
+                if !exited, process.isRunning {
+                    process.terminate()
+                }
                 group.cancelAll()
+                return exited
+            }
+            if !exitedBeforeTimeout {
+                throw ShortcutsError.timedOut(name)
             }
         } catch {
             if process.isRunning {
                 process.terminate()
             }
-            errorData = (try? errorHandle.readToEnd()) ?? Data()
+            let errorData = await errorTask.value
             if !errorData.isEmpty {
                 let stderrMessage = String(data: errorData, encoding: .utf8) ?? "Unknown error"
                 log.error("Shortcut '\(name, privacy: .public)' stderr: \(stderrMessage, privacy: .public)")
@@ -351,9 +351,7 @@ final class ShortcutsService: Service {
             throw error
         }
 
-        if errorData.isEmpty {
-            errorData = (try? errorHandle.readToEnd()) ?? Data()
-        }
+        let errorData = await errorTask.value
 
         guard process.terminationStatus == 0 else {
             let message = String(data: errorData, encoding: .utf8) ?? "Unknown error"

@@ -72,6 +72,17 @@ public struct AppleCoreServingConfig: Codable, Sendable, Equatable {
     public func settings(forServiceID serviceID: String) -> ServingServiceSettings {
         serviceSettings?[serviceID] ?? ServingServiceSettings()
     }
+
+    /// A disabled managed tunnel must not keep advertising its last hostname.
+    /// Configurations without a Cloudflare block may still supply another
+    /// externally managed public URL.
+    public var effectivePublicBaseURL: String? {
+        if cloudflare?.enabled == false {
+            return nil
+        }
+        let trimmed = publicBaseURL?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed
+    }
 }
 
 // Codable conformance for Equatable's compiler-synthesized needs; only
@@ -86,6 +97,14 @@ extension ServingServiceSettings: Equatable {}
 /// Bridgeport's `BridgeportPaths`, rebranded for Apple Core.
 public enum AppleCoreServingPaths {
     public static let configHomeEnvironmentKey = "APPLECORE_CONFIG_HOME"
+    public static let defaultCloudflareLaunchAgentLabel = "com.oliverames.applecore.cloudflared"
+
+    public static func usesConfigHomeOverride(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Bool {
+        guard let override = environment[configHomeEnvironmentKey] else { return false }
+        return !override.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
 
     public static func configDirectory(environment: [String: String] = ProcessInfo.processInfo.environment) -> URL {
         if let override = environment[configHomeEnvironmentKey],
@@ -111,12 +130,43 @@ public enum AppleCoreServingPaths {
     {
         configDirectory(environment: environment).appendingPathComponent("oauth_tokens.json")
     }
+
+    /// Alternate config homes are independent profiles. Give each profile a
+    /// stable launchd identity so a development or test run cannot boot out or
+    /// replace the production Cloudflare agent.
+    public static func cloudflareLaunchAgentLabel(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> String {
+        guard usesConfigHomeOverride(environment: environment) else {
+            return defaultCloudflareLaunchAgentLabel
+        }
+
+        var hash: UInt64 = 14_695_981_039_346_656_037
+        for byte in configDirectory(environment: environment).path.utf8 {
+            hash ^= UInt64(byte)
+            hash &*= 1_099_511_628_211
+        }
+        return "\(defaultCloudflareLaunchAgentLabel).\(String(hash, radix: 16))"
+    }
 }
 
 /// Loads, persists, and derives values from `AppleCoreServingConfig`.
 /// Adapted from the relevant subset of Bridgeport's `ConfigManager`.
 public enum ServingConfigManager {
+    public struct UpdateResult {
+        public let before: AppleCoreServingConfig
+        public let after: AppleCoreServingConfig
+    }
+
+    private static let configLock = NSRecursiveLock()
+
     public static func load(from url: URL = AppleCoreServingPaths.configURL()) -> AppleCoreServingConfig {
+        configLock.withLock {
+            loadUnlocked(from: url)
+        }
+    }
+
+    private static func loadUnlocked(from url: URL) -> AppleCoreServingConfig {
         guard let data = try? Data(contentsOf: url) else {
             return AppleCoreServingConfig()
         }
@@ -134,10 +184,49 @@ public enum ServingConfigManager {
         }
     }
 
-    public static func save(_ config: AppleCoreServingConfig, to url: URL = AppleCoreServingPaths.configURL()) {
+    @discardableResult
+    public static func save(
+        _ config: AppleCoreServingConfig,
+        to url: URL = AppleCoreServingPaths.configURL()
+    ) -> Bool {
+        configLock.withLock {
+            saveUnlocked(config, to: url)
+        }
+    }
+
+    /// Applies a field-level mutation to the newest in-process snapshot while
+    /// holding the same lock as every save. `onlyIf` provides a compare step
+    /// for async workflows that must not persist a stale result.
+    public static func update(
+        to url: URL = AppleCoreServingPaths.configURL(),
+        onlyIf: (AppleCoreServingConfig) -> Bool = { _ in true },
+        _ mutate: (inout AppleCoreServingConfig) -> Void
+    ) -> UpdateResult? {
+        configLock.withLock {
+            let before = loadUnlocked(from: url)
+            guard onlyIf(before) else { return nil }
+            var after = before
+            mutate(&after)
+            guard saveUnlocked(after, to: url) else { return nil }
+            return UpdateResult(before: before, after: after)
+        }
+    }
+
+    private static func saveUnlocked(_ config: AppleCoreServingConfig, to url: URL) -> Bool {
+        let fileManager = FileManager.default
+        if fileManager.fileExists(atPath: url.path) {
+            guard let existingData = try? Data(contentsOf: url) else {
+                logMessage("ServingConfigManager: Refusing to overwrite unreadable config at \(url.path)")
+                return false
+            }
+            guard (try? JSONDecoder().decode(AppleCoreServingConfig.self, from: existingData)) != nil else {
+                logMessage("ServingConfigManager: Refusing to overwrite undecodable config at \(url.path)")
+                return false
+            }
+        }
+
         do {
             let directory = url.deletingLastPathComponent()
-            let fileManager = FileManager.default
             if !fileManager.fileExists(atPath: directory.path) {
                 try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
             }
@@ -147,8 +236,10 @@ public enum ServingConfigManager {
             let data = try encoder.encode(config)
             try data.write(to: url, options: .atomic)
             try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+            return true
         } catch {
             logMessage("ServingConfigManager: Failed to persist config: \(error)")
+            return false
         }
     }
 
@@ -203,6 +294,21 @@ public enum ServingConfigManager {
         }
 
         return Array(Set(origins)).sorted()
+    }
+
+    public static func origin(for baseURL: String?) -> String? {
+        guard let baseURL,
+            let url = URL(string: baseURL),
+            let scheme = url.scheme,
+            let host = url.host
+        else {
+            return nil
+        }
+        var origin = "\(scheme)://\(host)"
+        if let port = url.port {
+            origin += ":\(port)"
+        }
+        return origin
     }
 
     public static func normalizedRoutePath(_ value: String) -> String {

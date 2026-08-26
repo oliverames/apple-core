@@ -84,9 +84,9 @@ public struct RemindersStoreReader {
 
     private func open() throws -> OpaquePointer {
         var handle: OpaquePointer?
-        // immutable=1: Reminders.app writes this store constantly, and taking
-        // a lock on it or creating sidecar files would be our bug to explain.
-        let uri = "file:\(path)?immutable=1"
+        // A normal read-only connection sees committed rows in the live WAL.
+        // `immutable=1` read only the last checkpointed main database.
+        let uri = URL(fileURLWithPath: path).absoluteString + "?mode=ro"
         guard sqlite3_open_v2(uri, &handle, SQLITE_OPEN_READONLY | SQLITE_OPEN_URI, nil) == SQLITE_OK,
             let handle
         else {

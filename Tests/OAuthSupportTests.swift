@@ -126,4 +126,34 @@ struct OAuthSupportTests {
         let permissions = try #require(attrs[.posixPermissions] as? NSNumber).intValue & 0o777
         #expect(permissions == 0o600)
     }
+
+    @Test("Adopted clients respect the persisted registry limit")
+    func adoptedClientsRespectPersistenceLimit() async throws {
+        struct Registry: Decodable {
+            let clients: [OAuthRegisteredClient]
+        }
+
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let registryURL = root.appendingPathComponent("oauth_clients.json")
+        let store = OAuthTokenStore(clientRegistryURL: registryURL)
+        var firstClientID = ""
+        for index in 0 ... 256 {
+            let clientID = "ames_" + String(format: "%043d", index)
+            if index == 0 { firstClientID = clientID }
+            _ = await store.adoptClientIfNeeded(
+                clientID: clientID,
+                clientName: "Client \(index)",
+                redirectURI: "http://localhost/callback",
+                now: Date(timeIntervalSince1970: TimeInterval(index))
+            )
+        }
+
+        let data = try Data(contentsOf: registryURL)
+        let registry = try JSONDecoder().decode(Registry.self, from: data)
+        #expect(registry.clients.count == 256)
+        #expect(!registry.clients.contains { $0.clientID == firstClientID })
+    }
 }

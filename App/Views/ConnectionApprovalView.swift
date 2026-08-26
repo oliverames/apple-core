@@ -53,7 +53,7 @@ struct ConnectionApprovalView: View {
                 Toggle(isOn: $alwaysTrust) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Always trust this client")
-                        Text("Trusted clients connect without asking again. Manage them in Settings › Security.")
+                        Text("Trusted clients connect without asking again. Manage them in Settings › Clients.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -90,6 +90,7 @@ struct ConnectionApprovalView: View {
 final class ConnectionApprovalWindowController: NSObject, NSWindowDelegate {
     private var window: NSWindow?
     private var currentClientName: String?
+    private var pendingApprove: ((Bool) -> Void)?
     /// Fires exactly once per request: closing the window with the titlebar
     /// close button (neither Allow nor Deny clicked) must still resolve the
     /// pending connection, so it counts as a deny.
@@ -101,18 +102,18 @@ final class ConnectionApprovalWindowController: NSObject, NSWindowDelegate {
         onDeny: @escaping () -> Void
     ) {
         currentClientName = clientName
+        pendingApprove = onApprove
         pendingDeny = onDeny
         let approvalView = ConnectionApprovalView(
             clientName: clientName,
             onApprove: { alwaysTrust in
-                self.pendingDeny = nil
-                onApprove(alwaysTrust)
-                self.closeWindow()
+                self.resolveVisibleDialogAsApproved(
+                    clientName: clientName,
+                    alwaysTrust: alwaysTrust
+                )
             },
             onDeny: {
-                self.pendingDeny = nil
-                onDeny()
-                self.closeWindow()
+                self.resolveVisibleDialogAsDenied(clientName: clientName)
             }
         )
 
@@ -134,10 +135,28 @@ final class ConnectionApprovalWindowController: NSObject, NSWindowDelegate {
     }
 
     private func closeWindow() {
-        window?.delegate = nil
-        window?.close()
+        let windowToClose = window
         window = nil
+        windowToClose?.delegate = nil
+        windowToClose?.close()
     }
+
+    /// Close and clear the current request before its callback can synchronously
+    /// present the next queued request. Otherwise the old request's cleanup
+    /// closes the newly presented window through the shared `window` property.
+    @discardableResult
+    func resolveVisibleDialogAsApproved(clientName: String, alwaysTrust: Bool) -> Bool {
+        guard currentClientName == clientName else { return false }
+        let approve = pendingApprove
+        pendingApprove = nil
+        pendingDeny = nil
+        currentClientName = nil
+        closeWindow()
+        approve?(alwaysTrust)
+        return true
+    }
+
+    var visibleClientName: String? { currentClientName }
 
     /// Resolves the visible dialog as a denial when its connection drops
     /// before anyone answers, mirroring the Deny button exactly (callback,
@@ -147,6 +166,7 @@ final class ConnectionApprovalWindowController: NSObject, NSWindowDelegate {
         guard currentClientName == clientName else { return false }
         currentClientName = nil
         let deny = pendingDeny
+        pendingApprove = nil
         pendingDeny = nil
         closeWindow()
         deny?()
@@ -154,13 +174,16 @@ final class ConnectionApprovalWindowController: NSObject, NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
-        // Titlebar close without choosing: resolve the request as a deny.
-        if let deny = pendingDeny {
-            pendingDeny = nil
-            deny()
+        guard let closingWindow = notification.object as? NSWindow, closingWindow === window else {
+            return
         }
+        // Titlebar close without choosing: resolve the request as a deny.
+        let deny = pendingDeny
+        pendingApprove = nil
+        pendingDeny = nil
         currentClientName = nil
         window = nil
+        deny?()
     }
 }
 

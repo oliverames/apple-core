@@ -73,7 +73,7 @@ actor StdioHTTPBridge {
             let (data, response) = try await URLSession.shared.data(for: request)
             guard let http = response as? HTTPURLResponse else {
                 FileHandle.standardError.write(Data("apple-core-cli: non-HTTP response\n".utf8))
-                return nil
+                return Self.jsonRPCError(for: line, message: "Apple Core returned a non-HTTP response")
             }
             if http.statusCode == 404, sessionID != nil {
                 // The server reaped this session after ten idle minutes.
@@ -85,32 +85,41 @@ actor StdioHTTPBridge {
                 FileHandle.standardError.write(
                     Data("apple-core-cli: session expired on server; will start a new one\n".utf8)
                 )
-                return Self.sessionLostError(for: line)
+                return Self.jsonRPCError(
+                    for: line,
+                    message: "Apple Core session expired; reconnect by re-initializing"
+                )
             }
             if let newSessionID = http.value(forHTTPHeaderField: "Mcp-Session-Id") {
                 sessionID = newSessionID
             }
             guard http.statusCode == 200 || http.statusCode == 202 else {
                 FileHandle.standardError.write(Data("apple-core-cli: HTTP \(http.statusCode)\n".utf8))
-                return nil
+                return Self.jsonRPCError(
+                    for: line,
+                    message: "Apple Core returned HTTP \(http.statusCode)"
+                )
             }
             if http.statusCode == 202 {
                 // Notification: accepted, no response body to relay.
                 return nil
             }
-            guard let body = String(data: data, encoding: .utf8) else { return nil }
-            return Self.jsonRPCPayload(fromSSEBody: body)
+            guard let body = String(data: data, encoding: .utf8),
+                let payload = Self.jsonRPCPayload(fromSSEBody: body)
+            else {
+                return Self.jsonRPCError(for: line, message: "Apple Core returned an invalid response body")
+            }
+            return payload
         } catch {
             FileHandle.standardError.write(Data("apple-core-cli: request failed: \(error)\n".utf8))
-            return nil
+            return Self.jsonRPCError(for: line, message: "Could not reach the Apple Core app")
         }
     }
 
     /// Builds a JSON-RPC error response matching `line`'s request id, so a
-    /// stdio client whose session expired sees a protocol-level failure it
-    /// can react to (by re-initializing) rather than an endless hang. A
-    /// notification has no id and expects no reply.
-    private static func sessionLostError(for line: String) -> String? {
+    /// stdio client sees a protocol-level failure rather than waiting forever.
+    /// A notification has no id and expects no reply.
+    private static func jsonRPCError(for line: String, message: String) -> String? {
         guard let data = line.data(using: .utf8),
             let request = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
             let id = request["id"]
@@ -123,7 +132,7 @@ actor StdioHTTPBridge {
             "id": id,
             "error": [
                 "code": -32000,
-                "message": "Apple Core session expired; reconnect by re-initializing",
+                "message": message,
             ],
         ]
         guard

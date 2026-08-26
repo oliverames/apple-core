@@ -114,7 +114,7 @@ def find_identifier(value: Any) -> str:
     raise RuntimeError(f"No id or identifier in result: {value!r}")
 
 
-def verify_enumeration(client: MCPClient) -> None:
+def verify_enumeration(client: MCPClient, expected_tool_count: int | None = None) -> None:
     initialized = client.request(
         "initialize",
         {
@@ -126,8 +126,12 @@ def verify_enumeration(client: MCPClient) -> None:
     client.notify("notifications/initialized", {})
     tools = client.request("tools/list", {})["tools"]
     names = [tool["name"] for tool in tools]
-    if len(tools) != 77 or len(set(names)) != 77:
-        raise RuntimeError(f"Expected 77 unique tools, got {len(tools)} tools and {len(set(names))} names")
+    if not tools:
+        raise RuntimeError("Expected at least one advertised tool")
+    if expected_tool_count is not None and len(tools) != expected_tool_count:
+        raise RuntimeError(f"Expected {expected_tool_count} tools, got {len(tools)}")
+    if len(set(names)) != len(names):
+        raise RuntimeError(f"Expected unique tool names, got {len(names)} tools and {len(set(names))} names")
     missing_output_schema = [tool["name"] for tool in tools if "outputSchema" not in tool]
     if missing_output_schema:
         raise RuntimeError(f"Tools missing outputSchema: {missing_output_schema}")
@@ -159,7 +163,7 @@ def test_calendar(client: MCPClient, calendar: str, suffix: str) -> None:
     end = start + dt.timedelta(minutes=30)
     try:
         created = client.call(
-            "events_create",
+            "calendar_events_create",
             {
                 "title": f"Apple Core Integration {suffix}",
                 "start": start.isoformat().replace("+00:00", "Z"),
@@ -169,12 +173,15 @@ def test_calendar(client: MCPClient, calendar: str, suffix: str) -> None:
             },
         )
         event_id = find_identifier(created)
-        client.call("events_update", {"id": event_id, "title": f"Apple Core Integration Updated {suffix}"})
+        client.call(
+            "calendar_events_update",
+            {"id": event_id, "title": f"Apple Core Integration Updated {suffix}"},
+        )
         print("PASS Calendar create/update")
     finally:
         if event_id:
             try:
-                client.call("events_delete", {"id": event_id})
+                client.call("calendar_events_delete", {"id": event_id})
                 print("PASS Calendar cleanup")
             except RuntimeError as error:
                 print(f"WARN Calendar cleanup: {error}", file=sys.stderr)
@@ -265,10 +272,15 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--url", default="http://127.0.0.1:8756/mcp")
     parser.add_argument("--writes", action="store_true", help="Run opted-in write and cleanup checks")
+    parser.add_argument(
+        "--expected-tool-count",
+        type=int,
+        help="Require an exact tool count; omitted because enabled services change the count",
+    )
     args = parser.parse_args()
 
     client = MCPClient(args.url, load_token())
-    verify_enumeration(client)
+    verify_enumeration(client, args.expected_tool_count)
     if not args.writes:
         return 0
 
