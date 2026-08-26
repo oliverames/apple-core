@@ -118,4 +118,28 @@ struct FilesystemAccessTests {
         )
         #expect(resolved.lastPathComponent == "new.txt")
     }
+
+    @Test("A dangling symlink at the final component is refused for writes")
+    func danglingSymlinkIsRefusedForWrites() throws {
+        let sandbox = try Self.makeSandbox()
+        defer { try? FileManager.default.removeItem(at: sandbox) }
+
+        // fileExists follows symlinks, so this planted link reads as a
+        // not-yet-created file. Parent-only resolution used to bless the raw
+        // name and the out-of-process writer (Mail.app, shortcuts) would
+        // then follow the link wherever it pointed.
+        let link = sandbox.appendingPathComponent("escape.txt")
+        try FileManager.default.createSymbolicLink(
+            at: link,
+            withDestinationURL: URL(fileURLWithPath: "/tmp/apple-core-dangling-target-\(UUID().uuidString)")
+        )
+
+        #expect(throws: FilesystemAccessError.danglingSymlink(link.path)) {
+            try FilesystemAccess.resolve(
+                requested: link.path,
+                roots: [FilesystemRoot(path: sandbox.path, writable: true)],
+                requiringWrite: true
+            )
+        }
+    }
 }

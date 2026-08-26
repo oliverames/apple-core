@@ -35,6 +35,7 @@ public enum FilesystemAccessError: LocalizedError, Equatable {
     case outsideAllowedRoots(String)
     case rootNotWritable(String)
     case notFound(String)
+    case danglingSymlink(String)
 
     public var errorDescription: String? {
         switch self {
@@ -47,6 +48,9 @@ public enum FilesystemAccessError: LocalizedError, Equatable {
             return "\(path) is in a folder shared for reading only."
         case let .notFound(path):
             return "\(path) does not exist."
+        case let .danglingSymlink(path):
+            return
+                "\(path) is a broken symbolic link. Apple Core refuses to create files through one, because it cannot tell where the write would land."
         }
     }
 }
@@ -94,6 +98,14 @@ public enum FilesystemAccess {
         if fileManager.fileExists(atPath: expanded.path) {
             canonical = canonicalize(expanded.path)
         } else {
+            // fileExists follows symlinks, so a dangling symlink at the final
+            // component reads as "nonexistent" here. Parent-only resolution
+            // would then bless the raw name, and whatever runs afterward —
+            // Mail.app saving an attachment, shortcuts writing an output
+            // file — follows the link outside the roots. lstat it and refuse.
+            if (try? fileManager.destinationOfSymbolicLink(atPath: expanded.path)) != nil {
+                throw FilesystemAccessError.danglingSymlink(expanded.path)
+            }
             let parent = expanded.deletingLastPathComponent().path
             guard fileManager.fileExists(atPath: parent) else {
                 throw FilesystemAccessError.notFound(expanded.path)
