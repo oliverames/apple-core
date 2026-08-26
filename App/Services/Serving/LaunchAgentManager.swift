@@ -32,6 +32,36 @@ public enum LaunchAgentManager {
         return result.status == 0
     }
 
+    /// Async variants for actor contexts: launchctl blocks its caller for
+    /// the whole round trip, so awaiting these suspends the actor instead of
+    /// pinning a cooperative-pool worker (or the main thread).
+    public static func isLoadedAsync(label: String, uid: UInt32) async -> Bool {
+        await Task.detached(priority: .userInitiated) {
+            isLoaded(label: label, uid: uid)
+        }.value
+    }
+
+    @discardableResult
+    public static func bootstrapAsync(
+        label: String,
+        uid: UInt32,
+        plistURL: URL,
+        attempts: Int = 5
+    ) async -> LaunchAgentCommandResult {
+        await Task.detached(priority: .userInitiated) {
+            bootstrap(label: label, uid: uid, plistURL: plistURL, attempts: attempts)
+        }.value
+    }
+
+    @discardableResult
+    public static func bootoutAsync(label: String, uid: UInt32, plistURL: URL?) async
+        -> LaunchAgentCommandResult
+    {
+        await Task.detached(priority: .userInitiated) {
+            bootout(label: label, uid: uid, plistURL: plistURL)
+        }.value
+    }
+
     @discardableResult
     public static func bootout(label: String, uid: UInt32, plistURL: URL? = nil) -> LaunchAgentCommandResult {
         let labelResult = commandResult(runShell("/bin/launchctl", ["bootout", "gui/\(uid)/\(label)"]))
