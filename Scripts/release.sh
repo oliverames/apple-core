@@ -390,14 +390,21 @@ validate_distribution_app() {
 # Locate Sparkle's sign_update tool from the resolved SPM artifacts.
 find_sign_update() {
   local candidate
-  candidate="$(find "${HOME}/Library/Developer/Xcode/DerivedData" \
-    -type f -name sign_update -path "*artifacts*Sparkle*" 2>/dev/null | head -1)"
+  # Release builds put SPM artifacts under RELEASE_DERIVED_DATA_PATH
+  # (-derivedDataPath in build_check/archive_app), so search there first;
+  # the home DerivedData sweep is only a fallback for a machine that also
+  # built locally through Xcode. Pin the glob to Sparkle's bin directory:
+  # old_dsa_scripts/sign_update satisfies any looser *artifacts*Sparkle*
+  # pattern and would fail later with an unrelated usage error, and the
+  # unfiltered fallback could pick up an unrelated project's copy.
+  candidate="$(find "${RELEASE_DERIVED_DATA_PATH}/SourcePackages/artifacts" \
+    -type f -name sign_update -path "*Sparkle/bin/sign_update" 2>/dev/null | head -1)"
   if [[ -z "${candidate}" ]]; then
     candidate="$(find "${HOME}/Library/Developer/Xcode/DerivedData" \
-      -type f -name sign_update 2>/dev/null | head -1)"
+      -type f -name sign_update -path "*Sparkle/bin/sign_update" 2>/dev/null | head -1)"
   fi
   if [[ -z "${candidate}" ]]; then
-    echo "sign_update not found. Build the app once so SPM fetches Sparkle's artifacts." >&2
+    echo "sign_update not found. Run Scripts/release.sh archive first (it builds into ${RELEASE_DERIVED_DATA_PATH}, where SPM fetches Sparkle's artifacts)." >&2
     exit 1
   fi
   printf '%s' "${candidate}"
@@ -425,7 +432,12 @@ update_appcast() {
   build_number="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "${APP_BUNDLE}/Contents/Info.plist")"
 
   VERSION="${VERSION#v}" BUILD_NUMBER="${build_number}" SIGNATURE="${signature}" LENGTH="${length}" \
-  NOTES_HTML="${notes_html}" PUB_DATE="${pub_date}" python3 - <<'PYEOF'
+  NOTES_HTML="${notes_html}" PUB_DATE="${pub_date}" \
+  REPO_SLUG="${GITHUB_REPOSITORY}" \
+  ENCLOSURE_URL="$(printf 'https://github.com/%s/releases/download/v%s/%s' \
+    "${GITHUB_REPOSITORY}" "${VERSION#v}" \
+    "$(printf '%s-%s.zip' "${APP_NAME}" "${VERSION#v}" | tr ' ' '.')")" \
+  APPCAST_OUT="appcast.xml.next" python3 - <<'PYEOF'
 import os, re, sys
 import xml.etree.ElementTree as ET
 
@@ -435,22 +447,20 @@ signature = os.environ["SIGNATURE"].strip()
 length = os.environ["LENGTH"]
 notes = os.environ["NOTES_HTML"]
 pub_date = os.environ["PUB_DATE"]
-
-url = (
-    "https://github.com/oliverames/apple-core/releases/download/"
-    f"v{version}/Apple.Core-{version}.zip"
-)
+repo_slug = os.environ["REPO_SLUG"]
+enclosure_url = os.environ["ENCLOSURE_URL"]
+appcast_out = os.environ["APPCAST_OUT"]
 
 item = f"""    <item>
       <title>Version {version}</title>
-      <link>https://github.com/oliverames/apple-core/releases/tag/v{version}</link>
+      <link>https://github.com/{repo_slug}/releases/tag/v{version}</link>
       <sparkle:version>{build_number}</sparkle:version>
       <sparkle:shortVersionString>{version}</sparkle:shortVersionString>
       <description><![CDATA[
 {notes}
       ]]></description>
       <pubDate>{pub_date}</pubDate>
-      <enclosure url="{url}"
+      <enclosure url="{enclosure_url}"
                  length="{length}"
                  type="application/octet-stream"
                  sparkle:edSignature="{signature}" />
@@ -479,14 +489,20 @@ except ET.ParseError as error:
     print(f"generated appcast XML is invalid: {error}", file=sys.stderr)
     sys.exit(1)
 
-with open("appcast.xml", "w") as f:
+# Write to a sibling file instead of in place: appcast.xml is only valid
+# for SURequireSignedFeed clients once its trailing signature is refreshed,
+# so the original must stay untouched until sign+verify have succeeded on
+# the edited copy. An interruption between edit and sign used to strand a
+# stale-signed feed that the duplicate guard then refused to repair.
+with open(appcast_out, "w") as f:
     f.write(content)
-print(f"Added {version} to appcast.xml")
+print(f"Added {version} to {appcast_out}")
 PYEOF
 
-  echo "Signing and verifying appcast.xml"
-  "${sign_update}" appcast.xml
-  "${sign_update}" --verify appcast.xml
+  echo "Signing and verifying ${VERSION}"
+  "${sign_update}" appcast.xml.next
+  "${sign_update}" --verify appcast.xml.next
+  mv appcast.xml.next appcast.xml
 
   echo "Next: publish appcast.xml to the gh-pages branch (see RELEASING.md)."
 }
@@ -545,7 +561,13 @@ create_release() {
   local tag
   tag="$(release_tag)"
   echo "Creating GitHub release ${tag}"
-  gh release create "${tag}" --repo "${GITHUB_REPOSITORY}" --generate-notes
+  # Prefer the curated notes CI publishes on tag push; falling back to
+  # generated notes here made local releases diverge from the appcast.
+  if [[ -f "docs/release-notes/${tag}.md" ]]; then
+    gh release create "${tag}" --repo "${GITHUB_REPOSITORY}" --notes-file "docs/release-notes/${tag}.md"
+  else
+    gh release create "${tag}" --repo "${GITHUB_REPOSITORY}" --generate-notes
+  fi
 }
 
 upload_asset() {
@@ -623,6 +645,9 @@ case "${COMMAND}" in
     ;;
   appcast)
     update_appcast
+    ;;
+  --print-sign-update-path|print-sign-update-path)
+    find_sign_update
     ;;
   release)
     release
