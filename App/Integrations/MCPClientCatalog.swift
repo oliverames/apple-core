@@ -65,7 +65,9 @@ enum MCPClientCatalog {
                 id: "claude-code",
                 name: "Claude Code",
                 iconName: "terminal",
-                setup: .command("claude mcp add --transport http apple-core \(address) --header \"Authorization: Bearer \(token)\""),
+                setup: .command(
+                    "claude mcp add --transport http apple-core \(address) --header \"Authorization: Bearer \(token)\""
+                ),
                 requiresRemoteAccess: false,
                 detectionPaths: ["\(home)/.claude.json", "\(home)/.claude"]
             ),

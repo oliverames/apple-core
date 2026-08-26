@@ -424,4 +424,3 @@ private struct OnboardingDoneStep: View {
         }
     }
 }
-

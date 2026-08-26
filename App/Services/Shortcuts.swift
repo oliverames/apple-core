@@ -211,8 +211,8 @@ final class ShortcutsService: Service {
                 else {
                     return .object(["name": .string(line)])
                 }
-                let identifier = String(line[line.index(after: open)..<line.index(before: line.endIndex)])
-                let name = String(line[line.startIndex..<open]).trimmingCharacters(in: .whitespaces)
+                let identifier = String(line[line.index(after: open) ..< line.index(before: line.endIndex)])
+                let name = String(line[line.startIndex ..< open]).trimmingCharacters(in: .whitespaces)
                 guard UUID(uuidString: identifier) != nil else {
                     return .object(["name": .string(line)])
                 }

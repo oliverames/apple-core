@@ -241,12 +241,14 @@ private struct AccessPane: View {
                 .labelsHidden()
 
                 LabeledContent("Address") {
-                    Text(isRemoteOn && !model.publicBaseURL.isEmpty
-                        ? "\(model.clientBaseURL)/mcp"
-                        : "\(model.localBaseURL)/mcp")
-                        .font(.system(.callout, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .textSelection(.enabled)
+                    Text(
+                        isRemoteOn && !model.publicBaseURL.isEmpty
+                            ? "\(model.clientBaseURL)/mcp"
+                            : "\(model.localBaseURL)/mcp"
+                    )
+                    .font(.system(.callout, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
                 }
             } header: {
                 SectionHeader(

@@ -63,10 +63,12 @@ public struct RemindersStoreReader {
     public static func locateStore(fileManager: FileManager = .default) -> String? {
         let directory = fileManager.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Group Containers/group.com.apple.reminders/Container_v1/Stores")
-        guard let entries = try? fileManager.contentsOfDirectory(
-            at: directory,
-            includingPropertiesForKeys: [.fileSizeKey]
-        ) else {
+        guard
+            let entries = try? fileManager.contentsOfDirectory(
+                at: directory,
+                includingPropertiesForKeys: [.fileSizeKey]
+            )
+        else {
             return nil
         }
         let stores = entries.filter {

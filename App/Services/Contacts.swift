@@ -635,11 +635,12 @@ final class ContactsService: Service {
             let wantsThumbnail = arguments["thumbnail"]?.boolValue ?? true
             // Image data is a separate key set: fetching it for every contact
             // search would be wasteful, so it is only requested here.
-            let imageKeys = [
-                CNContactImageDataKey,
-                CNContactThumbnailImageDataKey,
-                CNContactImageDataAvailableKey,
-            ] as [CNKeyDescriptor]
+            let imageKeys =
+                [
+                    CNContactImageDataKey,
+                    CNContactThumbnailImageDataKey,
+                    CNContactImageDataAvailableKey,
+                ] as [CNKeyDescriptor]
 
             let data: Data? = try await self.runContactStore {
                 let contact = try self.contactStore.unifiedContact(
