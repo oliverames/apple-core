@@ -17,7 +17,7 @@ reflect that second pass. Baseline before the pass: build green, 41 unit tests g
 | A5 | `runShellDetached` leaks a zombie process per Cloudflare login | low | confirmed | fixed |
 | A6 | IPv6 bind host produces malformed cloudflared ingress URL (`http://::1:8756`) — invalid URL, YAML stays valid | low | partial | fixed |
 | A7 | `ensureDNSRoute` treats any "already exists" failure as routing success, even when record points elsewhere | med | confirmed | fixed |
-| A8 | Blocking shell-outs and `Thread.sleep` inside actor-isolated methods stall the cooperative pool | low | confirmed | fixed |
+| A8 | Blocking shell-outs and `Thread.sleep` inside actor-isolated methods stall the cooperative pool | low | confirmed | fixed (main-thread half first, actor half in follow-up `cf80869`: async runShell + LaunchAgent wrappers, every CloudflareManager shell path awaits) |
 | A9 | Session-cap check races past `maxSessions` across the factory await | low | confirmed | fixed |
 | A10/C3 | Bind failure leaves menu bar reporting "Running"; overlapping `start()` strands an orphaned listener | med | confirmed | fixed |
 | A11 | stdio CLI bridge wedges permanently after the server reaps its idle session (silent 404 loop) | med | confirmed | fixed |
@@ -33,7 +33,7 @@ reflect that second pass. Baseline before the pass: build green, 41 unit tests g
 | B9 | Missing lists table silently drops list filter in `reminders_sections` (sections-table twin throws) | low | confirmed | fixed + test |
 | B10 | `notes_stats` converts query failures into zero counts | low | confirmed | fixed |
 | B11 | `messages_unread` sums unread after SQL LIMIT truncation, labels it totalUnread | low | confirmed | fixed + test |
-| B12 | Dangling-symlink final component passes containment for out-of-process writes (Mail/Notes/Shortcuts) | low-med | partial | deferred: no privilege boundary crossed in threat model; redesign of three save flows is follow-up work |
+| B12 | Dangling-symlink final component passes containment for out-of-process writes (Mail/Notes/Shortcuts) | low-med | partial | fixed in follow-up (`e83957d`): lstat the final component, throw `danglingSymlink`; regression test added |
 | B13 | `LocationService.activate` overwrites pending continuation (leak/hang); `latestLocation` unsynchronized | low | confirmed | fixed |
 | C1 | Concurrent approval dialogs clobber shared slots; stranded client locked out until restart | high | confirmed | fixed |
 | C4 | ClaudeDesktop updater wipes undecodable config despite "won't be affected" promise | med | confirmed | fixed |
@@ -70,12 +70,33 @@ Additional real bugs found during verification, also fixed:
 - `maps_explore` limit unclamped (consistency).
 - `statusResponse` hardcodes `http://localhost:` regardless of bindHost.
 
-Deferred (judgment calls / follow-up scope):
+Deferred items from the first pass were all subsequently resolved the same day:
 
-- B12 symlink hardening for out-of-process writes (see above).
-- Reflected-Origin CORS on public OAuth endpoints: standard for browser-based public
-  clients; contradicts allowlist intent but no concrete exploit without ambient
-  credentials. Left as-is pending an explicit origin policy decision.
+- **B12 symlink hardening** — `FilesystemAccess.resolve` now lstats the final
+  component and throws `danglingSymlink` instead of blessing a raw name whose
+  link target it cannot see; covered by a new test (`e83957d`).
+- **Reflected-Origin CORS** — kept, deliberately, and documented where it
+  lives: browser-based public OAuth clients need cross-origin registration
+  and code exchange, and those endpoints carry no ambient credentials, so
+  reflection leaks nothing while allowlisting them would break legitimate
+  third-party clients. The concrete defect hiding inside the finding was
+  caching correctness, fixed with `Vary: Origin` on every reflected response
+  (`4c2e944`). The origin allowlist continues to govern the data-bearing MCP
+  routes only.
+- **Actor shell-out offload (A8)** — `runShellAsync` plus LaunchAgentManager
+  async wrappers; all CloudflareManager paths touching cloudflared or
+  launchctl now suspend instead of pinning pool workers (`cf80869`).
+- **Abandoned approval dialogs** (skeptic incidental) — a connection that
+  drops mid-decision now denies its stranded request through the Deny path,
+  closes the window, and presents the next queued one (`4517697`).
+
+Dependency currency was verified against upstream release APIs on 2026-08-25:
+Sparkle upgraded 2.9.4 → 2.9.6 for two security fixes including a
+privilege-escalation path (`b081a1d`); FlyingFox 0.27.1 is current; the
+swift-sdk revision pin is exactly its 0.12.1 release commit. The MCP
+specification has since advanced to 2026-07-28 while the SDK targets
+2025-11-25; tracking that is upstream work, and the Tasks extension for
+long-running tools remains the notable future capability gap.
 
 ## Verification method
 
