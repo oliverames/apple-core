@@ -39,6 +39,7 @@ public actor AppleCoreHTTPServer {
     private var server: HTTPServer?
     private var sessions: [String: MCPSSESession] = [:]
     private var sessionSurfaces: [String: MCPAccessSurface] = [:]
+    private var pendingSessionReservations = 0
     private var sessionFactory: SessionFactory?
     private var sessionCloseHandler: (@Sendable (String) -> Void)?
 
@@ -129,6 +130,20 @@ public actor AppleCoreHTTPServer {
         }
 
         handler.appendRoute("GET /.well-known/oauth-protected-resource/mcp") { [weak self] request in
+            guard let self else { return HTTPResponse(statusCode: .internalServerError) }
+            return await self.oauthProtectedResourceMetadataResponse(for: request)
+        }
+
+        // Some clients build the metadata URL by appending whatever resource
+        // path they hold to the well-known prefix. The canonical pointer now
+        // always names /mcp, but serving these siblings costs nothing and
+        // keeps such discovery attempts off the 404 path.
+        handler.appendRoute("GET /.well-known/oauth-protected-resource/sse") { [weak self] request in
+            guard let self else { return HTTPResponse(statusCode: .internalServerError) }
+            return await self.oauthProtectedResourceMetadataResponse(for: request)
+        }
+
+        handler.appendRoute("GET /.well-known/oauth-protected-resource/message") { [weak self] request in
             guard let self else { return HTTPResponse(statusCode: .internalServerError) }
             return await self.oauthProtectedResourceMetadataResponse(for: request)
         }
@@ -269,11 +284,10 @@ public actor AppleCoreHTTPServer {
     // MARK: - OAuth
 
     private func oauthProtectedResourceMetadataResponse(for request: HTTPRequest) -> HTTPResponse {
-        let resource = oauthResourceURL(for: request)
-        return Self.jsonResponse(
+        Self.jsonResponse(
             .ok,
             [
-                "resource": resource,
+                "resource": oauthMCPResourceURL,
                 "resource_name": "Apple Core MCP",
                 "authorization_servers": [oauthIssuer],
                 "bearer_methods_supported": ["header"],
@@ -316,10 +330,15 @@ public actor AppleCoreHTTPServer {
                 )
             }
 
-            let data = try await request.bodyData
-            guard data.count <= Self.maxRequestBodyBytes,
-                let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-            else {
+            guard let data = try await boundedRequestBody(request) else {
+                return Self.oauthErrorResponse(
+                    .payloadTooLarge,
+                    "invalid_request",
+                    "Request body too large.",
+                    request: request
+                )
+            }
+            guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
                 return Self.oauthErrorResponse(
                     .badRequest,
                     "invalid_request",
@@ -389,8 +408,7 @@ public actor AppleCoreHTTPServer {
             guard Self.isContentLengthAllowed(request) else {
                 return Self.textResponse(.payloadTooLarge, "Request body too large\n")
             }
-            let data = try await request.bodyData
-            guard data.count <= Self.maxRequestBodyBytes else {
+            guard let data = try await boundedRequestBody(request) else {
                 return Self.textResponse(.payloadTooLarge, "Request body too large\n")
             }
 
@@ -469,8 +487,7 @@ public actor AppleCoreHTTPServer {
                     request: request
                 )
             }
-            let data = try await request.bodyData
-            guard data.count <= Self.maxRequestBodyBytes else {
+            guard let data = try await boundedRequestBody(request) else {
                 return Self.oauthErrorResponse(
                     .payloadTooLarge,
                     "invalid_request",
@@ -548,10 +565,9 @@ public actor AppleCoreHTTPServer {
 
     private func openLegacySSE(_ request: HTTPRequest) async -> HTTPResponse {
         do {
-            let (session, surface) = try await makeSession(for: request)
+            let (session, _) = try await makeSession(for: request)
             let endpointEvent = "event: endpoint\ndata: /message?sessionId=\(session.id)\n\n"
             let (_, stream) = await session.addPersistentStream(initialEvents: [endpointEvent])
-            registerSession(session, surface: surface)
             return sseResponse(stream: stream, sessionId: session.id)
         } catch AppleCoreHTTPServerError.tooManySessions {
             return Self.sessionCapacityResponse()
@@ -579,8 +595,7 @@ public actor AppleCoreHTTPServer {
             guard Self.isContentLengthAllowed(request) else {
                 return Self.textResponse(.payloadTooLarge, "Request body too large\n")
             }
-            let bodyData = try await request.bodyData
-            guard bodyData.count <= Self.maxRequestBodyBytes else {
+            guard let bodyData = try await boundedRequestBody(request) else {
                 return Self.textResponse(.payloadTooLarge, "Request body too large\n")
             }
             guard let bodyString = String(data: bodyData, encoding: .utf8) else {
@@ -598,19 +613,16 @@ public actor AppleCoreHTTPServer {
     private func openStreamableHTTP(_ request: HTTPRequest) async -> HTTPResponse {
         do {
             let session: MCPSSESession
-            let surface: MCPAccessSurface
             switch resolveSession(request) {
             case .notFound:
                 return Self.textResponse(.notFound, "Session not found\n")
             case .scopeMismatch:
                 return Self.textResponse(.forbidden, "Session access surface changed\n")
-            case .existing(let existing, let existingSurface):
+            case .existing(let existing, _):
                 session = existing
-                surface = existingSurface
             case .new(let newSurface):
-                (session, surface) = try await makeSession(surface: newSurface)
+                (session, _) = try await makeSession(surface: newSurface)
             }
-            registerSession(session, surface: surface)
             let (_, stream) = await session.addPersistentStream()
             return sseResponse(stream: stream, sessionId: session.id)
         } catch AppleCoreHTTPServerError.tooManySessions {
@@ -626,8 +638,7 @@ public actor AppleCoreHTTPServer {
             guard Self.isContentLengthAllowed(request) else {
                 return Self.textResponse(.payloadTooLarge, "Request body too large\n")
             }
-            let bodyData = try await request.bodyData
-            guard bodyData.count <= Self.maxRequestBodyBytes else {
+            guard let bodyData = try await boundedRequestBody(request) else {
                 return Self.textResponse(.payloadTooLarge, "Request body too large\n")
             }
             guard let bodyString = String(data: bodyData, encoding: .utf8) else {
@@ -635,19 +646,16 @@ public actor AppleCoreHTTPServer {
             }
 
             let session: MCPSSESession
-            let surface: MCPAccessSurface
             switch resolveSession(request) {
             case .notFound:
                 return Self.textResponse(.notFound, "Session not found\n")
             case .scopeMismatch:
                 return Self.textResponse(.forbidden, "Session access surface changed\n")
-            case .existing(let existing, let existingSurface):
+            case .existing(let existing, _):
                 session = existing
-                surface = existingSurface
             case .new(let newSurface):
-                (session, surface) = try await makeSession(surface: newSurface)
+                (session, _) = try await makeSession(surface: newSurface)
             }
-            registerSession(session, surface: surface)
 
             guard let requestId = MCPSSESession.jsonRPCID(from: bodyString) else {
                 await session.writeToServer(bodyString)
@@ -683,14 +691,26 @@ public actor AppleCoreHTTPServer {
         return HTTPResponse(statusCode: .accepted)
     }
 
+    /// Loopback binds report as localhost; anything else reports its own
+    /// literal, bracketed when IPv6, so the URL stays copy-pasteable.
+    private static func displayHost(_ bindHost: String) -> String {
+        switch bindHost {
+        case "127.0.0.1", "localhost", "0.0.0.0":
+            return "localhost"
+        default:
+            return bindHost.contains(":") ? "[\(bindHost)]" : bindHost
+        }
+    }
+
     private func statusResponse() async -> HTTPResponse {
         let port = config.port ?? 8756
+        let bindHost = config.bindHost ?? "127.0.0.1"
         let baseURL = ServingConfigManager.clientEndpointBaseURL(port: port, publicBaseURL: config.publicBaseURL)
         let hasPublicBaseURL = config.publicBaseURL?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
 
         let status = AppleCoreRuntimeStatus(
             activeSessions: sessions.count,
-            localURL: "http://localhost:\(port)/mcp",
+            localURL: "http://\(Self.displayHost(bindHost)):\(port)/mcp",
             publicURL: hasPublicBaseURL ? "\(baseURL)/mcp" : "",
             publicBaseURLConfigured: hasPublicBaseURL
         )
@@ -714,11 +734,6 @@ public actor AppleCoreHTTPServer {
         )
     }
 
-    private func registerSession(_ session: MCPSSESession, surface: MCPAccessSurface) {
-        sessions[session.id] = session
-        sessionSurfaces[session.id] = surface
-    }
-
     private func makeSession(for request: HTTPRequest) async throws -> (MCPSSESession, MCPAccessSurface) {
         try await makeSession(surface: requestSurface(for: request))
     }
@@ -727,12 +742,22 @@ public actor AppleCoreHTTPServer {
         guard let sessionFactory else {
             throw AppleCoreHTTPServerError.sessionFactoryNotConfigured
         }
-        guard sessions.count < Self.maxSessions else {
+        // Reserve synchronously. Checking sessions.count alone across the
+        // factory's suspension let concurrent accepts all pass the guard and
+        // overshoot maxSessions.
+        guard sessions.count + pendingSessionReservations < Self.maxSessions else {
             throw AppleCoreHTTPServerError.tooManySessions
         }
+        pendingSessionReservations += 1
+        defer { pendingSessionReservations -= 1 }
 
         let id = UUID().uuidString.lowercased()
         let session = await sessionFactory(id, surface)
+        // Register here rather than at the call sites: callers await more
+        // work before they would have registered, which would release the
+        // reservation while the session is still invisible to the counters.
+        sessions[id] = session
+        sessionSurfaces[id] = surface
         return (session, surface)
     }
 
@@ -774,17 +799,18 @@ public actor AppleCoreHTTPServer {
         ServingConfigManager.clientEndpointBaseURL(port: config.port ?? 8756, publicBaseURL: config.publicBaseURL)
     }
 
-    private func oauthResourceURL(for request: HTTPRequest) -> String {
-        let metadataPrefix = "/.well-known/oauth-protected-resource"
-        if request.path.hasPrefix(metadataPrefix) {
-            let suffix = String(request.path.dropFirst(metadataPrefix.count))
-            return suffix.isEmpty ? oauthIssuer : "\(oauthIssuer)\(suffix)"
-        }
-        return "\(oauthIssuer)\(request.path)"
+    /// Every MCP transport this server exposes -- `/mcp`, plus the legacy
+    /// `/sse` and `/message` pair -- is a single RFC 8707 resource. Tokens
+    /// are issued bound to `<issuer>/mcp` only, so validation must expect
+    /// exactly that regardless of which route carried the request; deriving
+    /// the expected resource from request.path made OAuth tokens impossible
+    /// to use on the legacy transports.
+    private var oauthMCPResourceURL: String {
+        "\(oauthIssuer)/mcp"
     }
 
-    private func oauthProtectedResourceMetadataURL(for request: HTTPRequest) -> String {
-        "\(oauthIssuer)/.well-known/oauth-protected-resource\(request.path)"
+    private var oauthProtectedResourceMetadataURL: String {
+        "\(oauthIssuer)/.well-known/oauth-protected-resource/mcp"
     }
 
     private func isAllowedOAuthResource(_ resource: String) -> Bool {
@@ -933,7 +959,7 @@ public actor AppleCoreHTTPServer {
 
             if authHeader.lowercased().hasPrefix("bearer ") {
                 let accessToken = String(authHeader.dropFirst("Bearer ".count))
-                if await oauthStore.isValidAccessToken(accessToken, resource: oauthResourceURL(for: request)) {
+                if await oauthStore.isValidAccessToken(accessToken, resource: oauthMCPResourceURL) {
                     return true
                 }
             }
@@ -1115,7 +1141,7 @@ public actor AppleCoreHTTPServer {
     private func unauthorizedResponse(for request: HTTPRequest) -> HTTPResponse {
         var headers = HTTPHeaders()
         headers[.contentType] = "text/plain"
-        let metadataURL = Self.wwwAuthenticateQuotedValue(oauthProtectedResourceMetadataURL(for: request))
+        let metadataURL = Self.wwwAuthenticateQuotedValue(oauthProtectedResourceMetadataURL)
         headers[HTTPHeader("WWW-Authenticate")] = "Bearer realm=\"Apple Core\", resource_metadata=\"\(metadataURL)\""
         return HTTPResponse(statusCode: .unauthorized, headers: headers, body: Data("Unauthorized\n".utf8))
     }
@@ -1159,6 +1185,23 @@ public actor AppleCoreHTTPServer {
             return true
         }
         return length <= maxRequestBodyBytes
+    }
+
+    /// Drains the request body with the size cap enforced during
+    /// accumulation. `HTTPRequest.bodyData` buffers without bound: FlyingFox
+    /// applies no cap of its own and a chunked body carries no declared
+    /// length, so reading it wholesale let a single unauthenticated request
+    /// materialize gigabytes before the old post-hoc count check ran.
+    /// Returns nil when the body exceeds `maxRequestBodyBytes`.
+    private func boundedRequestBody(_ request: HTTPRequest) async throws -> Data? {
+        var data = Data()
+        for try await chunk in request.bodySequence {
+            guard data.count + chunk.count <= Self.maxRequestBodyBytes else {
+                return nil
+            }
+            data.append(chunk)
+        }
+        return data
     }
 
     private static let sessionHeader = HTTPHeader("Mcp-Session-Id")
