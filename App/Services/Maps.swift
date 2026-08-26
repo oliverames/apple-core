@@ -81,10 +81,10 @@ final class MapsService: NSObject, Service {
 
             // Configure region if provided
             if let regionArg = arguments["region"]?.objectValue,
-                let lat = regionArg["latitude"]?.doubleValue,
-                let lon = regionArg["longitude"]?.doubleValue
+                let lat = regionArg["latitude"]?.doubleCoerced,
+                let lon = regionArg["longitude"]?.doubleCoerced
             {
-                let radius = regionArg["radius"]?.doubleValue ?? defaultSearchRadius
+                let radius = regionArg["radius"]?.doubleCoerced ?? defaultSearchRadius
                 let center = CLLocationCoordinate2D(latitude: lat, longitude: lon)
                 let region = MKCoordinateRegion(
                     center: center,
@@ -183,8 +183,8 @@ final class MapsService: NSObject, Service {
             // Need either origin address or coordinates
             guard
                 arguments["originAddress"]?.stringValue != nil
-                    || (arguments["originCoordinates"]?.objectValue?["latitude"]?.doubleValue != nil
-                        && arguments["originCoordinates"]?.objectValue?["longitude"]?.doubleValue
+                    || (arguments["originCoordinates"]?.objectValue?["latitude"]?.doubleCoerced != nil
+                        && arguments["originCoordinates"]?.objectValue?["longitude"]?.doubleCoerced
                             != nil)
             else {
                 throw NSError(
@@ -197,10 +197,10 @@ final class MapsService: NSObject, Service {
             // Need either destination address or coordinates
             guard
                 arguments["destinationAddress"]?.stringValue != nil
-                    || (arguments["destinationCoordinates"]?.objectValue?["latitude"]?.doubleValue
+                    || (arguments["destinationCoordinates"]?.objectValue?["latitude"]?.doubleCoerced
                         != nil
                         && arguments["destinationCoordinates"]?.objectValue?["longitude"]?
-                            .doubleValue != nil)
+                            .doubleCoerced != nil)
             else {
                 throw NSError(
                     domain: "MapsServiceError",
@@ -319,8 +319,8 @@ final class MapsService: NSObject, Service {
             )
         ) { arguments in
             guard let categoryString = arguments["category"]?.stringValue,
-                let latitude = arguments["latitude"]?.doubleValue,
-                let longitude = arguments["longitude"]?.doubleValue
+                let latitude = arguments["latitude"]?.doubleCoerced,
+                let longitude = arguments["longitude"]?.doubleCoerced
             else {
                 throw NSError(
                     domain: "MapsServiceError",
@@ -329,8 +329,11 @@ final class MapsService: NSObject, Service {
                 )
             }
 
-            let radius = arguments["radius"]?.doubleValue ?? defaultSearchRadius
-            let limit = arguments["limit"]?.intValue ?? defaultSearchLimit
+            let radius = arguments["radius"]?.doubleCoerced ?? defaultSearchRadius
+            // Clamp for consistency with the other surfaces; MapKit's own
+            // result ceiling bounds this in practice, but the schema makes
+            // no promise and an unclamped value is a footgun.
+            let limit = min(max(arguments["limit"]?.intValue ?? defaultSearchLimit, 1), 50)
 
             guard let category = MKPointOfInterestCategory.from(string: categoryString) else {
                 throw NSError(
@@ -405,10 +408,10 @@ final class MapsService: NSObject, Service {
                 openWorldHint: true
             )
         ) { arguments in
-            guard let originLat = arguments["originLatitude"]?.doubleValue,
-                let originLng = arguments["originLongitude"]?.doubleValue,
-                let destLat = arguments["destinationLatitude"]?.doubleValue,
-                let destLng = arguments["destinationLongitude"]?.doubleValue
+            guard let originLat = arguments["originLatitude"]?.doubleCoerced,
+                let originLng = arguments["originLongitude"]?.doubleCoerced,
+                let destLat = arguments["destinationLatitude"]?.doubleCoerced,
+                let destLng = arguments["destinationLongitude"]?.doubleCoerced
             else {
                 throw NSError(
                     domain: "MapsServiceError",
@@ -537,10 +540,10 @@ final class MapsService: NSObject, Service {
                 openWorldHint: true
             )
         ) { arguments in
-            guard let latitude = arguments["latitude"]?.doubleValue,
-                let longitude = arguments["longitude"]?.doubleValue,
-                let latitudeDelta = arguments["latitudeDelta"]?.doubleValue,
-                let longitudeDelta = arguments["longitudeDelta"]?.doubleValue
+            guard let latitude = arguments["latitude"]?.doubleCoerced,
+                let longitude = arguments["longitude"]?.doubleCoerced,
+                let latitudeDelta = arguments["latitudeDelta"]?.doubleCoerced,
+                let longitudeDelta = arguments["longitudeDelta"]?.doubleCoerced
             else {
                 throw NSError(
                     domain: "MapsServiceError",
@@ -684,8 +687,8 @@ final class MapsService: NSObject, Service {
 
             return mapItem
         } else if let coordinates = coordinates,
-            let lat = coordinates["latitude"]?.doubleValue,
-            let lng = coordinates["longitude"]?.doubleValue
+            let lat = coordinates["latitude"]?.doubleCoerced,
+            let lng = coordinates["longitude"]?.doubleCoerced
         {
 
             // Create placemark and map item from coordinates

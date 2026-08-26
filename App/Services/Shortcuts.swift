@@ -147,6 +147,8 @@ final class ShortcutsService: Service {
 
     // MARK: - Private Implementation
 
+    /// Awaits process termination via the termination handler, mirroring
+    /// the pattern in AppleScriptRunner.
     private func runProcess(_ process: Process) async throws {
         try process.run()
         await withCheckedContinuation { continuation in
@@ -155,6 +157,10 @@ final class ShortcutsService: Service {
             }
         }
     }
+
+    /// Generous ceiling for `shortcuts list` / `shortcuts view`, which are
+    /// fast operations when healthy.
+    private static let captureTimeout: Duration = .seconds(60)
 
     /// Runs the CLI and returns stdout, throwing with stderr on a non-zero exit.
     private func capture(arguments: [String], what: String) async throws -> String {
@@ -174,15 +180,45 @@ final class ShortcutsService: Service {
             errorHandle.closeFile()
         }
 
-        do {
-            try await runProcess(process)
-        } catch {
-            log.error("Failed to run \(what, privacy: .public): \(error.localizedDescription)")
-            throw ShortcutsError.commandFailed(what, error.localizedDescription)
+        try process.run()
+
+        // Drain both pipes concurrently with termination, matching
+        // AppleScriptRunner: reading only after the child exited deadlocked
+        // whenever output exceeded the pipe buffer, because the child blocks
+        // writing before it can terminate. The timeout bounds a wedged CLI.
+        let outputTask = Task.detached {
+            (try? outputHandle.readToEnd()) ?? Data()
+        }
+        let errorTask = Task.detached {
+            (try? errorHandle.readToEnd()) ?? Data()
         }
 
-        let outputData = (try? outputHandle.readToEnd()) ?? Data()
-        let errorData = (try? errorHandle.readToEnd()) ?? Data()
+        do {
+            try await withThrowingTaskGroup(of: Void.self) { group in
+                group.addTask {
+                    await process.waitUntilTermination()
+                }
+
+                group.addTask {
+                    try await Task.sleep(for: Self.captureTimeout)
+                    process.terminate()
+                    throw ShortcutsError.commandFailed(what, "timed out")
+                }
+                _ = try await group.next()
+                group.cancelAll()
+            }
+        } catch {
+            if process.isRunning {
+                process.terminate()
+            }
+            log.error("Failed to run \(what, privacy: .public): \(error.localizedDescription)")
+            _ = await outputTask.value
+            _ = await errorTask.value
+            throw error
+        }
+
+        let outputData = await outputTask.value
+        let errorData = await errorTask.value
 
         guard process.terminationStatus == 0 else {
             let message = String(data: errorData, encoding: .utf8) ?? "Unknown error"
@@ -374,6 +410,18 @@ enum ShortcutsError: LocalizedError {
                 ? "The shortcut \(name) failed." : "The shortcut \(name) failed: \(message)"
         case let .timedOut(name):
             return "The shortcut \(name) did not finish within five minutes."
+        }
+    }
+}
+
+extension Process {
+    /// Awaits process termination via the termination handler, mirroring
+    /// the pattern in AppleScriptRunner.
+    fileprivate func waitUntilTermination() async {
+        await withCheckedContinuation { continuation in
+            self.terminationHandler = { _ in
+                continuation.resume()
+            }
         }
     }
 }

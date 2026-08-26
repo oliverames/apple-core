@@ -193,4 +193,33 @@ struct MessagesDatabaseReader {
         }
         return results
     }
+
+    /// Total unread messages across every conversation. Deliberately not
+    /// derived from `unreadCounts(limit:)`: that query truncates to the
+    /// busiest N chats, and summing the truncated page understated the
+    /// total whenever more conversations than the limit held unreads.
+    func totalUnreadCount() throws -> Int {
+        let handle = try open()
+        defer { sqlite3_close(handle) }
+
+        guard tableExists("message", in: handle) else {
+            throw MessagesDatabaseReaderError.schemaMissing("the message table")
+        }
+
+        let sql = """
+            SELECT COUNT(*)
+            FROM message m
+            WHERE m.is_read = 0 AND m.is_from_me = 0
+            """
+
+        var statement: OpaquePointer?
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_prepare_v2(handle, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw MessagesDatabaseReaderError.cannotOpen(String(cString: sqlite3_errmsg(handle)))
+        }
+        guard sqlite3_step(statement) == SQLITE_ROW else {
+            throw MessagesDatabaseReaderError.cannotOpen(String(cString: sqlite3_errmsg(handle)))
+        }
+        return Int(sqlite3_column_int64(statement, 0))
+    }
 }

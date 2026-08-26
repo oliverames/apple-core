@@ -14,8 +14,35 @@ final class LocationService: NSObject, Service, CLLocationManagerDelegate {
         manager.pausesLocationUpdatesAutomatically = true
         return manager
     }()
-    private var latestLocation: CLLocation?
-    private var authorizationContinuation: CheckedContinuation<Void, Error>?
+    // Delegate callbacks and async tool handlers land on different
+    // executors; unsynchronized access to either field was a genuine data
+    // race, and an unchecked continuation store leaked the first caller's
+    // continuation whenever two activations overlapped during a prompt.
+    private let stateLock = NSLock()
+    private var _latestLocation: CLLocation?
+    private var latestLocation: CLLocation? {
+        get { stateLock.withLock { _latestLocation } }
+        set { stateLock.withLock { _latestLocation = newValue } }
+    }
+    private var authorizationContinuations: [CheckedContinuation<Void, Error>] = []
+
+    /// Resolves every pending `activate()` waiter with one outcome and
+    /// clears the queue.
+    private func settleAuthorization(_ result: Result<Void, Error>) {
+        let pending = stateLock.withLock { () -> [CheckedContinuation<Void, Error>] in
+            let pending = authorizationContinuations
+            authorizationContinuations.removeAll()
+            return pending
+        }
+        for continuation in pending {
+            switch result {
+            case .success:
+                continuation.resume()
+            case .failure(let error):
+                continuation.resume(throwing: error)
+            }
+        }
+    }
 
     static let shared = LocationService()
 
@@ -47,7 +74,7 @@ final class LocationService: NSObject, Service, CLLocationManagerDelegate {
     func activate() async throws {
         try await withCheckedThrowingContinuation {
             (continuation: CheckedContinuation<Void, Error>) in
-            self.authorizationContinuation = continuation
+            stateLock.withLock { authorizationContinuations.append(continuation) }
             locationManager.delegate = self
 
             // Check current authorization status first
@@ -56,19 +83,19 @@ final class LocationService: NSObject, Service, CLLocationManagerDelegate {
             case .authorizedWhenInUse, .authorizedAlways:
                 // Already authorized, resume immediately
                 log.debug("Location access authorized")
-                continuation.resume()
-                self.authorizationContinuation = nil
+                settleAuthorization(.success(()))
             case .denied, .restricted:
                 // Already denied, throw error immediately
                 log.error("Location access denied")
-                continuation.resume(
-                    throwing: NSError(
-                        domain: "LocationServiceError",
-                        code: 7,
-                        userInfo: [NSLocalizedDescriptionKey: "Location access denied"]
+                settleAuthorization(
+                    .failure(
+                        NSError(
+                            domain: "LocationServiceError",
+                            code: 7,
+                            userInfo: [NSLocalizedDescriptionKey: "Location access denied"]
+                        )
                     )
                 )
-                self.authorizationContinuation = nil
             case .notDetermined:
                 // Need to request authorization
                 log.debug("Requesting location access")
@@ -76,14 +103,17 @@ final class LocationService: NSObject, Service, CLLocationManagerDelegate {
             @unknown default:
                 // Handle unknown future cases
                 log.error("Unknown location authorization status")
-                continuation.resume(
-                    throwing: NSError(
-                        domain: "LocationServiceError",
-                        code: 8,
-                        userInfo: [NSLocalizedDescriptionKey: "Unknown authorization status"]
+                settleAuthorization(
+                    .failure(
+                        NSError(
+                            domain: "LocationServiceError",
+                            code: 8,
+                            userInfo: [
+                                NSLocalizedDescriptionKey: "Unknown authorization status"
+                            ]
+                        )
                     )
                 )
-                self.authorizationContinuation = nil
             }
         }
     }
@@ -292,8 +322,8 @@ final class LocationService: NSObject, Service, CLLocationManagerDelegate {
                 openWorldHint: true
             )
         ) { arguments in
-            guard let latitude = arguments["latitude"]?.doubleValue,
-                let longitude = arguments["longitude"]?.doubleValue
+            guard let latitude = arguments["latitude"]?.doubleCoerced,
+                let longitude = arguments["longitude"]?.doubleCoerced
             else {
                 log.error("Invalid coordinates")
                 throw NSError(
@@ -396,18 +426,18 @@ final class LocationService: NSObject, Service, CLLocationManagerDelegate {
         switch status {
         case .authorizedWhenInUse, .authorizedAlways:
             log.debug("Location access authorized")
-            authorizationContinuation?.resume()
-            authorizationContinuation = nil
+            settleAuthorization(.success(()))
         case .denied, .restricted:
             log.error("Location access denied")
-            authorizationContinuation?.resume(
-                throwing: NSError(
-                    domain: "LocationServiceError",
-                    code: 7,
-                    userInfo: [NSLocalizedDescriptionKey: "Location access denied"]
+            settleAuthorization(
+                .failure(
+                    NSError(
+                        domain: "LocationServiceError",
+                        code: 7,
+                        userInfo: [NSLocalizedDescriptionKey: "Location access denied"]
+                    )
                 )
             )
-            authorizationContinuation = nil
         case .notDetermined:
             log.debug("Location access not determined")
             // Wait for the user to make a choice

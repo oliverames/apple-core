@@ -127,6 +127,12 @@ public struct RemindersStoreReader {
             throw RemindersStoreError.schemaMissing("the sections table")
         }
         let hasLists = tableExists("ZREMCDBASELIST", in: handle)
+        if listName != nil, !hasLists {
+            // Dropping the filter here returned every section on the machine
+            // dressed up as one list's sections; the sections-table twin
+            // above throws, and this case deserves the same honesty.
+            throw RemindersStoreError.schemaMissing("the lists table")
+        }
 
         var sql = """
             SELECT s.ZDISPLAYNAME, \(hasLists ? "l.ZNAME" : "NULL"), s.ZIDENTIFIER

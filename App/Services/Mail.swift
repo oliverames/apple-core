@@ -893,7 +893,7 @@ final class MailService: Service {
         Tool(
             name: "mail_list_messages",
             description:
-                "List messages in a mailbox (newest first) with id, subject, sender, date, and read status",
+                "List messages in a mailbox with id, subject, sender, date, and read status, in the order Mail returns them",
             inputSchema: .object(
                 properties: [
                     "account": .string(

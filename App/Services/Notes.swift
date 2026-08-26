@@ -133,9 +133,11 @@ private struct NotesStats: Codable, Sendable {
     let totalNotes: Int
     let totalFolders: Int
     let accounts: [NotesStatsAccount]
-    let modifiedLast24h: Int
-    let modifiedLast7d: Int
-    let modifiedLast30d: Int
+    // Nil (null on the wire) when the count query failed; a fabricated
+    // zero was indistinguishable from a genuinely quiet period.
+    let modifiedLast24h: Int?
+    let modifiedLast7d: Int?
+    let modifiedLast30d: Int?
 }
 
 private struct NoteAttachment: Codable, Sendable {
@@ -551,7 +553,9 @@ private let statsScript = """
                     modificationDate: { _greaterThan: cutoff },
                 })().length;
             } catch (e) {
-                return 0;
+                // Null, not zero: a failed count must not masquerade as a
+                // quiet period.
+                return null;
             }
         };
         return JSON.stringify({

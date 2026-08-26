@@ -179,30 +179,44 @@ final class MessageService: NSObject, Service, NSOpenSavePanelDelegate {
                 }) ?? []
 
             var dateRange: Range<Date>?
-            if let startDateStr = arguments["start"]?.stringValue,
-                let endDateStr = arguments["end"]?.stringValue,
-                let parsedStart = ISO8601DateFormatter.parsedLenientISO8601Date(
-                    fromISO8601String: startDateStr
-                ),
-                let parsedEnd = ISO8601DateFormatter.parsedLenientISO8601Date(
-                    fromISO8601String: endDateStr
-                )
-            {
+            let parsedStart = arguments["start"]?.stringValue.flatMap {
+                ISO8601DateFormatter.parsedLenientISO8601Date(fromISO8601String: $0)
+            }
+            let parsedEnd = arguments["end"]?.stringValue.flatMap {
+                ISO8601DateFormatter.parsedLenientISO8601Date(fromISO8601String: $0)
+            }
+            switch (parsedStart, parsedEnd) {
+            case (let start?, let end?):
+                // Both bounds: normalize date-only values to local midnight.
                 let calendar = Calendar.current
-                let normalizedStart = calendar.normalizedStartDate(
-                    from: parsedStart.date,
-                    isDateOnly: parsedStart.isDateOnly
+                dateRange = calendar.normalizedStartDate(
+                    from: start.date,
+                    isDateOnly: start.isDateOnly
+                ) ..< calendar.normalizedEndDate(
+                    from: end.date,
+                    isDateOnly: end.isDateOnly
                 )
-                let normalizedEnd = calendar.normalizedEndDate(
-                    from: parsedEnd.date,
-                    isDateOnly: parsedEnd.isDateOnly
+            case (nil, nil):
+                break
+            default:
+                // A one-sided bound used to be dropped silently, returning
+                // unfiltered history dressed up as a time-scoped answer.
+                throw NSError(
+                    domain: "MessagesServiceError",
+                    code: 3,
+                    userInfo: [
+                        NSLocalizedDescriptionKey:
+                            "Provide both start and end for a date range; a single bound is ambiguous."
+                    ]
                 )
-
-                dateRange = normalizedStart ..< normalizedEnd
             }
 
             let searchTerm = arguments["query"]?.stringValue
-            let limit = arguments["limit"]?.intValue
+            // Clamp like the sibling tools do. The raw value reached SQL as
+            // LIMIT after an Int32 conversion, so a huge client-supplied
+            // limit meant runaway memory or a trap on overflow.
+            let requestedLimit = arguments["limit"]?.intValue ?? defaultLimit
+            let limit = min(max(requestedLimit, 1), 1000)
 
             let db = try self.createDatabaseConnection()
             var messages: [[String: Value]] = []
@@ -211,14 +225,17 @@ final class MessageService: NSObject, Service, NSOpenSavePanelDelegate {
             let handles = try db.fetchParticipant(matching: participants)
 
             log.debug(
-                "Fetching messages with date range: \(String(describing: dateRange)), limit: \(limit ?? -1)"
+                "Fetching messages with date range: \(String(describing: dateRange)), limit: \(limit)"
             )
+            // The pre-filter fetch pools a wider window (1024) so that
+            // filtering by text/participants doesn't starve the result set;
+            // the SQL LIMIT is still bounded.
             for message in try db.fetchMessages(
                 with: Set(handles),
                 in: dateRange,
-                limit: max(limit ?? defaultLimit, 1024)
+                limit: max(limit, 1024)
             ) {
-                guard messages.count < (limit ?? defaultLimit) else { break }
+                guard messages.count < limit else { break }
                 guard !message.text.isEmpty else { continue }
 
                 let sender: String
@@ -380,8 +397,14 @@ final class MessageService: NSObject, Service, NSOpenSavePanelDelegate {
             let limit = min(max(arguments["limit"]?.intValue ?? 20, 1), 200)
             try await self.activate()
 
-            let counts = try self.withDatabaseReader { reader in
+            let counts: [ChatUnreadCount] = try self.withDatabaseReader { reader in
                 try reader.unreadCounts(limit: limit)
+            }
+            // The per-conversation query caps at `limit` rows; a true total
+            // needs its own unbounded count or it misses everything past
+            // the page.
+            let totalUnread = try self.withDatabaseReader { reader in
+                try reader.totalUnreadCount()
             }
             let described: [Value] = counts.map { chat in
                 var entry: [String: Value] = [
@@ -392,7 +415,7 @@ final class MessageService: NSObject, Service, NSOpenSavePanelDelegate {
                 return .object(entry)
             }
             return Value.object([
-                "totalUnread": .int(counts.reduce(0) { $0 + $1.unreadCount }),
+                "totalUnread": .int(totalUnread),
                 "conversations": .array(described),
             ])
         }

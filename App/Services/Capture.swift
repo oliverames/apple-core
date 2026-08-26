@@ -192,7 +192,7 @@ final class CaptureService: NSObject, Service {
                     rawValue: arguments["format"]?.stringValue ?? ImageFormat.default.rawValue
                 )
                 ?? .jpeg
-            let quality = arguments["quality"]?.doubleValue ?? 0.8
+            let quality = arguments["quality"]?.doubleCoerced ?? 0.8
             let preset =
                 SessionPreset(
                     rawValue: arguments["preset"]?.stringValue ?? SessionPreset.default.rawValue
@@ -214,7 +214,7 @@ final class CaptureService: NSObject, Service {
             let autoExposure = arguments["autoExposure"]?.boolValue ?? true
             let autoFocus = arguments["autoFocus"]?.boolValue ?? true
             let autoWhiteBalance = arguments["autoWhiteBalance"]?.boolValue ?? true
-            let delay = arguments["delay"]?.doubleValue ?? 1.0
+            let delay = arguments["delay"]?.doubleCoerced ?? 1.0
 
             let captureSession = AVCaptureSession()
             captureSession.sessionPreset = preset.avPreset

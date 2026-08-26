@@ -1,13 +1,16 @@
 import EventKit
 
 extension EKEventAvailability {
-    init(_ string: String) {
+    /// Failable on purpose: an unrecognized string used to silently become
+    /// `.busy`, so a filter for an unknown value returned wrong-but-healthy
+    /// looking results and a write stamped the wrong availability.
+    init?(_ string: String) {
         switch string.lowercased() {
         case "busy": self = .busy
         case "free": self = .free
         case "tentative": self = .tentative
         case "unavailable": self = .unavailable
-        default: self = .busy
+        default: return nil
         }
     }
 
@@ -27,13 +30,14 @@ extension EKEventAvailability {
 }
 
 extension EKEventStatus {
-    init(_ string: String) {
+    /// Failable on purpose; see EKEventAvailability.init(_:).
+    init?(_ string: String) {
         switch string.lowercased() {
         case "none": self = .none
         case "tentative": self = .tentative
         case "confirmed": self = .confirmed
-        case "canceled": self = .canceled
-        default: self = .none
+        case "canceled", "cancelled": self = .canceled
+        default: return nil
         }
     }
 }

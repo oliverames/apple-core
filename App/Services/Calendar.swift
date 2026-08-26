@@ -140,8 +140,8 @@ final class CalendarService: Service {
 
             case "proximity":
                 if case .string(let locationTitle) = config["locationTitle"],
-                    case .double(let latitude) = config["latitude"],
-                    case .double(let longitude) = config["longitude"]
+                    let latitude = config["latitude"]?.doubleCoerced,
+                    let longitude = config["longitude"]?.doubleCoerced
                 {
                     let proximityAlarm = EKAlarm()
 
@@ -364,12 +364,30 @@ final class CalendarService: Service {
             }
 
             if case .string(let status) = arguments["status"] {
-                let statusValue = EKEventStatus(status)
+                guard let statusValue = EKEventStatus(status) else {
+                    throw NSError(
+                        domain: "CalendarServiceError",
+                        code: 9,
+                        userInfo: [
+                            NSLocalizedDescriptionKey:
+                                "Unknown status \(status). Valid values: none, tentative, confirmed, canceled."
+                        ]
+                    )
+                }
                 events = events.filter { $0.status == statusValue }
             }
 
             if case .string(let availability) = arguments["availability"] {
-                let availabilityValue = EKEventAvailability(availability)
+                guard let availabilityValue = EKEventAvailability(availability) else {
+                    throw NSError(
+                        domain: "CalendarServiceError",
+                        code: 10,
+                        userInfo: [
+                            NSLocalizedDescriptionKey:
+                                "Unknown availability \(availability). Valid values: busy, free, tentative, unavailable."
+                        ]
+                    )
+                }
                 events = events.filter { $0.availability == availabilityValue }
             }
 
@@ -590,15 +608,37 @@ final class CalendarService: Service {
                 event.endDate = endDate
             }
 
-            // Set calendar
-            var targetCalendar = self.eventStore.defaultCalendarForNewEvents
-            if case .string(let calendarName) = arguments["calendar"] {
-                if let matchingCalendar = self.eventStore.calendars(for: .event)
-                    .first(where: { $0.title.lowercased() == calendarName.lowercased() })
-                {
-                    targetCalendar = matchingCalendar
-                }
+            // Set calendar. A requested calendar that matches nothing throws
+            // (matching the update path) instead of silently filing the event
+            // into the default calendar.
+            guard let defaultCalendar = self.eventStore.defaultCalendarForNewEvents else {
+                throw NSError(
+                    domain: "CalendarServiceError",
+                    code: 4,
+                    userInfo: [
+                        NSLocalizedDescriptionKey:
+                            "No default calendar is available for new events"
+                    ]
+                )
             }
+            var targetCalendar = defaultCalendar
+            if case .string(let calendarName) = arguments["calendar"] {
+                guard
+                    let matchingCalendar = self.eventStore.calendars(for: .event)
+                        .first(where: { $0.title.lowercased() == calendarName.lowercased() })
+                else {
+                    throw NSError(
+                        domain: "CalendarServiceError",
+                        code: 3,
+                        userInfo: [
+                            NSLocalizedDescriptionKey:
+                                "No calendar found with name \(calendarName)"
+                        ]
+                    )
+                }
+                targetCalendar = matchingCalendar
+            }
+            try self.requireWritable(targetCalendar)
             event.calendar = targetCalendar
 
             // Set optional properties
@@ -617,7 +657,17 @@ final class CalendarService: Service {
             }
 
             if case .string(let availability) = arguments["availability"] {
-                event.availability = EKEventAvailability(availability)
+                guard let availabilityValue = EKEventAvailability(availability) else {
+                    throw NSError(
+                        domain: "CalendarServiceError",
+                        code: 10,
+                        userInfo: [
+                            NSLocalizedDescriptionKey:
+                                "Unknown availability \(availability). Valid values: busy, free, tentative, unavailable."
+                        ]
+                    )
+                }
+                event.availability = availabilityValue
             }
 
             // Set alarms
@@ -651,8 +701,8 @@ final class CalendarService: Service {
 
                     case "proximity":
                         if case .string(let locationTitle) = config["locationTitle"],
-                            case .double(let latitude) = config["latitude"],
-                            case .double(let longitude) = config["longitude"]
+                            let latitude = config["latitude"]?.doubleCoerced,
+                            let longitude = config["longitude"]?.doubleCoerced
                         {
                             alarm = EKAlarm()
 
@@ -1051,7 +1101,17 @@ final class CalendarService: Service {
             }
 
             if case .string(let availability) = arguments["availability"] {
-                event.availability = EKEventAvailability(availability)
+                guard let availabilityValue = EKEventAvailability(availability) else {
+                    throw NSError(
+                        domain: "CalendarServiceError",
+                        code: 10,
+                        userInfo: [
+                            NSLocalizedDescriptionKey:
+                                "Unknown availability \(availability). Valid values: busy, free, tentative, unavailable."
+                        ]
+                    )
+                }
+                event.availability = availabilityValue
             }
 
             if case .array(let alarmConfigs) = arguments["alarms"] {

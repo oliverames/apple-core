@@ -30,8 +30,8 @@ final class WeatherService: Service {
                 openWorldHint: true
             )
         ) { arguments in
-            guard case let .double(latitude) = arguments["latitude"],
-                case let .double(longitude) = arguments["longitude"]
+            guard let latitude = arguments["latitude"]?.doubleCoerced,
+                let longitude = arguments["longitude"]?.doubleCoerced
             else {
                 log.error("Invalid coordinates")
                 throw NSError(
@@ -73,8 +73,8 @@ final class WeatherService: Service {
                 openWorldHint: true
             )
         ) { arguments in
-            guard case let .double(latitude) = arguments["latitude"],
-                case let .double(longitude) = arguments["longitude"]
+            guard let latitude = arguments["latitude"]?.doubleCoerced,
+                let longitude = arguments["longitude"]?.doubleCoerced
             else {
                 log.error("Invalid coordinates")
                 throw NSError(
@@ -124,8 +124,8 @@ final class WeatherService: Service {
                 openWorldHint: true
             )
         ) { arguments in
-            guard case let .double(latitude) = arguments["latitude"],
-                case let .double(longitude) = arguments["longitude"]
+            guard let latitude = arguments["latitude"]?.doubleCoerced,
+                let longitude = arguments["longitude"]?.doubleCoerced
             else {
                 log.error("Invalid coordinates")
                 throw NSError(
@@ -177,8 +177,8 @@ final class WeatherService: Service {
                 openWorldHint: true
             )
         ) { arguments in
-            guard case let .double(latitude) = arguments["latitude"],
-                case let .double(longitude) = arguments["longitude"]
+            guard let latitude = arguments["latitude"]?.doubleCoerced,
+                let longitude = arguments["longitude"]?.doubleCoerced
             else {
                 log.error("Invalid coordinates")
                 throw NSError(
@@ -232,8 +232,8 @@ final class WeatherService: Service {
                 openWorldHint: true
             )
         ) { arguments in
-            guard case let .double(latitude) = arguments["latitude"],
-                case let .double(longitude) = arguments["longitude"]
+            guard let latitude = arguments["latitude"]?.doubleCoerced,
+                let longitude = arguments["longitude"]?.doubleCoerced
             else {
                 log.error("Invalid coordinates")
                 throw NSError(
@@ -288,8 +288,8 @@ final class WeatherService: Service {
                 openWorldHint: true
             )
         ) { arguments in
-            guard case let .double(latitude) = arguments["latitude"],
-                case let .double(longitude) = arguments["longitude"]
+            guard let latitude = arguments["latitude"]?.doubleCoerced,
+                let longitude = arguments["longitude"]?.doubleCoerced
             else {
                 log.error("Invalid coordinates")
                 throw NSError(

@@ -125,9 +125,36 @@ final class FilesystemService: Service {
                 roots: FilesystemService.shared.roots,
                 requiringWrite: false
             )
-            let data = try Data(contentsOf: url)
+            // Read only the cap, not the file: Data(contentsOf:) loaded a
+            // multi-gigabyte file whole before the old slice applied.
+            let handle = try FileHandle(forReadingFrom: url)
+            defer { try? handle.close() }
+            guard let data = try handle.read(upToCount: maximumReadBytes + 3) else {
+                return Value.object([
+                    "path": .string(url.path),
+                    "isText": .bool(true),
+                    "sizeBytes": .int(0),
+                    "content": .string(""),
+                ])
+            }
             let truncated = data.count > maximumReadBytes
-            let slice = truncated ? data.prefix(maximumReadBytes) : data
+            var slice = Data(data.prefix(maximumReadBytes))
+            // A cap that lands mid-codepoint used to fail UTF-8 validation
+            // and misreport the whole file as binary. Drop any trailing
+            // partial sequence (at most 3 continuation bytes) before decode.
+            if truncated {
+                while let last = slice.last,
+                    last & 0b1100_0000 == 0b1000_0000
+                {
+                    slice.removeLast()
+                }
+                if let last = slice.last, last & 0b1110_0000 == 0b1100_0000
+                    || last & 0b1111_0000 == 0b1110_0000
+                    || last & 0b1111_1000 == 0b1111_0000
+                {
+                    slice.removeLast()
+                }
+            }
 
             guard let text = String(data: slice, encoding: .utf8) else {
                 return Value.object([
@@ -137,10 +164,11 @@ final class FilesystemService: Service {
                     "note": .string("This file is not UTF-8 text, so its contents were not read."),
                 ])
             }
+            let sizeBytes = ((try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0)
             var result: [String: Value] = [
                 "path": .string(url.path),
                 "isText": .bool(true),
-                "sizeBytes": .int(data.count),
+                "sizeBytes": .int(sizeBytes),
                 "content": .string(text),
             ]
             if truncated {

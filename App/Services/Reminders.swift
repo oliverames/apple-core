@@ -349,15 +349,33 @@ final class RemindersService: Service {
             }
             reminder.title = title
 
-            // Set calendar (list)
-            var calendar = self.eventStore.defaultCalendarForNewReminders()
-            if case .string(let listName) = arguments["list"] {
-                if let matchingCalendar = self.eventStore.calendars(for: .reminder)
-                    .first(where: { $0.title.lowercased() == listName.lowercased() })
-                {
-                    calendar = matchingCalendar
-                }
+            // Set calendar (list). An unmatched name throws rather than
+            // silently filing the reminder into the default list.
+            guard let defaultList = self.eventStore.defaultCalendarForNewReminders() else {
+                throw NSError(
+                    domain: "RemindersError",
+                    code: 5,
+                    userInfo: [NSLocalizedDescriptionKey: "No default reminder list is available"]
+                )
             }
+            var calendar = defaultList
+            if case .string(let listName) = arguments["list"] {
+                guard
+                    let matchingCalendar = self.eventStore.calendars(for: .reminder)
+                        .first(where: { $0.title.lowercased() == listName.lowercased() })
+                else {
+                    throw NSError(
+                        domain: "RemindersError",
+                        code: 4,
+                        userInfo: [
+                            NSLocalizedDescriptionKey:
+                                "No reminder list found with name \(listName)"
+                        ]
+                    )
+                }
+                calendar = matchingCalendar
+            }
+            try self.requireWritable(calendar)
             reminder.calendar = calendar
 
             // Set optional properties

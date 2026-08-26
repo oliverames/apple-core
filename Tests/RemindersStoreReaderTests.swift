@@ -80,6 +80,31 @@ struct RemindersStoreReaderTests {
         }
     }
 
+    @Test("A list filter with no lists table throws instead of returning everything")
+    func listFilterWithoutListsTableThrows() throws {
+        // Schema drift can drop ZREMCDBASELIST independently of the sections
+        // table. Silently skipping the filter used to return every section
+        // on the machine for what looked like a single-list query.
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("apple-core-remnolists-\(UUID().uuidString).sqlite")
+        var handle: OpaquePointer?
+        #expect(sqlite3_open(url.path, &handle) == SQLITE_OK)
+        defer { sqlite3_close(handle) }
+        let schema = """
+            CREATE TABLE ZREMCDBASESECTION (Z_PK INTEGER PRIMARY KEY, ZDISPLAYNAME TEXT,
+                ZLIST INTEGER, ZMARKEDFORDELETION INTEGER, ZIDENTIFIER BLOB);
+            INSERT INTO ZREMCDBASESECTION VALUES (1, 'Produce', 1, 0, NULL);
+            """
+        var error: UnsafeMutablePointer<CChar>?
+        #expect(sqlite3_exec(handle, schema, nil, nil, &error) == SQLITE_OK)
+        if let error { sqlite3_free(error) }
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        #expect(throws: (any Error).self) {
+            try RemindersStoreReader(path: url.path).sections(listName: "Groceries")
+        }
+    }
+
     @Test("The real store on this machine still matches the expected schema")
     func realStoreStillReads() throws {
         // Skips rather than fails where there is no store or no access: this

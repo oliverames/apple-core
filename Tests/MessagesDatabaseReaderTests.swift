@@ -64,6 +64,18 @@ struct MessagesDatabaseReaderTests {
         #expect(counts[1].displayName == nil)
     }
 
+    @Test("The unread total is not truncated by the per-conversation limit")
+    func totalUnreadIgnoresLimit() throws {
+        let url = try Self.makeFixture()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let reader = MessagesDatabaseReader(path: url.path)
+
+        // Three unread incoming messages exist in total; a limit of one
+        // conversation used to make callers sum just that page.
+        #expect(try reader.totalUnreadCount() == 3)
+        #expect(try reader.unreadCounts(limit: 1).count == 1)
+    }
+
     @Test("Attachments come back newest first with their metadata")
     func attachmentsAreListedNewestFirst() throws {
         let url = try Self.makeFixture()
