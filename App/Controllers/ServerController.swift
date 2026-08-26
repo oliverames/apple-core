@@ -287,6 +287,7 @@ final class ServerController: ObservableObject {
     /// dialogs are presented strictly one at a time; concurrent requests
     /// wait here instead of overwriting each other's callbacks.
     private struct ApprovalRequest {
+        let connectionID: UUID
         let clientID: String
         let approve: () -> Void
         let deny: () -> Void
@@ -295,6 +296,7 @@ final class ServerController: ObservableObject {
     private var activeApprovalDialogs: Set<String> = []
     private var pendingApprovals: [(String, () -> Void, () -> Void)] = []
     private var approvalDialogQueue: [ApprovalRequest] = []
+    private var visibleApprovalRequest: ApprovalRequest?
     private var isApprovalDialogVisible = false
     private let approvalWindowController = ConnectionApprovalWindowController()
 
@@ -315,6 +317,9 @@ final class ServerController: ObservableObject {
     /// next queued one, if any.
     private func finishActiveApproval(for request: ApprovalRequest, approved: Bool) {
         isApprovalDialogVisible = false
+        if visibleApprovalRequest?.connectionID == request.connectionID {
+            visibleApprovalRequest = nil
+        }
         activeApprovalDialogs.remove(request.clientID)
 
         if pendingConnectionID == request.clientID {
@@ -326,6 +331,33 @@ final class ServerController: ObservableObject {
         presentNextApprovalIfNeeded()
     }
 
+    /// A connection whose dialog was pending disappeared before anyone
+    /// answered (client gave up, transport died). Deny it so its setup task
+    /// finishes instead of parking forever, dismiss the window if it was on
+    /// screen, and move on to whatever is queued.
+    func approvalConnectionDropped(_ connectionID: UUID) {
+        if let index = approvalDialogQueue.firstIndex(where: { $0.connectionID == connectionID }) {
+            let request = approvalDialogQueue.remove(at: index)
+            activeApprovalDialogs.remove(request.clientID)
+            log.info(
+                "Connection for pending approval of \(request.clientID) dropped; resolving as denied"
+            )
+            request.deny()
+        }
+
+        if let current = visibleApprovalRequest, current.connectionID == connectionID {
+            // resolveVisibleDialogAsDenied runs the wired onDeny callback,
+            // which itself denies the request and finishes this approval
+            // slot; only fall back to finishing here if the window had
+            // already moved on to a different request.
+            visibleApprovalRequest = nil
+            if !approvalWindowController.resolveVisibleDialogAsDenied(clientName: current.clientID) {
+                current.deny()
+                finishActiveApproval(for: current, approved: false)
+            }
+        }
+    }
+
     private func presentNextApprovalIfNeeded() {
         guard !isApprovalDialogVisible, let next = approvalDialogQueue.first else {
             return
@@ -333,6 +365,7 @@ final class ServerController: ObservableObject {
         approvalDialogQueue.removeFirst()
 
         isApprovalDialogVisible = true
+        visibleApprovalRequest = next
         pendingConnectionID = next.clientID
         pendingClientName = next.clientID
 
@@ -374,6 +407,15 @@ final class ServerController: ObservableObject {
         Task { [weak self] in
             guard let self else { return }
 
+            // A connection whose approval dialog is pending may vanish
+            // before anyone answers; resolve that dialog instead of leaving
+            // it on screen forever.
+            await networkManager.setApprovalDropHandler { [weak self] connectionID in
+                Task { @MainActor in
+                    self?.approvalConnectionDropped(connectionID)
+                }
+            }
+
             // Initialize bindings from AppStorage before the server starts.
             await networkManager.updateServiceBindings(self.currentServiceBindings)
 
@@ -398,6 +440,7 @@ final class ServerController: ObservableObject {
 
                     Task { @MainActor in
                         self.showConnectionApprovalAlert(
+                            connectionID: connectionID,
                             clientID: clientInfo.name,
                             approve: {
                                 Task { await resumeOnce(true) }
@@ -482,6 +525,7 @@ final class ServerController: ObservableObject {
     }
 
     private func showConnectionApprovalAlert(
+        connectionID: UUID,
         clientID: String,
         approve: @escaping () -> Void,
         deny: @escaping () -> Void
@@ -511,7 +555,14 @@ final class ServerController: ObservableObject {
         // One shared window controller means dialogs must be serialized.
         // Queue the request; a second client's dialog appears as soon as the
         // first is answered instead of overwriting its callbacks.
-        approvalDialogQueue.append(ApprovalRequest(clientID: clientID, approve: approve, deny: deny))
+        approvalDialogQueue.append(
+            ApprovalRequest(
+                connectionID: connectionID,
+                clientID: clientID,
+                approve: approve,
+                deny: deny
+            )
+        )
         presentNextApprovalIfNeeded()
     }
 }
@@ -650,6 +701,14 @@ actor ServerNetworkManager {
 
     typealias ConnectionApprovalHandler = @Sendable (UUID, MCP.Client.Info) async -> Bool
     private var connectionApprovalHandler: ConnectionApprovalHandler?
+
+    /// Fired when a connection goes away; the controller uses it to resolve
+    /// an approval dialog whose requester vanished mid-decision.
+    private var approvalDropHandler: (@Sendable (UUID) -> Void)?
+
+    func setApprovalDropHandler(_ handler: @escaping @Sendable (UUID) -> Void) {
+        self.approvalDropHandler = handler
+    }
 
     private let services = ServiceRegistry.services
     private var serviceBindings: [String: Binding<Bool>] = [:]
@@ -790,6 +849,8 @@ actor ServerNetworkManager {
         if let connectionManager = connections[id] {
             await connectionManager.stop()
         }
+
+        approvalDropHandler?(id)
 
         if let task = connectionTasks[id] {
             task.cancel()

@@ -89,6 +89,7 @@ struct ConnectionApprovalView: View {
 @MainActor
 final class ConnectionApprovalWindowController: NSObject, NSWindowDelegate {
     private var window: NSWindow?
+    private var currentClientName: String?
     /// Fires exactly once per request: closing the window with the titlebar
     /// close button (neither Allow nor Deny clicked) must still resolve the
     /// pending connection, so it counts as a deny.
@@ -99,6 +100,7 @@ final class ConnectionApprovalWindowController: NSObject, NSWindowDelegate {
         onApprove: @escaping (Bool) -> Void,
         onDeny: @escaping () -> Void
     ) {
+        currentClientName = clientName
         pendingDeny = onDeny
         let approvalView = ConnectionApprovalView(
             clientName: clientName,
@@ -137,12 +139,27 @@ final class ConnectionApprovalWindowController: NSObject, NSWindowDelegate {
         window = nil
     }
 
+    /// Resolves the visible dialog as a denial when its connection drops
+    /// before anyone answers, mirroring the Deny button exactly (callback,
+    /// then close). Returns false when a different request is on screen.
+    @discardableResult
+    func resolveVisibleDialogAsDenied(clientName: String) -> Bool {
+        guard currentClientName == clientName else { return false }
+        currentClientName = nil
+        let deny = pendingDeny
+        pendingDeny = nil
+        closeWindow()
+        deny?()
+        return true
+    }
+
     func windowWillClose(_ notification: Notification) {
         // Titlebar close without choosing: resolve the request as a deny.
         if let deny = pendingDeny {
             pendingDeny = nil
             deny()
         }
+        currentClientName = nil
         window = nil
     }
 }
