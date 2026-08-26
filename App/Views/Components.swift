@@ -12,16 +12,6 @@
 import AppKit
 import SwiftUI
 
-enum AppVersion {
-    static var description: String {
-        let version =
-            Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
-            ?? "Development"
-        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
-        return build.map { "\(version) (\($0))" } ?? version
-    }
-}
-
 /// Row status the macOS way: a small colored SF symbol plus secondary text
 /// (like System Settings), never a capsule chip that mimics a button. The
 /// neutral tone stays a quiet tag capsule for counts and mode labels only.

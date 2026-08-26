@@ -11,18 +11,6 @@ enum CNContactLabel {
         default: return string
         }
     }
-
-    static var allPhoneLabels: [String] {
-        return [CNLabelPhoneNumberMobile, CNLabelWork, CNLabelHome]
-    }
-
-    static var allEmailLabels: [String] {
-        return [CNLabelWork, CNLabelHome]
-    }
-
-    static var allAddressLabels: [String] {
-        return [CNLabelWork, CNLabelHome]
-    }
 }
 
 extension CNMutableContact {

@@ -508,22 +508,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         aboutWindowController?.showWindow(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
-
-    // MARK: - Dock Icon Visibility
-
-    func setShowDockIcon(_ visible: Bool) {
-        showDockIcon = visible
-        if visible {
-            NSApp.setActivationPolicy(.regular)
-        } else {
-            // Only go back to accessory if the Settings window isn't open;
-            // SettingsWindowController manages the policy while its window
-            // is visible so the app can receive focus.
-            if settingsWindowController?.isWindowVisible != true {
-                NSApp.setActivationPolicy(.accessory)
-            }
-        }
-    }
 }
 
 @main

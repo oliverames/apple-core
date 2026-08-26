@@ -31,8 +31,6 @@ struct MCPClient: Identifiable, Sendable {
     let name: String
     let iconName: String
     let setup: Setup
-    /// Reachable only over the internet, so it needs remote access on.
-    let requiresRemoteAccess: Bool
     /// Paths that indicate the client is installed on this Mac. Empty for
     /// cloud clients, which are not installed at all.
     let detectionPaths: [String]
@@ -55,7 +53,6 @@ enum MCPClientCatalog {
                 name: "Claude Desktop",
                 iconName: "desktopcomputer",
                 setup: .automatic,
-                requiresRemoteAccess: false,
                 detectionPaths: [
                     "/Applications/Claude.app",
                     "\(home)/Library/Application Support/Claude",
@@ -68,7 +65,6 @@ enum MCPClientCatalog {
                 setup: .command(
                     "claude mcp add --transport http apple-core \(address) --header \"Authorization: Bearer \(token)\""
                 ),
-                requiresRemoteAccess: false,
                 detectionPaths: ["\(home)/.claude.json", "\(home)/.claude"]
             ),
             MCPClient(
@@ -76,7 +72,6 @@ enum MCPClientCatalog {
                 name: "Codex",
                 iconName: "chevron.left.forwardslash.chevron.right",
                 setup: .command("codex mcp add apple-core --url \(address) --bearer-token \(token)"),
-                requiresRemoteAccess: false,
                 detectionPaths: ["\(home)/.codex/config.toml", "\(home)/.codex"]
             ),
             MCPClient(
@@ -84,7 +79,6 @@ enum MCPClientCatalog {
                 name: "Cursor",
                 iconName: "cursorarrow.rays",
                 setup: .paste("Settings › MCP › Add Server, then paste the address and token."),
-                requiresRemoteAccess: false,
                 detectionPaths: ["/Applications/Cursor.app", "\(home)/.cursor"]
             ),
             MCPClient(
@@ -92,7 +86,6 @@ enum MCPClientCatalog {
                 name: "Antigravity",
                 iconName: "sparkles",
                 setup: .paste("Add an MCP server in Antigravity's settings, then paste the address and token."),
-                requiresRemoteAccess: false,
                 detectionPaths: [
                     "/Applications/Antigravity.app",
                     "\(home)/.gemini/settings.json",
@@ -103,7 +96,6 @@ enum MCPClientCatalog {
                 name: "Hermes",
                 iconName: "bolt.horizontal",
                 setup: .paste("Add an MCP server in Hermes's settings, then paste the address and token."),
-                requiresRemoteAccess: false,
                 detectionPaths: [
                     "/Applications/Hermes.app",
                     "\(home)/Library/Application Support/Hermes",
@@ -114,7 +106,6 @@ enum MCPClientCatalog {
                 name: "OpenClaw",
                 iconName: "pawprint",
                 setup: .paste("Add an MCP server in OpenClaw's configuration, then paste the address and token."),
-                requiresRemoteAccess: false,
                 detectionPaths: ["/Applications/OpenClaw.app", "\(home)/.config/openclaw"]
             ),
         ]
@@ -130,7 +121,6 @@ enum MCPClientCatalog {
                 name: "Claude (web and mobile)",
                 iconName: "cloud",
                 setup: .paste("Settings › Connectors › Add custom connector, then paste the address."),
-                requiresRemoteAccess: true,
                 detectionPaths: []
             ),
             MCPClient(
@@ -138,7 +128,6 @@ enum MCPClientCatalog {
                 name: "Claude Cowork",
                 iconName: "person.2",
                 setup: .paste("Add Apple Core as a connector, then paste the address."),
-                requiresRemoteAccess: true,
                 detectionPaths: []
             ),
             MCPClient(
@@ -146,7 +135,6 @@ enum MCPClientCatalog {
                 name: "ChatGPT",
                 iconName: "bubble.left.and.bubble.right",
                 setup: .paste("Settings › Apps & Connectors › Advanced › Developer mode, then paste the address."),
-                requiresRemoteAccess: true,
                 detectionPaths: []
             ),
             MCPClient(
@@ -154,7 +142,6 @@ enum MCPClientCatalog {
                 name: "ChatGPT Work",
                 iconName: "briefcase",
                 setup: .paste("Ask your workspace admin to add Apple Core as a connector using the address."),
-                requiresRemoteAccess: true,
                 detectionPaths: []
             ),
         ]

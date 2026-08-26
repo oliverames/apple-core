@@ -247,14 +247,6 @@ public actor CloudflareManager {
         settings.enabled ? bootstrapTunnel() : disableTunnel()
     }
 
-    public func prepareLocalConfiguration() -> CloudflareOperationResult {
-        let before = settings
-        writeCloudflaredConfigIfPossible()
-        writeLaunchAgentIfPossible()
-        let status = status(messageOverride: "Cloudflare local tunnel configuration refreshed.", forcedState: nil)
-        return CloudflareOperationResult(settings: settings, status: status, didChangeSettings: before != settings)
-    }
-
     public func bootstrapTunnel() -> CloudflareOperationResult {
         let before = settings
         var dnsRouteForNewTunnel = false
@@ -418,24 +410,6 @@ public actor CloudflareManager {
     }
 
     @discardableResult
-    public func restartTunnel() -> CloudflareTunnelStatus {
-        writeCloudflaredConfigIfPossible()
-        writeLaunchAgentIfPossible()
-
-        guard fileManager.fileExists(atPath: launchAgentURL.path) else {
-            return status(messageOverride: "Cloudflare LaunchAgent is not installed yet.", forcedState: .needsConfig)
-        }
-
-        let result = LaunchAgentManager.restart(label: settings.launchAgentLabel, uid: uid, plistURL: launchAgentURL)
-        if result.status != 0 {
-            return status(
-                messageOverride: "Cloudflare tunnel failed to restart: \(sanitized(result.stderr))",
-                forcedState: .error
-            )
-        }
-        return status(messageOverride: "Cloudflare tunnel restarted.", forcedState: nil)
-    }
-
     /// Where `cloudflared tunnel login` writes the account origin certificate.
     /// `TUNNEL_ORIGIN_CERT` overrides it, so honour that before assuming the
     /// default, or a machine configured that way reads as logged out forever.

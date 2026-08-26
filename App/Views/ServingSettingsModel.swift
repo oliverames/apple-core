@@ -57,9 +57,6 @@ final class ServingSettingsModel: ObservableObject {
         isOnboardingPresented = false
     }
 
-    @AppStorage("runAsLaunchAgent") var runAsLaunchAgent = true
-    @AppStorage("showDockIcon") var showDockIcon = false
-
     private weak var serverController: ServerController?
 
     init(serverController: ServerController) {
@@ -383,12 +380,6 @@ final class ServingSettingsModel: ObservableObject {
         }
     }
 
-    func prepareCloudflareConfiguration() async {
-        setPublicBaseURL(CloudflareManager.publicBaseURL(for: cloudflare))
-        let result = await cloudflareManager().prepareLocalConfiguration()
-        applyCloudflareResult(result)
-    }
-
     func bootstrapCloudflareTunnel() async {
         // Text fields only commit on Return, so a hostname that was typed and
         // then clicked away from was still absent from disk when the tunnel
@@ -397,19 +388,6 @@ final class ServingSettingsModel: ObservableObject {
         save(restartServer: false)
         let result = await cloudflareManager().bootstrapTunnel()
         applyCloudflareResult(result)
-    }
-
-    func setCloudflareEnabled(_ enabled: Bool) async {
-        var settings = cloudflare
-        settings.enabled = enabled
-        cloudflare = settings
-        setPublicBaseURL(CloudflareManager.publicBaseURL(for: settings))
-        let result = await cloudflareManager().reconcileTunnel()
-        applyCloudflareResult(result)
-    }
-
-    func startCloudflareTunnel() async {
-        cloudflareStatus = await cloudflareManager().startTunnel()
     }
 
     /// Opens the Cloudflare browser sign-in and waits for it, rather than
@@ -471,10 +449,6 @@ final class ServingSettingsModel: ObservableObject {
         applyCloudflareResult(result)
     }
 
-    func restartCloudflareTunnel() async {
-        cloudflareStatus = await cloudflareManager().restartTunnel()
-    }
-
     private func applyCloudflareResult(_ result: CloudflareOperationResult) {
         if result.didChangeSettings {
             config.cloudflare = result.settings
@@ -512,23 +486,6 @@ final class ServingSettingsModel: ObservableObject {
         isOpenAtLoginEnabled = SMAppService.mainApp.status == .enabled
     }
 
-    func setOpenAtLogin(_ enabled: Bool) {
-        do {
-            if enabled {
-                try SMAppService.mainApp.register()
-            } else {
-                try SMAppService.mainApp.unregister()
-            }
-            lastStatusMessage = enabled ? "Open at Login enabled" : "Open at Login disabled"
-        } catch {
-            Logger.server.error(
-                "Open at Login update failed: \(error.localizedDescription, privacy: .public)"
-            )
-            lastStatusMessage = "Open at Login update failed: \(error.localizedDescription)"
-        }
-        refreshOpenAtLoginStatus()
-    }
-
     // MARK: - LaunchAgent
 
     private static func loadLaunchAgentStatusOffMain() async -> Bool {
@@ -555,14 +512,5 @@ final class ServingSettingsModel: ObservableObject {
             lastStatusMessage =
                 loaded ? "LaunchAgent installed" : "LaunchAgent install failed; see log"
         }
-    }
-
-    func removeAppLaunchAgent() {
-        let plistURL = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/LaunchAgents/\(AppLaunchAgent.label).plist")
-        let result = LaunchAgentManager.bootout(label: AppLaunchAgent.label, uid: getuid(), plistURL: plistURL)
-        try? FileManager.default.removeItem(at: plistURL)
-        refreshAppLaunchAgentStatus()
-        lastStatusMessage = result.succeeded ? "LaunchAgent removed" : "LaunchAgent removal failed; see log"
     }
 }

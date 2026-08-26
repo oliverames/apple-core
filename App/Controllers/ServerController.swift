@@ -31,12 +31,6 @@ struct ServiceConfig: Identifiable {
     let permissionRequirements: [ServicePermissionRequirement]
     let binding: Binding<Bool>
 
-    var isActivated: Bool {
-        get async {
-            await service.isActivated
-        }
-    }
-
     init(
         name: String,
         iconName: String,
