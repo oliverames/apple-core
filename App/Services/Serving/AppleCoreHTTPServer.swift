@@ -1129,9 +1129,24 @@ public actor AppleCoreHTTPServer {
         )
     }
 
+    /// CORS policy for the public OAuth surface (register, token, authorize,
+    /// well-known metadata). These endpoints are deliberately open to any
+    /// origin: browser-based public MCP clients need cross-origin access for
+    /// dynamic registration and code exchange, and none of them uses
+    /// ambient credentials — there are no cookies, and the authorize form's
+    /// token travels in the POST body of the page itself — so a reflected
+    /// origin hands an attacker's page nothing it could not get directly.
+    /// This is standard OAuth authorization-server behavior. The MCP routes,
+    /// which do expose user data, enforce config.allowedOrigins instead
+    /// (isRequestAllowed) and emit no ACAO at all.
+    ///
+    /// Whatever the reflection decides, `Vary: Origin` must ride along:
+    /// without it a shared cache may answer a second origin with the first
+    /// origin's Allow-Origin header.
     private static func oauthCORSHeaders(for request: HTTPRequest) -> HTTPHeaders {
         var headers = HTTPHeaders()
         headers[HTTPHeader("Access-Control-Allow-Origin")] = request.headers[originHeader] ?? "*"
+        headers[HTTPHeader("Vary")] = "Origin"
         headers[HTTPHeader("Access-Control-Allow-Methods")] = "GET, POST, OPTIONS"
         headers[HTTPHeader("Access-Control-Allow-Headers")] = "authorization, content-type, mcp-session-id"
         headers[HTTPHeader("Access-Control-Max-Age")] = "86400"
