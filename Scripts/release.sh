@@ -437,7 +437,7 @@ update_appcast() {
   ENCLOSURE_URL="$(printf 'https://github.com/%s/releases/download/v%s/%s' \
     "${GITHUB_REPOSITORY}" "${VERSION#v}" \
     "$(printf '%s-%s.zip' "${APP_NAME}" "${VERSION#v}" | tr ' ' '.')")" \
-  APPCAST_OUT="appcast.xml.next" python3 - <<'PYEOF'
+  APPCAST_OUT="appcast.next.xml" python3 - <<'PYEOF'
 import os, re, sys
 import xml.etree.ElementTree as ET
 
@@ -494,15 +494,22 @@ except ET.ParseError as error:
 # so the original must stay untouched until sign+verify have succeeded on
 # the edited copy. An interruption between edit and sign used to strand a
 # stale-signed feed that the duplicate guard then refused to repair.
+#
+# The sibling must keep the .xml extension. sign_update decides whether to
+# embed a feed signature in the file or merely print an enclosure signature
+# by looking at that extension, so a name like appcast.xml.next signs as a
+# generic file: nothing is embedded, --verify then demands an explicit
+# signature argument and fails, and the copy keeps the previous release's
+# trailing signature over different bytes.
 with open(appcast_out, "w") as f:
     f.write(content)
 print(f"Added {version} to {appcast_out}")
 PYEOF
 
   echo "Signing and verifying ${VERSION}"
-  "${sign_update}" appcast.xml.next
-  "${sign_update}" --verify appcast.xml.next
-  mv appcast.xml.next appcast.xml
+  "${sign_update}" appcast.next.xml
+  "${sign_update}" --verify appcast.next.xml
+  mv appcast.next.xml appcast.xml
 
   echo "Next: publish appcast.xml to the gh-pages branch (see RELEASING.md)."
 }
