@@ -142,6 +142,8 @@ Unsandboxed processes register and look up Mach services freely; v1 ships withou
 
 iMCP's `MessageService` uses `NSOpenPanel` + `withSecurityScopedAccess` to access `~/Library/Messages/chat.db` from inside the sandbox. Since v1 is unsandboxed, drop this entire pattern. Open the file directly under FDA. The `NSOpenPanel` flow re-emerges only if a future major version re-sandboxes.
 
+**Update (shipped):** the picker was built anyway. MessageService tries the default chat.db path first and falls back to an `NSOpenPanel` plus a stored security-scoped bookmark when that path is unreadable. The unsandboxed app does not need the scope, but TCC denies direct reads without Full Disk Access in practice, and the bookmark flow costs nothing.
+
 #### Tests
 
 iMCP ships zero tests. We change that day one. Swift Testing on macOS, unit tests for everything that doesn't touch the OS, integration tests behind `RUN_INTEGRATION_TESTS=1` against a dedicated test calendar/account.

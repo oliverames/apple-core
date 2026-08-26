@@ -61,7 +61,7 @@ VERSION=1.0.0 Scripts/release.sh push-tags  # push the tag (prompts for confirma
 
 Pushing the tag triggers `release.yml`, which re-runs CI as a gate and creates the GitHub release (using `docs/release-notes/vX.Y.Z.md` if present, otherwise auto-generated notes).
 
-If a signed/notarized DMG or zip was produced locally, attach it:
+If a signed/notarized zip was produced locally, attach it:
 
 ```bash
 VERSION=1.0.0 Scripts/release.sh upload

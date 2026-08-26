@@ -148,9 +148,10 @@ final class FilesystemService: Service {
                 {
                     slice.removeLast()
                 }
-                if let last = slice.last, last & 0b1110_0000 == 0b1100_0000
-                    || last & 0b1111_0000 == 0b1110_0000
-                    || last & 0b1111_1000 == 0b1111_0000
+                if let last = slice.last,
+                    last & 0b1110_0000 == 0b1100_0000
+                        || last & 0b1111_0000 == 0b1110_0000
+                        || last & 0b1111_1000 == 0b1111_0000
                 {
                     slice.removeLast()
                 }

@@ -189,13 +189,15 @@ final class MessageService: NSObject, Service, NSOpenSavePanelDelegate {
             case (let start?, let end?):
                 // Both bounds: normalize date-only values to local midnight.
                 let calendar = Calendar.current
-                dateRange = calendar.normalizedStartDate(
-                    from: start.date,
-                    isDateOnly: start.isDateOnly
-                ) ..< calendar.normalizedEndDate(
-                    from: end.date,
-                    isDateOnly: end.isDateOnly
-                )
+                dateRange =
+                    calendar.normalizedStartDate(
+                        from: start.date,
+                        isDateOnly: start.isDateOnly
+                    )
+                    ..< calendar.normalizedEndDate(
+                        from: end.date,
+                        isDateOnly: end.isDateOnly
+                    )
             case (nil, nil):
                 break
             default:

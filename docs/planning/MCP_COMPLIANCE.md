@@ -1,5 +1,7 @@
 # MCP Compliance Report
 
+> **Snapshot.** This records the 1.0.0 compliance verification of 2026-07-21; its tool counts reflect that build. Current source defines 112 tools: 106 in the standard build plus 6 WeatherKit tools excluded at compile time. Re-run the enumeration before citing these numbers against current code.
+
 Date: 2026-07-21. Installed server: Apple Core 1.0.0 (Streamable HTTP + SSE, bearer authentication). Verified against MCP revision **2025-06-18**, which the server negotiates during `initialize`:
 
 - Specification: https://modelcontextprotocol.io/specification/2025-06-18

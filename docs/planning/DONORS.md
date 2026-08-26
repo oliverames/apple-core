@@ -34,8 +34,8 @@ This doc consolidates the seven upstream MCP servers that contributed code, patt
 
 **Patterns we deliberately drop or replace:**
 
-- **Bonjour `_mcp._tcp` discovery** → replaced with `NSXPCConnection` over Mach service `com.oliverames.applecore.xpc` (BUILD_PLAN §1.2). The `NetworkTransport.swift` in Mattt's swift-sdk-pinned commit is exactly the file that fails to compile under Swift 6 strict concurrency — and it's the file we're deleting.
-- **Sandboxed access via `NSOpenPanel` + security-scoped bookmark for chat.db** (in `MessageService`) → unsandboxed v1 reads `~/Library/Messages/chat.db` directly (BUILD_PLAN §3.6).
+- **Bonjour `_mcp._tcp` discovery** → dropped with no IPC replacement. The planned `NSXPCConnection` swap over Mach service `com.oliverames.applecore.xpc` (BUILD_PLAN §1.2) never shipped either: §0a superseded it with a single-process HTTP/SSE serving shell ported from Bridgeport. There is no discovery and no second process.
+- **Sandboxed access via `NSOpenPanel` + security-scoped bookmark for chat.db** (in `MessageService`) → unsandboxed v1 reads `~/Library/Messages/chat.db` directly (BUILD_PLAN §3.6). *Shipped update:* the picker-plus-bookmark flow returned anyway — TCC denies direct chat.db reads without Full Disk Access, so MessageService tries direct access first and falls back to the panel plus a stored bookmark.
 - **Sparkle appcast at `downloads.imcp.app/appcast.xml`** → not in v1 distribution (no auto-update for personal use).
 
 ---

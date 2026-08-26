@@ -31,7 +31,7 @@ Full architecture rationale, per-surface deep dives, and the build sequence are 
 
 ## Surfaces
 
-The standard build exposes 106 tools: Mail (28), Notes (21), Contacts (12), Reminders (7), Calendar (6), Utilities (6), Filesystem (5), Maps (5), Messages (5), Capture (4), Shortcuts (4), and Location (3). The five Filesystem tools stay hidden until you share a folder, so a fresh install advertises 101. Six WeatherKit tools remain entitlement-gated and are not part of the standard release build.
+The standard build exposes 106 tools: Mail (28), Notes (21), Contacts (12), Reminders (7), Calendar (6), Utilities (6), Filesystem (5), Maps (5), Messages (5), Capture (4), Shortcuts (4), and Location (3). Surfaces start off except Maps and Utilities, so a fresh install advertises 11 tools until you enable more during onboarding or in Settings. The five Filesystem tools additionally stay hidden until you share a folder, and six WeatherKit tools are excluded from every current build because their `WEATHERKIT_AVAILABLE` compilation condition is never set.
 
 The Filesystem surface reports itself inactive and exposes nothing until you share a folder with it in Settings, so a fresh install has no filesystem access at all.
 
