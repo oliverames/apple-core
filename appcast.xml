@@ -7,6 +7,109 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <description>Updates for Apple Core - a native macOS MCP server for Apple services</description>
     <language>en</language>
     <item>
+      <title>Version 1.1.0</title>
+      <link>https://github.com/oliverames/apple-core/releases/tag/v1.1.0</link>
+      <sparkle:version>12</sparkle:version>
+      <sparkle:shortVersionString>1.1.0</sparkle:shortVersionString>
+      <description><![CDATA[
+<style>
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Helvetica, Arial, sans-serif;
+    font-size: 13px;
+    line-height: 1.55;
+    color: #1d1d1f;
+    margin: 0;
+    padding: 0;
+}
+h1, h2, h3 { color: #000; font-weight: 600; }
+h1 { font-size: 18px; margin: 0 0 10px 0; }
+h2 {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    color: #6e6e73;
+    margin: 18px 0 6px 0;
+}
+h3 { font-size: 13px; margin: 14px 0 6px 0; }
+p { margin: 0 0 10px 0; }
+ul, ol { padding-left: 20px; margin: 0 0 10px 0; }
+li { margin-bottom: 5px; }
+li > strong:first-child { color: #000; }
+code {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    background: #f2f2f7;
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-size: 12px;
+}
+a { color: #0071e3; text-decoration: none; }
+a:hover { text-decoration: underline; }
+hr { border: 0; border-top: 1px solid #e5e5ea; margin: 16px 0; }
+@media (prefers-color-scheme: dark) {
+    body { color: #f5f5f7; }
+    h1, h2, h3, li > strong:first-child { color: #fff; }
+    h2 { color: #98989d; }
+    code { background: #2c2c2e; }
+    hr { border-top-color: #38383a; }
+}
+</style>
+<h1>Apple Core 1.1.0</h1>
+<p>Apple Core 1.1.0 grows the standard build from 77 tools to 106, adds a Filesystem surface bounded by the folders you share with it, and replaces the six-pane settings window with guided onboarding and three panes. It also carries an audit and adversarial review pass that repaired the server lifecycle, the connection approval flow, and several security edges.</p>
+<h2>New surfaces and tools</h2>
+<ul>
+<li><strong>Filesystem (5 tools)</strong>: <code class="notranslate">filesystem_roots</code>, <code class="notranslate">filesystem_list</code>, <code class="notranslate">filesystem_read</code>, <code class="notranslate">filesystem_write</code>, and <code class="notranslate">filesystem_search</code>, restricted to an explicit allowlist of folders you share in Settings. The surface reports itself inactive and exposes nothing until you share a folder, so a fresh install has no filesystem access at all.</li>
+<li><strong>Messages (5 tools)</strong>: a direct <code class="notranslate">chat.db</code> reader replaces the blocked AppleScript path and unblocks attachment listing and per-chat filtering.</li>
+<li><strong>Contacts (12 tools)</strong>: contact groups are readable and writable, and contact writes now cover the fields earlier builds could only read.</li>
+<li><strong>Reminders (7 tools)</strong>: list sections are readable through a read-only store reader.</li>
+<li><strong>Calendar (6 tools)</strong>: events carry attendees, and every tool sits under a single <code class="notranslate">calendar_</code> prefix.</li>
+<li><strong>Utilities (6 tools)</strong>: promoted from one placeholder tool to beep, notify, clipboard read, clipboard write, open URL, and system info.</li>
+<li><strong>Shortcuts (4 tools)</strong>: folders, shortcut identifiers, file input, output paths, and output types are all reachable. File arguments resolve through the same shared-folder allowlist the Filesystem surface uses, so a shortcut cannot reach outside it.</li>
+<li><strong>Capture (4 tools)</strong>: <code class="notranslate">capture_list_windows</code> makes displays and windows discoverable. Window and display capture accepted identifiers before this release but offered no way to learn one, so only whole-screen capture was reachable in practice. Capture also now says when the screen is locked instead of reporting no displays.</li>
+<li><strong>Maps</strong>: <code class="notranslate">maps_directions</code> reports distance and travel time, requests alternate routes, and respects departure and arrival times rather than always calculating against now. Its response shape changed, because the schema.org Trip type had nowhere to put those values.</li>
+<li><strong>Mail (28 tools) and Notes (21 tools)</strong> round out the standard build.</li>
+</ul>
+<p>Surfaces start off except Maps and Utilities, so a fresh install advertises 11 tools until you enable more during onboarding or in Settings.</p>
+<h2>Setup and settings</h2>
+<ul>
+<li><strong>Guided onboarding</strong>: a first-run sheet walks through macOS permissions, the surfaces you want, and connecting your first client.</li>
+<li><strong>Three panes instead of six</strong>: Services, Access, and Clients. Server internals and repair actions moved into a Diagnostics sheet.</li>
+<li><strong>One switch per surface</strong>: the separate per-service Remote toggle is gone. A surface you enable is reachable wherever Apple Core is currently served, and remote requests always authenticate. Access is never anonymous.</li>
+<li><strong><code class="notranslate">cloudflared</code> installs from inside the app</strong>, and Cloudflare account setup is guided instead of assumed.</li>
+</ul>
+<h2>Security</h2>
+<ul>
+<li><strong>Sparkle updated to 2.9.6</strong>, which hardens delta patching against a symbolic link at the destination path, hardens how the installer moves the download archive, and rejects package installs whose signature fails validation.</li>
+<li><strong>Query-string token authentication is removed.</strong> Simplifying the settings window took away the switch that controlled it while the server kept honoring the setting, leaving an active downgrade that nothing in the app could turn off. A bearer token in a URL leaks into server logs, proxy logs, browser history, and Referer headers, so it is gone rather than restored. Send the token in the <code class="notranslate">Authorization</code> header.</li>
+<li><strong>The filesystem gate refuses dangling symlinks</strong> at the final path component. Such a link previously read as a not-yet-created file, and the out-of-process writer downstream followed it wherever it pointed.</li>
+<li><strong>OAuth access tokens validate against the canonical <code class="notranslate">&lt;issuer&gt;/mcp</code> resource</strong> on every MCP route, so the legacy <code class="notranslate">/sse</code> and <code class="notranslate">/message</code> transports can authorize correctly.</li>
+<li><strong>Request bodies drain through a bounded reader</strong>, so an unauthenticated chunked request can no longer be buffered without limit.</li>
+<li><strong>Native clients may register reverse-domain private-use redirect URIs.</strong> Web redirects stay HTTPS-only and loopback callbacks stay local.</li>
+<li><strong>Reflected CORS responses carry <code class="notranslate">Vary: Origin</code></strong>, so a shared cache cannot answer one origin with another origin's <code class="notranslate">Access-Control-Allow-Origin</code>.</li>
+</ul>
+<h2>Fixes</h2>
+<ul>
+<li><strong>Integer arguments are accepted.</strong> JSON numbers without a decimal point decode as integers, while these tools declare a plain number, so integer coordinates were valid input that Weather rejected outright, Maps dropped region bias on, Calendar discarded proximity alarms for, and Capture replaced with defaults.</li>
+<li><strong>Starting the server stops any previous listener first</strong>, detects a bind failure, and reports it. Earlier builds could strand an orphaned port holder and show a green Running badge over a dead socket.</li>
+<li><strong>Approval dialogs are queued and shown one at a time.</strong> Concurrent clients used to overwrite each other's callbacks, dismiss each other's windows, and strand a client that could then never reconnect.</li>
+<li><strong>An approval dialog whose client gives up now resolves itself</strong>, closes, and presents whatever is queued behind it, instead of staying on screen with no live connection behind it.</li>
+<li><strong>Claude Desktop setup refuses to clobber an unreadable config.</strong> A <code class="notranslate">claude_desktop_config.json</code> that does not parse used to be replaced with an empty server map while the app promised existing servers were safe. The same protection now covers a corrupt Apple Core config.</li>
+<li><strong><code class="notranslate">messages_fetch</code> clamps its limit</strong> to a sane range, rejects a one-sided date pair instead of dropping it, and counts unread messages independently of the truncated page.</li>
+<li><strong>Calendar and Reminders creation fails loudly</strong> when the requested calendar or list does not exist or cannot be written, matching how the update paths already behaved.</li>
+<li><strong>Contact birthdays are validated when the argument arrives</strong>, rather than failing later with an opaque framework error.</li>
+<li><strong>The bundled CLI recovers a lost session</strong> by clearing the stored <code class="notranslate">Mcp-Session-Id</code> on a 404 and returning a JSON-RPC error, instead of replaying a dead session header forever.</li>
+<li><strong><code class="notranslate">shortcuts list</code> can no longer deadlock a call.</strong> Output is drained while the process terminates, under a 60 second timeout.</li>
+</ul>
+<h2>Upgrading</h2>
+<p>1.0.3 and later update automatically. Installs on 1.0.0 through 1.0.2 still need the one-time manual reinstall described in the <a href="v1.0.3.md">1.0.3 notes</a>, because their update signing key does not match the feed.</p>
+      ]]></description>
+      <pubDate>Wed, 26 Aug 2026 18:25:07 +0000</pubDate>
+      <enclosure url="https://github.com/oliverames/apple-core/releases/download/v1.1.0/Apple.Core-1.1.0.zip"
+                 length="9053921"
+                 type="application/octet-stream"
+                 sparkle:edSignature="/6yOUW/iXVzql0Iv4XZwZD6ZDQBmsNcMHl8tbNWGHHZzEEO5CKBuxhAMV9BjFAaPa83IY139VvfplreTFcMdAQ==" />
+      <sparkle:minimumSystemVersion>15.1</sparkle:minimumSystemVersion>
+    </item>
+    <item>
       <title>Version 1.0.8</title>
       <link>https://github.com/oliverames/apple-core/releases/tag/v1.0.8</link>
       <sparkle:version>11</sparkle:version>
@@ -595,6 +698,6 @@ hr { border: 0; border-top: 1px solid #e5e5ea; margin: 16px 0; }
     <!-- `Scripts/release.sh appcast` prepends signed release entries here. -->
   </channel>
 </rss><!-- sparkle-signatures:
-edSignature: X+U7Hr3BBWpV6T9gIHPUkzVf6xBXHCDpCZ0knfs81fKb5aIUTslhyjtQ0Sa6O54AuwcogZBiRn9PzzY89KatCQ==
-length: 31265
+edSignature: pEXxNnLhdzWcvG9LQVSlAyodrjw9sFxNG4dQoEwkZRTRp6yy+W9NW9FTJWM3lIjLtZf9jT8ollemzmtw7ynhBg==
+length: 41244
 -->
