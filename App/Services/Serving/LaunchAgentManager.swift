@@ -5,6 +5,10 @@
 
 import Foundation
 
+typealias LaunchAgentShellRunner = (_ executable: String, _ arguments: [String]) -> (
+    status: Int32, stdout: String, stderr: String
+)
+
 public struct LaunchAgentCommandResult: Sendable {
     public let status: Int32
     public let stdout: String
@@ -28,7 +32,11 @@ public enum LaunchAgentManager {
     }
 
     public static func isLoaded(label: String, uid: UInt32) -> Bool {
-        let result = runShell("/bin/launchctl", ["print", "gui/\(uid)/\(label)"])
+        isLoaded(label: label, uid: uid, run: runShell)
+    }
+
+    static func isLoaded(label: String, uid: UInt32, run: LaunchAgentShellRunner) -> Bool {
+        let result = run("/bin/launchctl", ["print", "gui/\(uid)/\(label)"])
         return result.status == 0
     }
 
@@ -87,6 +95,16 @@ public enum LaunchAgentManager {
     public static func bootstrap(label: String, uid: UInt32, plistURL: URL, attempts: Int = 5)
         -> LaunchAgentCommandResult
     {
+        bootstrap(label: label, uid: uid, plistURL: plistURL, attempts: attempts, run: runShell)
+    }
+
+    static func bootstrap(
+        label: String,
+        uid: UInt32,
+        plistURL: URL,
+        attempts: Int = 5,
+        run: LaunchAgentShellRunner
+    ) -> LaunchAgentCommandResult {
         let clampedAttempts = max(1, attempts)
         var lastResult = LaunchAgentCommandResult(
             status: -1,
@@ -94,11 +112,16 @@ public enum LaunchAgentManager {
             stderr: "launchctl bootstrap was not attempted"
         )
 
+        // `launchctl disable` persists across boots and prevents bootstrap
+        // from loading the job at all. The app's enabled configuration is the
+        // source of truth here, so clear any stale override before loading it.
+        _ = run("/bin/launchctl", ["enable", "gui/\(uid)/\(label)"])
+
         for attempt in 0 ..< clampedAttempts {
-            let result = commandResult(runShell("/bin/launchctl", ["bootstrap", "gui/\(uid)", plistURL.path]))
+            let result = commandResult(run("/bin/launchctl", ["bootstrap", "gui/\(uid)", plistURL.path]))
             lastResult = result
 
-            if result.succeeded || isLoaded(label: label, uid: uid)
+            if result.succeeded || isLoaded(label: label, uid: uid, run: run)
                 || result.stderr.localizedCaseInsensitiveContains("service is already loaded")
             {
                 return LaunchAgentCommandResult(status: 0, stdout: result.stdout, stderr: result.stderr)

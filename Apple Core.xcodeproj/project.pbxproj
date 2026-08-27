@@ -20,6 +20,8 @@
 		AC0000010000000000000040 /* ConnectionApprovalView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC000001000000000000003F /* ConnectionApprovalView.swift */; };
 		AC0000010000000000000042 /* MessagesParticipantMatcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC0000010000000000000041 /* MessagesParticipantMatcher.swift */; };
 		AC0000010000000000000043 /* MessagesParticipantMatcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC0000010000000000000041 /* MessagesParticipantMatcher.swift */; };
+		AC0000010000000000000044 /* LaunchAgentManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC0000010000000000000045 /* LaunchAgentManager.swift */; };
+		AC0000010000000000000046 /* ProcessShell.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC0000010000000000000047 /* ProcessShell.swift */; };
 		AC000001000000000000000D /* ServiceAccessPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC000001000000000000000E /* ServiceAccessPolicy.swift */; };
 		AC000001000000000000000F /* ServiceAccessPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC000001000000000000000E /* ServiceAccessPolicy.swift */; };
 		AC0000010000000000000011 /* AttachmentSaveDirectory.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC0000010000000000000012 /* AttachmentSaveDirectory.swift */; };
@@ -77,6 +79,8 @@
 		AC000001000000000000003C /* SensitiveTextSanitizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SensitiveTextSanitizer.swift; sourceTree = "<group>"; };
 		AC000001000000000000003F /* ConnectionApprovalView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ConnectionApprovalView.swift; path = App/Views/ConnectionApprovalView.swift; sourceTree = SOURCE_ROOT; };
 		AC0000010000000000000041 /* MessagesParticipantMatcher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessagesParticipantMatcher.swift; sourceTree = "<group>"; };
+		AC0000010000000000000045 /* LaunchAgentManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = LaunchAgentManager.swift; path = App/Services/Serving/LaunchAgentManager.swift; sourceTree = SOURCE_ROOT; };
+		AC0000010000000000000047 /* ProcessShell.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ProcessShell.swift; path = App/Services/Serving/ProcessShell.swift; sourceTree = SOURCE_ROOT; };
 		AC000001000000000000000E /* ServiceAccessPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServiceAccessPolicy.swift; sourceTree = "<group>"; };
 		AC0000010000000000000012 /* AttachmentSaveDirectory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachmentSaveDirectory.swift; sourceTree = "<group>"; };
 		AC0000010000000000000017 /* OAuthSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = OAuthSupport.swift; path = App/Services/Serving/OAuthSupport.swift; sourceTree = SOURCE_ROOT; };
@@ -169,6 +173,8 @@
 				F8F44EB72D5908D00075D79C /* CLI */,
 				AC0000010000000000000010 /* Shared */,
 				AC0000010000000000000017 /* OAuthSupport.swift */,
+				AC0000010000000000000045 /* LaunchAgentManager.swift */,
+				AC0000010000000000000047 /* ProcessShell.swift */,
 				AC000001000000000000003F /* ConnectionApprovalView.swift */,
 				AC0000010000000000000004 /* Tests */,
 				F8F44E6E2D59038D0075D79C /* Products */,
@@ -371,6 +377,8 @@
 				AC000001000000000000003E /* SensitiveTextSanitizer.swift in Sources */,
 				AC0000010000000000000040 /* ConnectionApprovalView.swift in Sources */,
 				AC0000010000000000000043 /* MessagesParticipantMatcher.swift in Sources */,
+				AC0000010000000000000044 /* LaunchAgentManager.swift in Sources */,
+				AC0000010000000000000046 /* ProcessShell.swift in Sources */,
 				AC000001000000000000000F /* ServiceAccessPolicy.swift in Sources */,
 				AC000001000000000000001A /* ServicePermissionInventory.swift in Sources */,
 			);
