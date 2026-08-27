@@ -4,9 +4,16 @@ import CoreFoundation
 import Foundation
 
 enum JSONRPCInboundMessage: Equatable {
-    case request(requestKey: String)
+    case request(requestKey: String, method: String)
     case notificationOrResponse
     case invalid
+
+    var canStartSession: Bool {
+        if case .request(_, let method) = self {
+            return method == "initialize"
+        }
+        return false
+    }
 }
 
 /// Builds a type-preserving dictionary key for a JSON-RPC request identifier.
@@ -36,12 +43,12 @@ enum JSONRPCRequestKey {
         }
 
         if object.keys.contains("method") {
-            guard object["method"] is String else { return .invalid }
+            guard let method = object["method"] as? String else { return .invalid }
             guard object.keys.contains("id") else { return .notificationOrResponse }
             guard let identifier = object["id"], let requestKey = from(identifier: identifier) else {
                 return .invalid
             }
-            return .request(requestKey: requestKey)
+            return .request(requestKey: requestKey, method: method)
         }
 
         guard let identifier = object["id"], from(identifier: identifier) != nil else {

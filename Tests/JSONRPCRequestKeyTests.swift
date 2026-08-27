@@ -18,12 +18,12 @@ struct JSONRPCRequestKeyTests {
         #expect(
             JSONRPCRequestKey.classifyInbound(
                 message: #"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#
-            ) == .request(requestKey: "number:1")
+            ) == .request(requestKey: "number:1", method: "initialize")
         )
         #expect(
             JSONRPCRequestKey.classifyInbound(
                 message: #"{"jsonrpc":"2.0","id":1.0,"method":"ping","params":{}}"#
-            ) == .request(requestKey: "number:1")
+            ) == .request(requestKey: "number:1", method: "ping")
         )
         #expect(
             JSONRPCRequestKey.classifyInbound(
@@ -50,5 +50,22 @@ struct JSONRPCRequestKeyTests {
         ] {
             #expect(JSONRPCRequestKey.classifyInbound(message: invalid) == .invalid)
         }
+    }
+
+    @Test("Only initialize requests may create a session")
+    func sessionCreationPolicy() {
+        let initialize = JSONRPCRequestKey.classifyInbound(
+            message: #"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#
+        )
+        let request = JSONRPCRequestKey.classifyInbound(
+            message: #"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}"#
+        )
+        let notification = JSONRPCRequestKey.classifyInbound(
+            message: #"{"jsonrpc":"2.0","method":"notifications/initialized"}"#
+        )
+
+        #expect(initialize.canStartSession)
+        #expect(!request.canStartSession)
+        #expect(!notification.canStartSession)
     }
 }

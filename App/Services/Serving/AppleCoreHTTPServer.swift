@@ -660,10 +660,16 @@ public actor AppleCoreHTTPServer {
             case .existing(let existing, _):
                 session = existing
             case .new(let newSurface):
+                guard message.canStartSession else {
+                    return Self.textResponse(
+                        .badRequest,
+                        "Only initialize requests can start an MCP session\n"
+                    )
+                }
                 (session, _) = try await makeSession(surface: newSurface)
             }
 
-            guard case .request(let requestId) = message else {
+            guard case .request(let requestId, _) = message else {
                 await session.writeToServer(bodyString)
                 var headers = HTTPHeaders()
                 headers[Self.sessionHeader] = session.id

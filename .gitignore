@@ -31,6 +31,9 @@ playground.xcworkspace
 
 .build/
 
+# LLVM coverage output
+*.profraw
+
 # Python integration helpers
 __pycache__/
 *.py[cod]
