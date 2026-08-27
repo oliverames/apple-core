@@ -25,7 +25,23 @@ build_app() {
 }
 
 open_app() {
-  /usr/bin/open -n "$APP_BUNDLE"
+  local open_arguments=(-n)
+  if [[ -n "${APPLECORE_CONFIG_HOME:+set}" ]]; then
+    open_arguments+=(--env "APPLECORE_CONFIG_HOME=$APPLECORE_CONFIG_HOME")
+  fi
+  /usr/bin/open "${open_arguments[@]}" "$APP_BUNDLE"
+}
+
+fresh_app_is_running() {
+  local command pid
+  while IFS= read -r pid; do
+    command="$(ps -p "$pid" -o command= 2>/dev/null || true)"
+    command="${command#"${command%%[![:space:]]*}"}"
+    if [[ "$command" == "$APP_BINARY" ]]; then
+      return 0
+    fi
+  done < <(pgrep -x "$APP_NAME" || true)
+  return 1
 }
 
 stop_running_app
@@ -49,12 +65,12 @@ case "$MODE" in
   --verify|verify)
     open_app
     for _ in {1..20}; do
-      if pgrep -x "$APP_NAME" >/dev/null; then
+      if fresh_app_is_running; then
         exit 0
       fi
       sleep 0.25
     done
-    echo "$APP_NAME did not remain running after launch." >&2
+    echo "$APP_NAME did not launch from $APP_BUNDLE. Another installed copy may be running." >&2
     exit 1
     ;;
   *)
