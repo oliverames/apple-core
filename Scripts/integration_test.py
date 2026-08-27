@@ -64,6 +64,22 @@ class MCPClient:
             raise RuntimeError(f"{name}: response is missing structuredContent")
         return result["structuredContent"]["result"]
 
+    def close(self) -> None:
+        if not self.session_id:
+            return
+        request = urllib.request.Request(
+            self.url,
+            headers={
+                "Authorization": f"Bearer {self.token}",
+                "Mcp-Session-Id": self.session_id,
+            },
+            method="DELETE",
+        )
+        with urllib.request.urlopen(request, timeout=15) as response:
+            if response.status not in {200, 202, 204}:
+                raise RuntimeError(f"Session cleanup returned HTTP {response.status}")
+        self.session_id = None
+
     def _post(self, payload: dict[str, Any]) -> tuple[str, Any]:
         headers = {
             "Authorization": f"Bearer {self.token}",
@@ -86,7 +102,9 @@ class MCPClient:
 def load_token() -> str:
     if token := os.environ.get("APPLE_CORE_TOKEN"):
         return token
-    config_path = Path.home() / ".config/apple-core/config.json"
+    config_home = os.environ.get("APPLECORE_CONFIG_HOME")
+    config_directory = Path(config_home).expanduser() if config_home else Path.home() / ".config/apple-core"
+    config_path = config_directory / "config.json"
     config = json.loads(config_path.read_text())
     token = config.get("token")
     if not token:
@@ -280,33 +298,45 @@ def main() -> int:
     args = parser.parse_args()
 
     client = MCPClient(args.url, load_token())
-    verify_enumeration(client, args.expected_tool_count)
-    if not args.writes:
+    primary_error: BaseException | None = None
+    try:
+        verify_enumeration(client, args.expected_tool_count)
+        if not args.writes:
+            return 0
+
+        if os.environ.get("APPLE_CORE_INTEGRATION_ACK") != SAFETY_ACK:
+            raise RuntimeError(f"Set APPLE_CORE_INTEGRATION_ACK={SAFETY_ACK} before running write tests")
+
+        suffix = uuid.uuid4().hex[:8]
+        test_mail_templates(client, suffix)
+
+        configured = 0
+        if calendar := os.environ.get("APPLE_CORE_TEST_CALENDAR"):
+            configured += 1
+            test_calendar(client, calendar, suffix)
+        if reminder_list := os.environ.get("APPLE_CORE_TEST_REMINDER_LIST"):
+            configured += 1
+            test_reminders(client, reminder_list, suffix)
+        if notes_account := os.environ.get("APPLE_CORE_TEST_NOTES_ACCOUNT"):
+            configured += 1
+            test_notes(client, notes_account, suffix)
+        if mail_account := os.environ.get("APPLE_CORE_TEST_MAIL_ACCOUNT"):
+            configured += 1
+            test_mailbox(client, mail_account, suffix)
+
+        if configured == 0:
+            print("PASS local template writes; no disposable Apple containers were configured")
         return 0
-
-    if os.environ.get("APPLE_CORE_INTEGRATION_ACK") != SAFETY_ACK:
-        raise RuntimeError(f"Set APPLE_CORE_INTEGRATION_ACK={SAFETY_ACK} before running write tests")
-
-    suffix = uuid.uuid4().hex[:8]
-    test_mail_templates(client, suffix)
-
-    configured = 0
-    if calendar := os.environ.get("APPLE_CORE_TEST_CALENDAR"):
-        configured += 1
-        test_calendar(client, calendar, suffix)
-    if reminder_list := os.environ.get("APPLE_CORE_TEST_REMINDER_LIST"):
-        configured += 1
-        test_reminders(client, reminder_list, suffix)
-    if notes_account := os.environ.get("APPLE_CORE_TEST_NOTES_ACCOUNT"):
-        configured += 1
-        test_notes(client, notes_account, suffix)
-    if mail_account := os.environ.get("APPLE_CORE_TEST_MAIL_ACCOUNT"):
-        configured += 1
-        test_mailbox(client, mail_account, suffix)
-
-    if configured == 0:
-        print("PASS local template writes; no disposable Apple containers were configured")
-    return 0
+    except BaseException as error:
+        primary_error = error
+        raise
+    finally:
+        try:
+            client.close()
+        except (OSError, RuntimeError) as cleanup_error:
+            if primary_error is None:
+                raise
+            print(f"WARN session cleanup after test failure: {cleanup_error}", file=sys.stderr)
 
 
 if __name__ == "__main__":
