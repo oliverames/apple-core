@@ -22,6 +22,11 @@ struct JSONRPCRequestKeyTests {
         )
         #expect(
             JSONRPCRequestKey.classifyInbound(
+                message: #"{"jsonrpc":"2.0","id":1.0,"method":"ping","params":{}}"#
+            ) == .request(requestKey: "number:1")
+        )
+        #expect(
+            JSONRPCRequestKey.classifyInbound(
                 message: #"{"jsonrpc":"2.0","method":"notifications/initialized"}"#
             ) == .notificationOrResponse
         )
@@ -38,6 +43,8 @@ struct JSONRPCRequestKeyTests {
             #"{"id":1,"method":"ping"}"#,
             #"{"jsonrpc":"2.0","id":null,"method":"ping"}"#,
             #"{"jsonrpc":"2.0","id":true,"method":"ping"}"#,
+            #"{"jsonrpc":"2.0","id":1.5,"method":"ping"}"#,
+            #"{"jsonrpc":"2.0","id":9223372036854775808,"method":"ping"}"#,
             #"{"jsonrpc":"2.0","id":1}"#,
             #"{"jsonrpc":"2.0","id":1,"result":{},"error":{}}"#,
         ] {

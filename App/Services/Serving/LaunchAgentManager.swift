@@ -72,9 +72,18 @@ public enum LaunchAgentManager {
 
     @discardableResult
     public static func bootout(label: String, uid: UInt32, plistURL: URL? = nil) -> LaunchAgentCommandResult {
-        let labelResult = commandResult(runShell("/bin/launchctl", ["bootout", "gui/\(uid)/\(label)"]))
+        bootout(label: label, uid: uid, plistURL: plistURL, run: runShell)
+    }
+
+    static func bootout(
+        label: String,
+        uid: UInt32,
+        plistURL: URL? = nil,
+        run: LaunchAgentShellRunner
+    ) -> LaunchAgentCommandResult {
+        let labelResult = commandResult(run("/bin/launchctl", ["bootout", "gui/\(uid)/\(label)"]))
         if labelResult.succeeded {
-            waitUntilUnloaded(label: label, uid: uid)
+            waitUntilUnloaded(label: label, uid: uid, run: run)
             return labelResult
         }
 
@@ -82,9 +91,9 @@ public enum LaunchAgentManager {
             return labelResult
         }
 
-        let plistResult = commandResult(runShell("/bin/launchctl", ["bootout", "gui/\(uid)", plistURL.path]))
+        let plistResult = commandResult(run("/bin/launchctl", ["bootout", "gui/\(uid)", plistURL.path]))
         if plistResult.succeeded {
-            waitUntilUnloaded(label: label, uid: uid)
+            waitUntilUnloaded(label: label, uid: uid, run: run)
             return plistResult
         }
 
@@ -137,10 +146,29 @@ public enum LaunchAgentManager {
 
     @discardableResult
     public static func restart(label: String, uid: UInt32, plistURL: URL) -> LaunchAgentCommandResult {
-        if isLoaded(label: label, uid: uid) {
-            bootout(label: label, uid: uid, plistURL: plistURL)
+        restart(label: label, uid: uid, plistURL: plistURL, run: runShell)
+    }
+
+    static func restart(
+        label: String,
+        uid: UInt32,
+        plistURL: URL,
+        run: LaunchAgentShellRunner
+    ) -> LaunchAgentCommandResult {
+        if isLoaded(label: label, uid: uid, run: run) {
+            let bootoutResult = bootout(label: label, uid: uid, plistURL: plistURL, run: run)
+            if isLoaded(label: label, uid: uid, run: run) {
+                if !bootoutResult.succeeded {
+                    return bootoutResult
+                }
+                return LaunchAgentCommandResult(
+                    status: -1,
+                    stdout: bootoutResult.stdout,
+                    stderr: "launchctl reported success, but \(label) is still loaded"
+                )
+            }
         }
-        return bootstrap(label: label, uid: uid, plistURL: plistURL)
+        return bootstrap(label: label, uid: uid, plistURL: plistURL, run: run)
     }
 
     private static func commandResult(_ result: (status: Int32, stdout: String, stderr: String))
@@ -149,9 +177,9 @@ public enum LaunchAgentManager {
         LaunchAgentCommandResult(status: result.status, stdout: result.stdout, stderr: result.stderr)
     }
 
-    private static func waitUntilUnloaded(label: String, uid: UInt32) {
+    private static func waitUntilUnloaded(label: String, uid: UInt32, run: LaunchAgentShellRunner = runShell) {
         for attempt in 0 ..< 5 {
-            if !isLoaded(label: label, uid: uid) {
+            if !isLoaded(label: label, uid: uid, run: run) {
                 return
             }
 

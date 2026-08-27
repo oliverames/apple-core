@@ -2,6 +2,10 @@
 set -euo pipefail
 
 APP_NAME="${APP_NAME:-Apple Core}"
+APP_BUNDLE_IS_EXPLICIT="0"
+if [[ -n "${APP_BUNDLE:-}" ]]; then
+  APP_BUNDLE_IS_EXPLICIT="1"
+fi
 APP_BUNDLE="${APP_BUNDLE:-${APP_NAME}.app}"
 KEYCHAIN_PROFILE="${KEYCHAIN_PROFILE:-notarytool-profile}"
 GITHUB_REPOSITORY="${GITHUB_REPOSITORY:-oliverames/apple-core}"
@@ -45,7 +49,7 @@ Commands:
   staple      Staple the notarization ticket to the app bundle
   appcast     Sign the release zip (Sparkle EdDSA) and add an item to appcast.xml
   commit      Commit version bump and create release tag
-  push-tags   Push the requested release tag to origin (asks for confirmation)
+  push-tags   Push the release commit and requested tag to origin (asks for confirmation)
   release     Create a GitHub release (no assets)
   upload      Upload the release asset to GitHub
   help        Show this help
@@ -76,6 +80,10 @@ EOF
 
 # If APP_BUNDLE isn't explicit, derive the built app path from Xcode settings.
 resolve_app_bundle() {
+  if [[ "${APP_BUNDLE_IS_EXPLICIT}" == "1" ]]; then
+    return 0
+  fi
+
   resolve_exported_app || true
   if [[ -d "${APP_BUNDLE}" ]]; then
     return 0
@@ -344,7 +352,9 @@ export_app() {
   write_export_options
   echo "Exporting Developer ID app to ${EXPORT_DIR}"
   xcodebuild -quiet -exportArchive -archivePath "${ARCHIVE_PATH}" -exportPath "${EXPORT_DIR}" -exportOptionsPlist "${EXPORT_OPTIONS_PLIST}"
-  resolve_app_bundle
+  if [[ "${APP_BUNDLE_IS_EXPLICIT}" != "1" ]]; then
+    resolve_exported_app
+  fi
 }
 
 notarize() {
@@ -548,19 +558,30 @@ commit_and_tag() {
 
 push_tags() {
   require_version
-  local tag
+  local branch head_commit tag tag_commit
   tag="$(release_tag)"
   if ! git rev-parse --verify "refs/tags/${tag}" >/dev/null 2>&1; then
     echo "Missing tag: ${tag}" >&2
     exit 1
   fi
-  local response=""
-  read -r -p "Push tags to origin? [y/N] " response
-  if [[ "${response}" != "y" && "${response}" != "Y" ]]; then
-    echo "Tag push cancelled."
+  branch="$(git branch --show-current)"
+  if [[ "${branch}" != "main" && "${branch}" != "master" ]]; then
+    echo "Release publishing requires main or master; current branch: ${branch:-detached HEAD}" >&2
     exit 1
   fi
-  git push origin "${tag}"
+  head_commit="$(git rev-parse HEAD)"
+  tag_commit="$(git rev-parse "${tag}^{commit}")"
+  if [[ "${tag_commit}" != "${head_commit}" ]]; then
+    echo "Release tag ${tag} does not point at the current ${branch} commit." >&2
+    exit 1
+  fi
+  local response=""
+  read -r -p "Push ${branch} and ${tag} to origin? [y/N] " response
+  if [[ "${response}" != "y" && "${response}" != "Y" ]]; then
+    echo "Release push cancelled."
+    exit 1
+  fi
+  git push --atomic origin "${branch}" "${tag}"
 }
 
 create_release() {

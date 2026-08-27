@@ -104,7 +104,9 @@ final class ServingSettingsModel: ObservableObject {
     }
 
     var localBaseURL: String {
-        "http://\(bindHost.isEmpty ? "127.0.0.1" : bindHost):\(port)"
+        let host = bindHost.isEmpty ? "127.0.0.1" : bindHost
+        let authority = host.contains(":") && !host.hasPrefix("[") ? "[\(host)]" : host
+        return "http://\(authority):\(port)"
     }
 
     var publicBaseURL: String {

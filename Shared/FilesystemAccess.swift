@@ -36,6 +36,7 @@ public enum FilesystemAccessError: LocalizedError, Equatable {
     case rootNotWritable(String)
     case notFound(String)
     case danglingSymlink(String)
+    case retargetedRoot(String)
 
     public var errorDescription: String? {
         switch self {
@@ -51,6 +52,9 @@ public enum FilesystemAccessError: LocalizedError, Equatable {
         case let .danglingSymlink(path):
             return
                 "\(path) is a broken symbolic link. Apple Core refuses to create files through one, because it cannot tell where the write would land."
+        case let .retargetedRoot(path):
+            return
+                "The shared folder at \(path) is now a symbolic link. Remove it from Settings and share the intended folder again."
         }
     }
 }
@@ -85,11 +89,32 @@ public enum FilesystemAccess {
         requiringWrite: Bool,
         fileManager: FileManager = .default
     ) throws -> URL {
-        let usableRoots = requiringWrite ? roots.filter(\.writable) : roots
         guard !roots.isEmpty else { throw FilesystemAccessError.noRootsConfigured }
 
         let expanded = URL(fileURLWithPath: NSString(string: path).expandingTildeInPath)
             .standardizedFileURL
+
+        // Settings stores a symlink-resolved root. If that literal path later
+        // resolves somewhere else, the folder was replaced or an ancestor was
+        // retargeted after approval. Never silently move the allowlist with it.
+        let stableRoots = roots.filter { root in
+            let approvedPath = URL(fileURLWithPath: NSString(string: root.path).expandingTildeInPath)
+                .standardizedFileURL.path
+            let isStable = canonicalize(approvedPath) == approvedPath
+            if !isStable, isContained(expanded.path, in: approvedPath) {
+                return false
+            }
+            return isStable
+        }
+        if let retargeted = roots.first(where: { root in
+            let approvedPath = URL(fileURLWithPath: NSString(string: root.path).expandingTildeInPath)
+                .standardizedFileURL.path
+            return canonicalize(approvedPath) != approvedPath
+                && isContained(expanded.path, in: approvedPath)
+        }) {
+            throw FilesystemAccessError.retargetedRoot(retargeted.path)
+        }
+        let usableRoots = requiringWrite ? stableRoots.filter(\.writable) : stableRoots
 
         // A file being created does not exist yet, so canonicalize its parent
         // and re-attach the final component. Without this, every write would
@@ -120,7 +145,7 @@ public enum FilesystemAccess {
         // Distinguish "not shared at all" from "shared read-only", because the
         // two have different fixes and the second is easy to mistake for a bug.
         if requiringWrite,
-            roots.contains(where: { isContained(canonical, in: canonicalize($0.path)) })
+            stableRoots.contains(where: { isContained(canonical, in: canonicalize($0.path)) })
         {
             throw FilesystemAccessError.rootNotWritable(canonical)
         }

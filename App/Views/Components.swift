@@ -118,6 +118,7 @@ struct EditorFooter: View {
     let confirmTitle: String
     var cancelTitle: String = "Cancel"
     var showsCancel: Bool = true
+    var canCancel: Bool = true
     var canConfirm: Bool = true
     let onCancel: () -> Void
     let onConfirm: () -> Void
@@ -129,6 +130,7 @@ struct EditorFooter: View {
                 if showsCancel {
                     Button(cancelTitle, action: onCancel)
                         .keyboardShortcut(.cancelAction)
+                        .disabled(!canCancel)
                 }
                 Spacer()
                 Button(confirmTitle, action: onConfirm)

@@ -154,7 +154,9 @@ struct DiagnosticsView: View {
         } header: {
             SectionHeader(title: "Repair", subtitle: "For when something above is wrong.")
         } footer: {
-            TipFooter(text: "Rotating the token disconnects every client until each one is given the new one.")
+            TipFooter(
+                text: "Rotating the bearer token disconnects clients that use it. OAuth clients stay signed in."
+            )
         }
     }
 

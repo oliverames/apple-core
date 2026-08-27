@@ -26,6 +26,21 @@ final class CaptureService: NSObject, Service {
         photoDelegateLock.withLock { _ = photoDelegates.removeValue(forKey: requestID) }
     }
 
+    private static func captureIdentifier(_ value: Value?, named name: String) throws -> UInt32? {
+        guard let value else { return nil }
+        guard let rawValue = Int(value, strict: false), let identifier = NumericArgument.uint32(rawValue) else {
+            throw NSError(
+                domain: "CaptureServiceError",
+                code: 22,
+                userInfo: [
+                    NSLocalizedDescriptionKey:
+                        "\(name) must be a whole number between 0 and 4294967295"
+                ]
+            )
+        }
+        return identifier
+    }
+
     override init() {
         super.init()
         log.debug("Initializing capture service")
@@ -201,7 +216,14 @@ final class CaptureService: NSObject, Service {
                     rawValue: arguments["format"]?.stringValue ?? ImageFormat.default.rawValue
                 )
                 ?? .jpeg
-            let quality = arguments["quality"]?.doubleCoerced ?? 0.8
+            let requestedQuality = arguments["quality"]?.doubleCoerced ?? 0.8
+            guard let quality = NumericArgument.clampedDouble(requestedQuality, to: 0 ... 1) else {
+                throw NSError(
+                    domain: "CaptureServiceError",
+                    code: 2,
+                    userInfo: [NSLocalizedDescriptionKey: "JPEG quality must be a finite number"]
+                )
+            }
             let preset =
                 SessionPreset(
                     rawValue: arguments["preset"]?.stringValue ?? SessionPreset.default.rawValue
@@ -387,7 +409,14 @@ final class CaptureService: NSObject, Service {
                     rawValue: arguments["format"]?.stringValue ?? AudioFormat.default.rawValue
                 )
                 ?? .mp4
-            let duration = arguments["duration"].flatMap { Double($0) } ?? 10.0
+            let requestedDuration = arguments["duration"]?.doubleCoerced ?? 10.0
+            guard let duration = NumericArgument.clampedDouble(requestedDuration, to: 1 ... 300) else {
+                throw NSError(
+                    domain: "CaptureServiceError",
+                    code: 12,
+                    userInfo: [NSLocalizedDescriptionKey: "Recording duration must be a finite number"]
+                )
+            }
             let quality = arguments["quality"]?.stringValue ?? "medium"
 
             let tempURL = URL(fileURLWithPath: NSTemporaryDirectory())
@@ -459,13 +488,15 @@ final class CaptureService: NSObject, Service {
                         default: .string(ScreenCaptureQuality.default.rawValue),
                         enum: ScreenCaptureQuality.allCases.map { .string($0.rawValue) }
                     ),
-                    "displayId": .number(
+                    "displayId": .integer(
                         description: "Display ID for display capture (optional)",
-                        minimum: 0
+                        minimum: 0,
+                        maximum: Int(UInt32.max)
                     ),
-                    "windowId": .number(
+                    "windowId": .integer(
                         description: "Window ID for window capture (optional)",
-                        minimum: 0
+                        minimum: 0,
+                        maximum: Int(UInt32.max)
                     ),
                     "bundleId": .string(
                         description: "Bundle ID for application capture (optional)"
@@ -504,8 +535,8 @@ final class CaptureService: NSObject, Service {
                 ) ?? .medium
             let includesCursor = arguments["includesCursor"]?.boolValue ?? true
 
-            let displayId = arguments["displayId"]?.intValue.map { CGDirectDisplayID($0) }
-            let windowId = arguments["windowId"]?.intValue.map { CGWindowID($0) }
+            let displayId = try Self.captureIdentifier(arguments["displayId"], named: "displayId")
+            let windowId = try Self.captureIdentifier(arguments["windowId"], named: "windowId")
             let bundleId = arguments["bundleId"]?.stringValue
 
             // Get available content

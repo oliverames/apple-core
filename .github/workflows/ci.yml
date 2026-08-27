@@ -28,6 +28,11 @@ jobs:
             - name: Checkout code
               uses: actions/checkout@v6
 
+            - name: Record runner image version
+              id: runner-image
+              shell: bash
+              run: printf 'version=%s\n' "${ImageVersion:-unknown}" >> "${GITHUB_OUTPUT}"
+
             - name: Cache Xcode build artifacts
               uses: actions/cache@v5
               with:
@@ -42,9 +47,9 @@ jobs:
                   # exit 65 even on a docs-only commit. This blocked the v1.0.5 release
                   # gate on 2026-07-30. restore-keys carries it too, so a new image can
                   # never fall back to a previous image's module cache.
-                  key: ${{ runner.os }}-xcode-${{ matrix.xcode }}-img${{ env.ImageVersion }}-derived-${{ hashFiles('**/Package.resolved') }}
+                  key: ${{ runner.os }}-xcode-${{ matrix.xcode }}-img${{ steps.runner-image.outputs.version }}-derived-${{ hashFiles('**/Package.resolved') }}
                   restore-keys: |
-                      ${{ runner.os }}-xcode-${{ matrix.xcode }}-img${{ env.ImageVersion }}-derived-
+                      ${{ runner.os }}-xcode-${{ matrix.xcode }}-img${{ steps.runner-image.outputs.version }}-derived-
 
             - name: Lint
               run: swift format lint --strict --recursive .

@@ -156,4 +156,40 @@ struct OAuthSupportTests {
         #expect(registry.clients.count == 256)
         #expect(!registry.clients.contains { $0.clientID == firstClientID })
     }
+
+    @Test("Duplicate persisted client IDs do not crash startup")
+    func duplicatePersistedClientIDsUseLastRecord() async throws {
+        struct Registry: Encodable {
+            let clients: [OAuthRegisteredClient]
+        }
+
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let registryURL = root.appendingPathComponent("oauth_clients.json")
+        let clientID = "ames_duplicate-client"
+        let registry = Registry(
+            clients: [
+                OAuthRegisteredClient(
+                    clientID: clientID,
+                    clientName: "Old name",
+                    redirectURIs: ["http://localhost/old"],
+                    issuedAt: 1
+                ),
+                OAuthRegisteredClient(
+                    clientID: clientID,
+                    clientName: "Current name",
+                    redirectURIs: ["http://localhost/current"],
+                    issuedAt: 2
+                ),
+            ]
+        )
+        try JSONEncoder().encode(registry).write(to: registryURL, options: .atomic)
+
+        let store = OAuthTokenStore(clientRegistryURL: registryURL)
+        let loaded = try #require(await store.client(id: clientID))
+        #expect(loaded.clientName == "Current name")
+        #expect(loaded.redirectURIs == ["http://localhost/current"])
+    }
 }

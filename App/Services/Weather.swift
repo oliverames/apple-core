@@ -11,6 +11,22 @@ final class WeatherService: Service {
 
     private let weatherService = WeatherKit.WeatherService.shared
 
+    private static func location(from arguments: [String: Value]) throws -> CLLocation {
+        guard let requestedLatitude = arguments["latitude"]?.doubleCoerced,
+            let requestedLongitude = arguments["longitude"]?.doubleCoerced,
+            let latitude = NumericArgument.validatedDouble(requestedLatitude, in: -90 ... 90),
+            let longitude = NumericArgument.validatedDouble(requestedLongitude, in: -180 ... 180)
+        else {
+            log.error("Invalid coordinates")
+            throw NSError(
+                domain: "WeatherServiceError",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Latitude must be -90 through 90 and longitude -180 through 180"]
+            )
+        }
+        return CLLocation(latitude: latitude, longitude: longitude)
+    }
+
     var tools: [Tool] {
         Tool(
             name: "weather_current",
@@ -18,8 +34,8 @@ final class WeatherService: Service {
                 "Get current weather for a location",
             inputSchema: .object(
                 properties: [
-                    "latitude": .number(),
-                    "longitude": .number(),
+                    "latitude": .number(minimum: -90, maximum: 90),
+                    "longitude": .number(minimum: -180, maximum: 180),
                 ],
                 required: ["latitude", "longitude"],
                 additionalProperties: false
@@ -30,18 +46,7 @@ final class WeatherService: Service {
                 openWorldHint: true
             )
         ) { arguments in
-            guard let latitude = arguments["latitude"]?.doubleCoerced,
-                let longitude = arguments["longitude"]?.doubleCoerced
-            else {
-                log.error("Invalid coordinates")
-                throw NSError(
-                    domain: "WeatherServiceError",
-                    code: 1,
-                    userInfo: [NSLocalizedDescriptionKey: "Invalid coordinates"]
-                )
-            }
-
-            let location = CLLocation(latitude: latitude, longitude: longitude)
+            let location = try Self.location(from: arguments)
             let currentWeather = try await self.weatherService.weather(
                 for: location,
                 including: .current
@@ -55,8 +60,8 @@ final class WeatherService: Service {
             description: "Get daily weather forecast for a location",
             inputSchema: .object(
                 properties: [
-                    "latitude": .number(),
-                    "longitude": .number(),
+                    "latitude": .number(minimum: -90, maximum: 90),
+                    "longitude": .number(minimum: -180, maximum: 180),
                     "days": .integer(
                         description: "Number of forecast days (max 10)",
                         default: 7,
@@ -73,26 +78,17 @@ final class WeatherService: Service {
                 openWorldHint: true
             )
         ) { arguments in
-            guard let latitude = arguments["latitude"]?.doubleCoerced,
-                let longitude = arguments["longitude"]?.doubleCoerced
-            else {
-                log.error("Invalid coordinates")
-                throw NSError(
-                    domain: "WeatherServiceError",
-                    code: 1,
-                    userInfo: [NSLocalizedDescriptionKey: "Invalid coordinates"]
-                )
+            let days: Int
+            switch arguments["days"] {
+            case let .int(daysRequested):
+                days = NumericArgument.clampedInt(daysRequested, to: 1 ... 10)
+            case let .double(daysRequested):
+                days = NumericArgument.clampedInt(daysRequested, to: 1 ... 10) ?? 7
+            default:
+                days = 7
             }
 
-            var days: Int = 7
-            if case let .int(daysRequested) = arguments["days"] {
-                days = daysRequested
-            } else if case let .double(daysRequested) = arguments["days"] {
-                days = Int(daysRequested)
-            }
-            days = days.clamped(to: 1 ... 10)
-
-            let location = CLLocation(latitude: latitude, longitude: longitude)
+            let location = try Self.location(from: arguments)
             let dailyForecast = try await self.weatherService.weather(
                 for: location,
                 including: .daily
@@ -106,8 +102,8 @@ final class WeatherService: Service {
             description: "Get hourly weather forecast for a location",
             inputSchema: .object(
                 properties: [
-                    "latitude": .number(),
-                    "longitude": .number(),
+                    "latitude": .number(minimum: -90, maximum: 90),
+                    "longitude": .number(minimum: -180, maximum: 180),
                     "hours": .integer(
                         description: "Number of hours to forecast",
                         default: 24,
@@ -124,28 +120,17 @@ final class WeatherService: Service {
                 openWorldHint: true
             )
         ) { arguments in
-            guard let latitude = arguments["latitude"]?.doubleCoerced,
-                let longitude = arguments["longitude"]?.doubleCoerced
-            else {
-                log.error("Invalid coordinates")
-                throw NSError(
-                    domain: "WeatherServiceError",
-                    code: 1,
-                    userInfo: [NSLocalizedDescriptionKey: "Invalid coordinates"]
-                )
-            }
-
             let hours: Int
             switch arguments["hours"] {
             case let .int(hoursRequested):
-                hours = min(240, max(1, hoursRequested))
+                hours = NumericArgument.clampedInt(hoursRequested, to: 1 ... 240)
             case let .double(hoursRequested):
-                hours = Int(min(240, max(1, hoursRequested)))
+                hours = NumericArgument.clampedInt(hoursRequested, to: 1 ... 240) ?? 24
             default:
                 hours = 24
             }
 
-            let location = CLLocation(latitude: latitude, longitude: longitude)
+            let location = try Self.location(from: arguments)
             let hourlyForecasts = try await self.weatherService.weather(
                 for: location,
                 including: .hourly
@@ -159,8 +144,8 @@ final class WeatherService: Service {
             description: "Get minute-by-minute weather forecast for a location",
             inputSchema: .object(
                 properties: [
-                    "latitude": .number(),
-                    "longitude": .number(),
+                    "latitude": .number(minimum: -90, maximum: 90),
+                    "longitude": .number(minimum: -180, maximum: 180),
                     "minutes": .integer(
                         description: "Number of minutes to forecast",
                         default: 60,
@@ -177,26 +162,17 @@ final class WeatherService: Service {
                 openWorldHint: true
             )
         ) { arguments in
-            guard let latitude = arguments["latitude"]?.doubleCoerced,
-                let longitude = arguments["longitude"]?.doubleCoerced
-            else {
-                log.error("Invalid coordinates")
-                throw NSError(
-                    domain: "WeatherServiceError",
-                    code: 1,
-                    userInfo: [NSLocalizedDescriptionKey: "Invalid coordinates"]
-                )
+            let minutes: Int
+            switch arguments["minutes"] {
+            case let .int(minutesRequested):
+                minutes = NumericArgument.clampedInt(minutesRequested, to: 1 ... 120)
+            case let .double(minutesRequested):
+                minutes = NumericArgument.clampedInt(minutesRequested, to: 1 ... 120) ?? 60
+            default:
+                minutes = 60
             }
 
-            var minutes: Int = 60
-            if case let .int(minutesRequested) = arguments["minutes"] {
-                minutes = minutesRequested
-            } else if case let .double(minutesRequested) = arguments["minutes"] {
-                minutes = Int(minutesRequested)
-            }
-            minutes = minutes.clamped(to: 1 ... 120)
-
-            let location = CLLocation(latitude: latitude, longitude: longitude)
+            let location = try Self.location(from: arguments)
             guard
                 let minuteByMinuteForecast = try await self.weatherService.weather(
                     for: location,
@@ -220,8 +196,8 @@ final class WeatherService: Service {
                 + "Returns an empty list when there are none.",
             inputSchema: .object(
                 properties: [
-                    "latitude": .number(),
-                    "longitude": .number(),
+                    "latitude": .number(minimum: -90, maximum: 90),
+                    "longitude": .number(minimum: -180, maximum: 180),
                 ],
                 required: ["latitude", "longitude"],
                 additionalProperties: false
@@ -232,18 +208,7 @@ final class WeatherService: Service {
                 openWorldHint: true
             )
         ) { arguments in
-            guard let latitude = arguments["latitude"]?.doubleCoerced,
-                let longitude = arguments["longitude"]?.doubleCoerced
-            else {
-                log.error("Invalid coordinates")
-                throw NSError(
-                    domain: "WeatherServiceError",
-                    code: 1,
-                    userInfo: [NSLocalizedDescriptionKey: "Invalid coordinates"]
-                )
-            }
-
-            let location = CLLocation(latitude: latitude, longitude: longitude)
+            let location = try Self.location(from: arguments)
             // Alerts are nil where the region has no alerting authority, which
             // is not the same as "no alerts" and should not read as an error.
             let alerts = try await self.weatherService.weather(for: location, including: .alerts)
@@ -274,8 +239,8 @@ final class WeatherService: Service {
                 + "not for the forecast.",
             inputSchema: .object(
                 properties: [
-                    "latitude": .number(),
-                    "longitude": .number(),
+                    "latitude": .number(minimum: -90, maximum: 90),
+                    "longitude": .number(minimum: -180, maximum: 180),
                     "startDate": .string(description: "First day, as an ISO 8601 date"),
                     "endDate": .string(description: "Last day, as an ISO 8601 date"),
                 ],
@@ -288,16 +253,7 @@ final class WeatherService: Service {
                 openWorldHint: true
             )
         ) { arguments in
-            guard let latitude = arguments["latitude"]?.doubleCoerced,
-                let longitude = arguments["longitude"]?.doubleCoerced
-            else {
-                log.error("Invalid coordinates")
-                throw NSError(
-                    domain: "WeatherServiceError",
-                    code: 1,
-                    userInfo: [NSLocalizedDescriptionKey: "Invalid coordinates"]
-                )
-            }
+            let location = try Self.location(from: arguments)
             guard let rawStart = arguments["startDate"]?.stringValue,
                 let rawEnd = arguments["endDate"]?.stringValue
             else {
@@ -317,7 +273,6 @@ final class WeatherService: Service {
                 )
             }
 
-            let location = CLLocation(latitude: latitude, longitude: longitude)
             let history = try await self.weatherService.weather(
                 for: location,
                 including: .daily(startDate: start, endDate: end)
@@ -349,11 +304,5 @@ final class WeatherService: Service {
                     "\(argument) must be an ISO 8601 date, such as 2026-08-18."
             ]
         )
-    }
-}
-
-extension Int {
-    fileprivate func clamped(to range: ClosedRange<Int>) -> Int {
-        return Swift.max(range.lowerBound, Swift.min(self, range.upperBound))
     }
 }

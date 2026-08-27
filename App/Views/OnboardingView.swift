@@ -34,6 +34,7 @@ struct OnboardingView: View {
     /// Lifted out of the access step so the footer can own the primary action.
     /// Defaults to the safe answer, so Continue always means something.
     @State private var wantsRemote = false
+    @State private var isChangingRemoteAccess = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -61,12 +62,16 @@ struct OnboardingView: View {
                 confirmTitle: primaryTitle,
                 cancelTitle: "Back",
                 showsCancel: step != .welcome && step != .done,
-                canConfirm: !model.isConfiguringRemoteAccess,
+                canCancel: !isAccessActionInProgress,
+                canConfirm: !isAccessActionInProgress,
                 onCancel: { step = OnboardingStep(rawValue: step.rawValue - 1) ?? .welcome },
                 onConfirm: performPrimaryAction
             )
         }
-        .task { await model.refreshCloudflareStatus() }
+        .task {
+            wantsRemote = model.cloudflare.enabled
+            await model.refreshCloudflareStatus()
+        }
     }
 
     /// There is exactly one primary button, and on the access step it changes
@@ -87,12 +92,33 @@ struct OnboardingView: View {
         model.cloudflareStatus?.state == .running
     }
 
+    private var isAccessActionInProgress: Bool {
+        isChangingRemoteAccess || model.isConfiguringRemoteAccess
+    }
+
     private func performPrimaryAction() {
+        guard !isAccessActionInProgress else { return }
         switch step {
         case .done:
             onFinish()
         case .access where wantsRemote && !isRemoteConfigured:
-            Task { await model.setUpRemoteAccess() }
+            isChangingRemoteAccess = true
+            Task {
+                defer { isChangingRemoteAccess = false }
+                await model.setUpRemoteAccess()
+            }
+        case .access where !wantsRemote && model.cloudflare.enabled:
+            isChangingRemoteAccess = true
+            Task {
+                defer { isChangingRemoteAccess = false }
+                await model.stopCloudflareTunnel()
+                guard step == .access else { return }
+                guard !model.cloudflare.enabled else {
+                    wantsRemote = true
+                    return
+                }
+                step = .services
+            }
         default:
             step = OnboardingStep(rawValue: step.rawValue + 1) ?? .done
         }
@@ -248,13 +274,13 @@ private struct RemoteAccessProgress: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+        } else if model.needsManualHostname {
+            RemoteAccessSetup(model: model)
         } else if let error = model.cloudflareSetupError {
             Label(error, systemImage: "exclamationmark.triangle.fill")
                 .foregroundStyle(.orange)
                 .fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
-        } else if model.needsManualHostname {
-            RemoteAccessSetup(model: model)
         } else {
             Text("Apple Core publishes one web address for this Mac using your own Cloudflare account.")
                 .foregroundStyle(.secondary)

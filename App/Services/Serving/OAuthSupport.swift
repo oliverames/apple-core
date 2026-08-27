@@ -269,7 +269,15 @@ public actor OAuthTokenStore {
             return [:]
         }
 
-        return Dictionary(uniqueKeysWithValues: registry.clients.map { ($0.clientID, $0) })
+        // A hand-edited or partially recovered registry can contain the same
+        // client ID more than once. Dictionary(uniqueKeysWithValues:) traps on
+        // that input and used to take down the app during server startup. Keep
+        // the last persisted record, matching ordinary dictionary assignment.
+        var clients: [String: OAuthRegisteredClient] = [:]
+        for client in registry.clients {
+            clients[client.clientID] = client
+        }
+        return clients
     }
 
     private static func loadTokens(

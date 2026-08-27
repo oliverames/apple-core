@@ -611,26 +611,27 @@ public actor AppleCoreHTTPServer {
     // MARK: - Streamable HTTP
 
     private func openStreamableHTTP(_ request: HTTPRequest) async -> HTTPResponse {
-        do {
-            let session: MCPSSESession
-            switch resolveSession(request) {
-            case .notFound:
-                return Self.textResponse(.notFound, "Session not found\n")
-            case .scopeMismatch:
-                return Self.textResponse(.forbidden, "Session access surface changed\n")
-            case .existing(let existing, _):
-                session = existing
-            case .new(let newSurface):
-                (session, _) = try await makeSession(surface: newSurface)
-            }
-            let (_, stream) = await session.addPersistentStream()
-            return sseResponse(stream: stream, sessionId: session.id)
-        } catch AppleCoreHTTPServerError.tooManySessions {
-            return Self.sessionCapacityResponse()
-        } catch {
-            logMessage("AppleCoreHTTPServer: Failed to open streamable HTTP: \(error)")
-            return Self.textResponse(.internalServerError, "Failed to start MCP session\n")
+        // A standalone GET stream belongs to an initialized session. Creating
+        // a fresh session here let authenticated clients occupy all 64 slots
+        // with streams that could never initialize and never became idle.
+        guard let sessionId = request.headers[Self.sessionHeader],
+            !sessionId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else {
+            return Self.textResponse(.badRequest, "Missing Mcp-Session-Id header\n")
         }
+        let session: MCPSSESession
+        switch resolveSession(request) {
+        case .notFound:
+            return Self.textResponse(.notFound, "Session not found\n")
+        case .scopeMismatch:
+            return Self.textResponse(.forbidden, "Session access surface changed\n")
+        case .existing(let existing, _):
+            session = existing
+        case .new:
+            return Self.textResponse(.badRequest, "Missing Mcp-Session-Id header\n")
+        }
+        let (_, stream) = await session.addPersistentStream()
+        return sseResponse(stream: stream, sessionId: session.id)
     }
 
     private func postStreamableHTTP(_ request: HTTPRequest) async -> HTTPResponse {

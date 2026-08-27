@@ -56,10 +56,10 @@ Notarization (`Scripts/release.sh notarize`, `staple`) requires `KEYCHAIN_PROFIL
 
 ```bash
 VERSION=1.0.0 Scripts/release.sh commit     # commit version bump, tag v1.0.0
-VERSION=1.0.0 Scripts/release.sh push-tags  # push the tag (prompts for confirmation)
+VERSION=1.0.0 Scripts/release.sh push-tags  # push the release commit and tag (prompts for confirmation)
 ```
 
-Pushing the tag triggers `release.yml`, which re-runs CI as a gate and creates the GitHub release (using `docs/release-notes/vX.Y.Z.md` if present, otherwise auto-generated notes).
+The command pushes the current `main` or `master` branch with the tag. The tag then triggers `release.yml`, which re-runs CI as a gate and creates the GitHub release (using `docs/release-notes/vX.Y.Z.md` if present, otherwise auto-generated notes).
 
 If a signed/notarized zip was produced locally, attach it:
 

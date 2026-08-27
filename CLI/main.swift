@@ -116,6 +116,35 @@ actor StdioHTTPBridge {
         }
     }
 
+    /// Releases the server-side Streamable HTTP session when the stdio client
+    /// closes its input. Without this DELETE, every normal CLI exit leaves a
+    /// session behind until the ten-minute idle reaper removes it.
+    func close() async {
+        guard let sessionID else { return }
+        self.sessionID = nil
+
+        var request = URLRequest(url: mcpEndpoint)
+        request.httpMethod = "DELETE"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue(sessionID, forHTTPHeaderField: "Mcp-Session-Id")
+
+        do {
+            let (_, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse else {
+                FileHandle.standardError.write(Data("apple-core-cli: non-HTTP session cleanup response\n".utf8))
+                return
+            }
+            guard [200, 202, 204, 404].contains(http.statusCode) else {
+                FileHandle.standardError.write(
+                    Data("apple-core-cli: session cleanup returned HTTP \(http.statusCode)\n".utf8)
+                )
+                return
+            }
+        } catch {
+            FileHandle.standardError.write(Data("apple-core-cli: session cleanup failed: \(error)\n".utf8))
+        }
+    }
+
     /// Builds a JSON-RPC error response matching `line`'s request id, so a
     /// stdio client sees a protocol-level failure rather than waiting forever.
     /// A notification has no id and expects no reply.
@@ -196,3 +225,5 @@ while let line = readLine(strippingNewline: true) {
         fflush(stdout)
     }
 }
+
+await bridge.close()

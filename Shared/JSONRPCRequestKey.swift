@@ -60,7 +60,20 @@ enum JSONRPCRequestKey {
         if let number = identifier as? NSNumber,
             CFGetTypeID(number) != CFBooleanGetTypeID()
         {
-            return "number:\(number)"
+            // The pinned MCP SDK decodes numeric IDs as Int. Fractional and
+            // out-of-range JSON numbers otherwise pass this classifier, then
+            // fail SDK decoding after the HTTP layer has opened a response
+            // stream that can never receive a matching response.
+            guard
+                let data = try? JSONSerialization.data(
+                    withJSONObject: number,
+                    options: .fragmentsAllowed
+                ),
+                let integer = try? JSONDecoder().decode(Int.self, from: data)
+            else {
+                return nil
+            }
+            return "number:\(integer)"
         }
         return nil
     }

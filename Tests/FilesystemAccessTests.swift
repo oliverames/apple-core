@@ -142,4 +142,28 @@ struct FilesystemAccessTests {
             )
         }
     }
+
+    @Test("A shared root cannot be retargeted after approval")
+    func retargetedRootIsRefused() throws {
+        let sandbox = try Self.makeSandbox()
+        defer { try? FileManager.default.removeItem(at: sandbox) }
+
+        let shared = sandbox.appendingPathComponent("shared")
+        let outside = sandbox.appendingPathComponent("outside")
+        try FileManager.default.createDirectory(at: shared, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        let roots = [FilesystemRoot(path: shared.path, writable: true)]
+
+        try FileManager.default.removeItem(at: shared)
+        try FileManager.default.createSymbolicLink(at: shared, withDestinationURL: outside)
+        let redirectedFile = shared.appendingPathComponent("redirected.txt")
+
+        #expect(throws: FilesystemAccessError.retargetedRoot(shared.path)) {
+            try FilesystemAccess.resolve(
+                requested: redirectedFile.path,
+                roots: roots,
+                requiringWrite: true
+            )
+        }
+    }
 }
