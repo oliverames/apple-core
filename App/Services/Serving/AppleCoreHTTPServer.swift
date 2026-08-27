@@ -645,6 +645,11 @@ public actor AppleCoreHTTPServer {
                 return Self.textResponse(.badRequest, "Invalid UTF-8 body\n")
             }
 
+            let message = JSONRPCRequestKey.classifyInbound(message: bodyString)
+            if case .invalid = message {
+                return Self.textResponse(.badRequest, "Invalid JSON-RPC message\n")
+            }
+
             let session: MCPSSESession
             switch resolveSession(request) {
             case .notFound:
@@ -657,7 +662,7 @@ public actor AppleCoreHTTPServer {
                 (session, _) = try await makeSession(surface: newSurface)
             }
 
-            guard let requestId = MCPSSESession.jsonRPCID(from: bodyString) else {
+            guard case .request(let requestId) = message else {
                 await session.writeToServer(bodyString)
                 var headers = HTTPHeaders()
                 headers[Self.sessionHeader] = session.id

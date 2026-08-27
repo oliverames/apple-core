@@ -9,6 +9,39 @@ struct JSONRPCRequestKeyTests {
 
         #expect(numeric != string)
         #expect(JSONRPCRequestKey.from(message: #"{"jsonrpc":"2.0","method":"ping"}"#) == nil)
+        #expect(JSONRPCRequestKey.from(message: #"{"jsonrpc":"2.0","id":null}"#) == nil)
         #expect(JSONRPCRequestKey.from(message: #"{"jsonrpc":"2.0","id":true}"#) == nil)
+    }
+
+    @Test("Inbound messages reject malformed and batched JSON before session allocation")
+    func inboundMessageValidation() {
+        #expect(
+            JSONRPCRequestKey.classifyInbound(
+                message: #"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#
+            ) == .request(requestKey: "number:1")
+        )
+        #expect(
+            JSONRPCRequestKey.classifyInbound(
+                message: #"{"jsonrpc":"2.0","method":"notifications/initialized"}"#
+            ) == .notificationOrResponse
+        )
+        #expect(
+            JSONRPCRequestKey.classifyInbound(
+                message: #"{"jsonrpc":"2.0","id":"server-1","result":{}}"#
+            ) == .notificationOrResponse
+        )
+
+        for invalid in [
+            "{",
+            "null",
+            #"[{"jsonrpc":"2.0","id":1,"method":"ping"}]"#,
+            #"{"id":1,"method":"ping"}"#,
+            #"{"jsonrpc":"2.0","id":null,"method":"ping"}"#,
+            #"{"jsonrpc":"2.0","id":true,"method":"ping"}"#,
+            #"{"jsonrpc":"2.0","id":1}"#,
+            #"{"jsonrpc":"2.0","id":1,"result":{},"error":{}}"#,
+        ] {
+            #expect(JSONRPCRequestKey.classifyInbound(message: invalid) == .invalid)
+        }
     }
 }
