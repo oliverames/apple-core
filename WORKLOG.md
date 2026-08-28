@@ -1,5 +1,35 @@
 # Apple Core worklog
 
+## 2026-08-27 - Shipped the interrupted OAuth hardening as 1.1.1
+
+**What changed**: A Codex session had validated a v1.1.1 release and was killed
+before executing it, leaving 28 files uncommitted. Reviewed and committed as
+`1296100`: OAuth registration separated from the self-reported MCP client name,
+a Clients pane whose disconnect revokes codes, tokens and sessions, a working
+revocation endpoint, exact-match OAuth resource validation, sessions bound to
+the authenticating client, the bundled CLI moved to the MCP SDK streaming HTTP
+transport, and Cloudflare setup that verifies an exact CNAME and verifies a
+downloaded `cloudflared` before installing it. Released as v1.1.1.
+
+**Decisions made**: Accepted the uncommitted work rather than re-deriving it,
+after confirming every claim its release notes make is backed by a named test,
+including "A failed revocation write keeps the live and persisted token valid".
+
+**Verification**: 83 tests pass, `swift format lint --strict --recursive .` is
+clean, gitleaks reports no leaks across 234 commits, and the Sparkle keychain
+key matches `SUPublicEDKey`. The release is notarized, stapled and
+Gatekeeper-accepted; the appcast at oliverames.github.io/apple-core serves
+1.1.1 and its enclosure returns HTTP 200 at the published byte length.
+
+**Left off at**: Released and clean at v1.1.1.
+
+**Open questions**: This repo has an `upstream` remote pointing at
+`mattt/iMCP`, so a bare `gh release`/`gh run` call resolves to the upstream
+repository rather than `oliverames/apple-core`. Every `gh` invocation here needs
+an explicit `--repo`. NEW.
+
+---
+
 ## 2026-08-26 - Released 1.1.0, and repaired the appcast signer it exposed
 
 **What changed**: Cut 1.1.0 (build 12), the first release since 1.0.8 and the one that carries everything from the three audit passes and the adversarial sweep: the Filesystem surface, the expanded Contacts, Messages, Reminders, Calendar, Utilities, Shortcuts and Capture tool sets (77 tools to 106, 11 advertised on a fresh install), the onboarding sheet and three-pane settings, Sparkle 2.9.6, the removal of query-string token auth, and the lifecycle, approval-flow and argument-coercion fixes. Release notes written to `docs/release-notes/v1.1.0.md`.
