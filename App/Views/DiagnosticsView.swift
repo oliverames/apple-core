@@ -23,11 +23,13 @@ struct DiagnosticsView: View {
 
     @Environment(\.dismiss) private var dismiss
     @State private var isShowingToken = false
+    @State private var permissionStates: [ServicePermissionRequirement: ServicePermissionState] = [:]
 
     var body: some View {
         VStack(spacing: 0) {
             Form {
                 serverSection
+                permissionsSection
                 remoteSection
                 repairSection
             }
@@ -47,6 +49,7 @@ struct DiagnosticsView: View {
         .frame(width: 620, height: 560)
         .task {
             model.refreshAppLaunchAgentStatus()
+            await refreshPermissionStates()
             await model.refreshCloudflareStatus()
         }
     }
@@ -84,6 +87,66 @@ struct DiagnosticsView: View {
         } header: {
             SectionHeader(title: "Server", subtitle: "What Apple Core is doing right now.")
         }
+    }
+
+    /// What macOS actually grants right now, rather than what each service
+    /// asked for when it was switched on. Read-only: opening Diagnostics
+    /// never triggers a consent prompt.
+    private var permissionsSection: some View {
+        Section {
+            ForEach(permissionRows, id: \.requirement) { row in
+                let state = permissionStates[row.requirement]
+                HStack(spacing: 12) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(row.requirement.settingsTitle)
+                        Text(row.services.joined(separator: ", "))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Spacer(minLength: 12)
+
+                    if let state {
+                        if !state.isGranted, let url = row.requirement.privacySettingsURL {
+                            Button("Open Settings") { NSWorkspace.shared.open(url) }
+                                .buttonStyle(.borderless)
+                                .controlSize(.small)
+                        }
+                        StatusBadge(title: state.label, tone: state.tone)
+                    } else {
+                        ProgressView().controlSize(.small)
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+
+            Button {
+                Task { await refreshPermissionStates() }
+            } label: {
+                Label("Recheck Permissions", systemImage: "arrow.clockwise")
+            }
+        } header: {
+            SectionHeader(
+                title: "Permissions",
+                subtitle: "What macOS grants this Mac's copy of Apple Core."
+            )
+        } footer: {
+            TipFooter(
+                text: "Changing a switch in System Settings quits Apple Core's access immediately; use Recheck to see the new state."
+            )
+        }
+    }
+
+    private var permissionRows: [(requirement: ServicePermissionRequirement, services: [String])] {
+        ServicePermissionStatus.requirementsInUse(by: serverController.computedServiceConfigs)
+    }
+
+    private func refreshPermissionStates() async {
+        var states: [ServicePermissionRequirement: ServicePermissionState] = [:]
+        for row in permissionRows {
+            states[row.requirement] = await ServicePermissionStatus.state(of: row.requirement)
+        }
+        permissionStates = states
     }
 
     private var remoteSection: some View {
@@ -176,6 +239,16 @@ struct DiagnosticsView: View {
         cloudflared: \(model.cloudflaredVersion ?? "not installed")
         Services enabled: \(serverController.computedServiceConfigs.filter { $0.binding.wrappedValue }.count) \
         of \(serverController.computedServiceConfigs.count)
+        Permissions:
+        \(permissionReport)
         """
+    }
+
+    private var permissionReport: String {
+        permissionRows
+            .map { row in
+                "  \(row.requirement.settingsTitle): \(permissionStates[row.requirement]?.label ?? "not checked")"
+            }
+            .joined(separator: "\n")
     }
 }
