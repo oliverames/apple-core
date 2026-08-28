@@ -1,6 +1,6 @@
 # Apple Core worklog
 
-## 2026-08-28 - Expanded the Notes and Filesystem surfaces, shipped 1.2.0
+## 2026-08-28 - Expanded the Notes and Filesystem surfaces, shipped 1.2.0 and 1.3.0
 
 **What changed**: Started as a connectivity test of every tool and turned into
 two surface expansions. Notes went 21 -> 32 tools and Filesystem 5 -> 10.
@@ -35,7 +35,25 @@ checklist attribute runs in UTF-16 code units, so `Character` indexing drifts
 one place per emoji, and CoreData ids are per-device, so a foreign id resolves
 to a real but unrelated note. Both now have tests.
 
-**Left off at**: v1.2.0 released, appcast published to gh-pages.
+**Then, as 1.3.0**: Filesystem went 10 -> 16. `filesystem_search_content` and
+`filesystem_recent` go through Spotlight, so they reach inside PDFs and Pages
+documents and answer without walking the tree; every hit is re-checked against
+the allowlist rather than trusting mdfind's `-onlyin` as access control.
+`filesystem_read` gained an offset, so a file past the 512KB cap is readable
+at all. Added `filesystem_append`, `filesystem_read_binary`, `filesystem_hash`
+and `filesystem_tags`. Tags are written through the
+`com.apple.metadata:_kMDItemUserTags` xattr because
+`URLResourceValues.tagNames` only gained a setter in macOS 26 and this app
+deploys to 15.1.
+
+Moved the pure helpers into `Shared/FilesystemContent.swift` beside
+`FilesystemAccess`, because inside the service they were unreachable from
+tests, which is why this surface had none. The byte-window logic justified it:
+a window can land mid-character at either end, and either case fails UTF-8
+validation and makes an ordinary text file report as binary.
+
+**Left off at**: v1.2.0 and v1.3.0 released, both appcasts published to
+gh-pages.
 
 **Open questions**: Apple Home is not feasible as designed. HomeKit is absent
 from the macOS SDK and reachable only from a Mac Catalyst target, and
