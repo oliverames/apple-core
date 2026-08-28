@@ -21,6 +21,28 @@ private let log = Logger.service("filesystem")
 /// Reads beyond this are truncated, with the truncation reported.
 private let maximumReadBytes = 512 * 1024
 
+/// Listings page rather than return everything. A directory of a few thousand
+/// files describes out to megabytes, which costs a client its context window
+/// for no benefit, and the old flat 200-match search cap gave no sign it had
+/// stopped early — a caller could not tell "these are all the matches" from
+/// "these are the first 200".
+private let defaultPageSize = 100
+private let maximumPageSize = 500
+
+private func clampedPageSize(_ requested: Int?) -> Int {
+    guard let requested, requested > 0 else { return defaultPageSize }
+    return min(requested, maximumPageSize)
+}
+
+/// Directory order from the filesystem is arbitrary, so paging over it would
+/// be free to repeat or skip entries between calls. Sort by name to give the
+/// offsets something stable to point at.
+private func sortedByName(_ urls: [URL]) -> [URL] {
+    urls.sorted {
+        $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending
+    }
+}
+
 final class FilesystemService: Service {
     static let shared = FilesystemService()
 
@@ -71,7 +93,15 @@ final class FilesystemService: Service {
             description: "List the contents of a directory inside a shared folder",
             inputSchema: .object(
                 properties: [
-                    "path": .string(description: "Directory to list")
+                    "path": .string(description: "Directory to list"),
+                    "limit": .integer(
+                        description: "Maximum entries to return",
+                        default: .int(defaultPageSize)
+                    ),
+                    "offset": .integer(
+                        description: "Entries to skip; pass a previous call's nextOffset",
+                        default: .int(0)
+                    ),
                 ],
                 required: ["path"],
                 additionalProperties: false
@@ -90,14 +120,27 @@ final class FilesystemService: Service {
                 roots: FilesystemService.shared.roots,
                 requiringWrite: false
             )
-            let entries = try FileManager.default.contentsOfDirectory(
-                at: url,
-                includingPropertiesForKeys: [.isDirectoryKey, .fileSizeKey, .contentModificationDateKey]
+            let entries = sortedByName(
+                try FileManager.default.contentsOfDirectory(
+                    at: url,
+                    includingPropertiesForKeys: [
+                        .isDirectoryKey, .fileSizeKey, .contentModificationDateKey,
+                    ]
+                )
             )
-            return Value.object([
+            let offset = max(0, arguments["offset"]?.intValue ?? 0)
+            let limit = clampedPageSize(arguments["limit"]?.intValue)
+            let page = Array(entries.dropFirst(offset).prefix(limit))
+
+            var result: [String: Value] = [
                 "path": .string(url.path),
-                "entries": .array(entries.map { FilesystemService.describe($0) }),
-            ])
+                "entries": .array(page.map { FilesystemService.describe($0) }),
+                "totalEntries": .int(entries.count),
+            ]
+            if offset + page.count < entries.count {
+                result["nextOffset"] = .int(offset + page.count)
+            }
+            return Value.object(result)
         }
 
         Tool(
@@ -228,6 +271,14 @@ final class FilesystemService: Service {
                 properties: [
                     "path": .string(description: "Directory to search beneath"),
                     "query": .string(description: "Text the file name must contain"),
+                    "limit": .integer(
+                        description: "Maximum matches to return",
+                        default: .int(defaultPageSize)
+                    ),
+                    "offset": .integer(
+                        description: "Matches to skip; pass a previous call's nextOffset",
+                        default: .int(0)
+                    ),
                 ],
                 required: ["path", "query"],
                 additionalProperties: false
@@ -249,23 +300,249 @@ final class FilesystemService: Service {
                 roots: FilesystemService.shared.roots,
                 requiringWrite: false
             )
+            let offset = max(0, arguments["offset"]?.intValue ?? 0)
+            let limit = clampedPageSize(arguments["limit"]?.intValue)
 
-            var matches: [Value] = []
+            // Walk one past the page so the caller can be told whether more
+            // exist. A whole-tree walk cannot report a true total without
+            // paying for the entire traversal every call, so report the
+            // continuation rather than a count that would be a lie.
+            var found: [URL] = []
+            let ceiling = offset + limit
             let enumerator = FileManager.default.enumerator(
                 at: url,
-                includingPropertiesForKeys: [.isDirectoryKey, .fileSizeKey, .contentModificationDateKey],
+                includingPropertiesForKeys: [
+                    .isDirectoryKey, .fileSizeKey, .contentModificationDateKey,
+                ],
                 options: [.skipsHiddenFiles]
             )
-            while let entry = enumerator?.nextObject() as? URL, matches.count < 200 {
+            while let entry = enumerator?.nextObject() as? URL, found.count <= ceiling {
                 if entry.lastPathComponent.localizedCaseInsensitiveContains(query) {
-                    matches.append(FilesystemService.describe(entry))
+                    found.append(entry)
                 }
             }
-            return Value.object([
+            let hasMore = found.count > ceiling
+            let page = Array(found.dropFirst(offset).prefix(limit))
+
+            var result: [String: Value] = [
                 "path": .string(url.path),
                 "query": .string(query),
-                "matches": .array(matches),
+                "matches": .array(page.map { FilesystemService.describe($0) }),
+            ]
+            if hasMore {
+                result["nextOffset"] = .int(offset + page.count)
+            }
+            return Value.object(result)
+        }
+
+        Tool(
+            name: "filesystem_stat",
+            description:
+                "Get one file or folder's metadata without reading it: size, kind, and modification time.",
+            inputSchema: .object(
+                properties: [
+                    "path": .string(description: "File or folder to describe")
+                ],
+                required: ["path"],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Describe File",
+                readOnlyHint: true,
+                openWorldHint: false
+            )
+        ) { arguments in
+            guard let path = arguments["path"]?.stringValue else {
+                throw FilesystemServiceError.missingArgument("path")
+            }
+            let url = try FilesystemAccess.resolve(
+                requested: path,
+                roots: FilesystemService.shared.roots,
+                requiringWrite: false
+            )
+            guard case .object(var entry) = FilesystemService.describe(url) else {
+                throw FilesystemServiceError.missingArgument("path")
+            }
+            let values = try? url.resourceValues(forKeys: [.creationDateKey, .isSymbolicLinkKey])
+            if let created = values?.creationDate {
+                entry["created"] = .string(ISO8601DateFormatter().string(from: created))
+            }
+            entry["isSymbolicLink"] = .bool(values?.isSymbolicLink ?? false)
+            return Value.object(entry)
+        }
+
+        Tool(
+            name: "filesystem_create_folder",
+            description:
+                "Create a folder inside a shared folder that allows writing. The parent folder must already exist.",
+            inputSchema: .object(
+                properties: [
+                    "path": .string(description: "Folder to create")
+                ],
+                required: ["path"],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Create Folder",
+                readOnlyHint: false,
+                idempotentHint: true,
+                openWorldHint: false
+            )
+        ) { arguments in
+            guard let path = arguments["path"]?.stringValue else {
+                throw FilesystemServiceError.missingArgument("path")
+            }
+            let url = try FilesystemAccess.resolve(
+                requested: path,
+                roots: FilesystemService.shared.roots,
+                requiringWrite: true
+            )
+            let existed = FileManager.default.fileExists(atPath: url.path)
+            try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+            log.info("Created folder \(url.lastPathComponent, privacy: .public)")
+            return Value.object([
+                "path": .string(url.path),
+                "created": .bool(!existed),
             ])
+        }
+
+        Tool(
+            name: "filesystem_move",
+            description:
+                "Move or rename a file or folder. Both the source and the destination must sit inside shared folders that allow writing.",
+            inputSchema: .object(
+                properties: [
+                    "from": .string(description: "File or folder to move"),
+                    "to": .string(description: "New path, including the new name"),
+                ],
+                required: ["from", "to"],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Move File",
+                readOnlyHint: false,
+                destructiveHint: true,
+                openWorldHint: false
+            )
+        ) { arguments in
+            guard let from = arguments["from"]?.stringValue else {
+                throw FilesystemServiceError.missingArgument("from")
+            }
+            guard let to = arguments["to"]?.stringValue else {
+                throw FilesystemServiceError.missingArgument("to")
+            }
+            let roots = FilesystemService.shared.roots
+            // The source needs write access too: a move takes the file out of
+            // where it currently lives, which a read-only root does not allow.
+            let source = try FilesystemAccess.resolve(
+                requested: from,
+                roots: roots,
+                requiringWrite: true
+            )
+            let destination = try FilesystemAccess.resolve(
+                requested: to,
+                roots: roots,
+                requiringWrite: true
+            )
+            guard !FileManager.default.fileExists(atPath: destination.path) else {
+                throw FilesystemServiceError.destinationExists(destination.path)
+            }
+            try FileManager.default.moveItem(at: source, to: destination)
+            log.info("Moved \(source.lastPathComponent, privacy: .public)")
+            return Value.object([
+                "from": .string(source.path),
+                "to": .string(destination.path),
+                "moved": .bool(true),
+            ])
+        }
+
+        Tool(
+            name: "filesystem_copy",
+            description:
+                "Copy a file or folder. The source only needs to be readable; the destination must sit inside a shared folder that allows writing.",
+            inputSchema: .object(
+                properties: [
+                    "from": .string(description: "File or folder to copy"),
+                    "to": .string(description: "Path to copy it to, including the new name"),
+                ],
+                required: ["from", "to"],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Copy File",
+                readOnlyHint: false,
+                openWorldHint: false
+            )
+        ) { arguments in
+            guard let from = arguments["from"]?.stringValue else {
+                throw FilesystemServiceError.missingArgument("from")
+            }
+            guard let to = arguments["to"]?.stringValue else {
+                throw FilesystemServiceError.missingArgument("to")
+            }
+            let roots = FilesystemService.shared.roots
+            let source = try FilesystemAccess.resolve(
+                requested: from,
+                roots: roots,
+                requiringWrite: false
+            )
+            let destination = try FilesystemAccess.resolve(
+                requested: to,
+                roots: roots,
+                requiringWrite: true
+            )
+            guard !FileManager.default.fileExists(atPath: destination.path) else {
+                throw FilesystemServiceError.destinationExists(destination.path)
+            }
+            try FileManager.default.copyItem(at: source, to: destination)
+            log.info("Copied \(source.lastPathComponent, privacy: .public)")
+            return Value.object([
+                "from": .string(source.path),
+                "to": .string(destination.path),
+                "copied": .bool(true),
+            ])
+        }
+
+        Tool(
+            name: "filesystem_trash",
+            description:
+                "Move a file or folder to the Trash, where the user can still recover it. Nothing here deletes anything outright.",
+            inputSchema: .object(
+                properties: [
+                    "path": .string(description: "File or folder to move to the Trash")
+                ],
+                required: ["path"],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Trash File",
+                readOnlyHint: false,
+                destructiveHint: true,
+                openWorldHint: false
+            )
+        ) { arguments in
+            guard let path = arguments["path"]?.stringValue else {
+                throw FilesystemServiceError.missingArgument("path")
+            }
+            let url = try FilesystemAccess.resolve(
+                requested: path,
+                roots: FilesystemService.shared.roots,
+                requiringWrite: true
+            )
+            // trashItem rather than removeItem: a client acting on a model's
+            // judgement should not be able to destroy a file outright, and the
+            // Trash is what every cloud drive does with a delete anyway.
+            var trashed: NSURL?
+            try FileManager.default.trashItem(at: url, resultingItemURL: &trashed)
+            log.info("Trashed \(url.lastPathComponent, privacy: .public)")
+            var result: [String: Value] = [
+                "path": .string(url.path),
+                "trashed": .bool(true),
+            ]
+            if let location = trashed as? URL {
+                result["trashPath"] = .string(location.path)
+            }
+            return Value.object(result)
         }
     }
 
@@ -290,11 +567,19 @@ final class FilesystemService: Service {
 
 enum FilesystemServiceError: LocalizedError {
     case missingArgument(String)
+    /// Move and copy refuse rather than overwrite. Silently replacing a file
+    /// the caller did not know was there is the one mistake in this surface
+    /// with no undo, since the overwritten copy never reaches the Trash.
+    case destinationExists(String)
 
     var errorDescription: String? {
         switch self {
         case let .missingArgument(name):
             return "Missing required argument: \(name)"
+        case let .destinationExists(path):
+            return
+                "Something already exists at \(path). Move or trash it first, or choose "
+                + "another name; this will not overwrite it."
         }
     }
 }
