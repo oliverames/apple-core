@@ -7,6 +7,88 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <description>Updates for Apple Core - a native macOS MCP server for Apple services</description>
     <language>en</language>
     <item>
+      <title>Version 1.1.1</title>
+      <link>https://github.com/oliverames/apple-core/releases/tag/v1.1.1</link>
+      <sparkle:version>13</sparkle:version>
+      <sparkle:shortVersionString>1.1.1</sparkle:shortVersionString>
+      <description><![CDATA[
+<style>
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Helvetica, Arial, sans-serif;
+    font-size: 13px;
+    line-height: 1.55;
+    color: #1d1d1f;
+    margin: 0;
+    padding: 0;
+}
+h1, h2, h3 { color: #000; font-weight: 600; }
+h1 { font-size: 18px; margin: 0 0 10px 0; }
+h2 {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    color: #6e6e73;
+    margin: 18px 0 6px 0;
+}
+h3 { font-size: 13px; margin: 14px 0 6px 0; }
+p { margin: 0 0 10px 0; }
+ul, ol { padding-left: 20px; margin: 0 0 10px 0; }
+li { margin-bottom: 5px; }
+li > strong:first-child { color: #000; }
+code {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    background: #f2f2f7;
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-size: 12px;
+}
+a { color: #0071e3; text-decoration: none; }
+a:hover { text-decoration: underline; }
+hr { border: 0; border-top: 1px solid #e5e5ea; margin: 16px 0; }
+@media (prefers-color-scheme: dark) {
+    body { color: #f5f5f7; }
+    h1, h2, h3, li > strong:first-child { color: #fff; }
+    h2 { color: #98989d; }
+    code { background: #2c2c2e; }
+    hr { border-top-color: #38383a; }
+}
+</style>
+<h1>Apple Core 1.1.1</h1>
+<p>Apple Core 1.1.1 tightens client identity, OAuth revocation, remote setup, and the bundled command-line bridge. It also makes failed settings saves visible before Apple Core changes the tunnel or installs anything.</p>
+<h2>Client security</h2>
+<ul>
+<li>Connection approval now separates the authenticated OAuth registration from the MCP name a client reports for itself. Apple Core saves permanent trust by OAuth client ID, while clients using the shared bearer token still require approval for each connection.</li>
+<li>The Clients pane lists every registered OAuth client. Disconnecting one revokes its authorization codes and tokens, closes its active sessions, and removes its saved approval.</li>
+<li>OAuth clients can revoke access and refresh tokens through the advertised revocation endpoint. Revoking a refresh token also revokes access tokens from that authorization grant, and a failed disk write cannot report a successful revocation.</li>
+<li>OAuth resource values must match the advertised MCP address exactly, so a token cannot be issued for a URL variant that the server will not accept.</li>
+</ul>
+<h2>Connections</h2>
+<ul>
+<li>The bundled <code class="notranslate">apple-core</code> command now uses the MCP SDK's streaming HTTP transport. Server notifications reach standard output while other requests are running, and cancellation keeps JSON-RPC string and numeric identifiers distinct.</li>
+<li>Cancelling a request closes its matching HTTP response stream instead of leaving the client waiting on a response that will never arrive.</li>
+<li>HTTP sessions stay bound to the authenticated client that created them. A different client cannot reuse a valid session identifier.</li>
+</ul>
+<h2>Remote access</h2>
+<ul>
+<li>Cloudflare setup verifies that the public hostname is an exact CNAME for the selected tunnel. An existing record that points somewhere else now stops setup with an actionable error instead of being accepted.</li>
+<li>Apple Core verifies a downloaded <code class="notranslate">cloudflared</code> binary before installing it. Atomic replacement keeps the verified binary executable and preserves the installed copy if replacement fails.</li>
+<li>Settings now reports a configuration write failure and keeps the existing file unchanged. Tunnel setup, shutdown, and <code class="notranslate">cloudflared</code> installation stop before they can create external state that Apple Core cannot save.</li>
+</ul>
+<h2>Updates</h2>
+<ul>
+<li>Sparkle release notes now use stable GitHub links for older versions, and each release includes a SHA-256 checksum beside the notarized app archive.</li>
+</ul>
+<h2>Upgrading</h2>
+<p>1.0.3 and later update automatically. Installs on 1.0.0 through 1.0.2 still need the one-time manual reinstall described in the <a href="https://github.com/oliverames/apple-core/releases/tag/v1.0.3">1.0.3 notes</a>, because their update signing key does not match the feed.</p>
+      ]]></description>
+      <pubDate>Fri, 28 Aug 2026 00:10:53 +0000</pubDate>
+      <enclosure url="https://github.com/oliverames/apple-core/releases/download/v1.1.1/Apple.Core-1.1.1.zip"
+                 length="9261389"
+                 type="application/octet-stream"
+                 sparkle:edSignature="o7mH3CH3scOtMuBvmHtM9xDGcSRc7ZWtpQsToRugQ4dZXLxIzqbSErdNxc3KpIvN6h+vRC8tuMYQX0MhlW4+AA==" />
+      <sparkle:minimumSystemVersion>15.1</sparkle:minimumSystemVersion>
+    </item>
+    <item>
       <title>Version 1.1.0</title>
       <link>https://github.com/oliverames/apple-core/releases/tag/v1.1.0</link>
       <sparkle:version>12</sparkle:version>
@@ -100,7 +182,7 @@ hr { border: 0; border-top: 1px solid #e5e5ea; margin: 16px 0; }
 <li><strong><code class="notranslate">shortcuts list</code> can no longer deadlock a call.</strong> Output is drained while the process terminates, under a 60 second timeout.</li>
 </ul>
 <h2>Upgrading</h2>
-<p>1.0.3 and later update automatically. Installs on 1.0.0 through 1.0.2 still need the one-time manual reinstall described in the <a href="v1.0.3.md">1.0.3 notes</a>, because their update signing key does not match the feed.</p>
+<p>1.0.3 and later update automatically. Installs on 1.0.0 through 1.0.2 still need the one-time manual reinstall described in the <a href="https://github.com/oliverames/apple-core/releases/tag/v1.0.3">1.0.3 notes</a>, because their update signing key does not match the feed.</p>
       ]]></description>
       <pubDate>Wed, 26 Aug 2026 18:25:07 +0000</pubDate>
       <enclosure url="https://github.com/oliverames/apple-core/releases/download/v1.1.0/Apple.Core-1.1.0.zip"
@@ -296,7 +378,7 @@ hr { border: 0; border-top: 1px solid #e5e5ea; margin: 16px 0; }
 <p>Calendar, Contacts, Location, and Reminders use their native macOS permission prompts. Maps uses the Location grant. Mail and Notes use Automation, while Messages uses Automation plus the existing database picker. Capture uses Camera, Microphone, and Screen Recording.</p>
 <p>Shortcuts and Utilities do not need a macOS privacy grant, so they enable without a permission prompt.</p>
 <h2>Upgrading</h2>
-<p>1.0.3 and later update automatically. Installs on 1.0.0 through 1.0.2 still need the one-time manual reinstall described in the <a href="v1.0.3.md">1.0.3 notes</a>, because their update signing key no longer matches the feed.</p>
+<p>1.0.3 and later update automatically. Installs on 1.0.0 through 1.0.2 still need the one-time manual reinstall described in the <a href="https://github.com/oliverames/apple-core/releases/tag/v1.0.3">1.0.3 notes</a>, because their update signing key no longer matches the feed.</p>
       ]]></description>
       <pubDate>Thu, 30 Jul 2026 21:17:16 +0000</pubDate>
       <enclosure url="https://github.com/oliverames/apple-core/releases/download/v1.0.6/Apple.Core-1.0.6.zip"
@@ -363,7 +445,7 @@ hr { border: 0; border-top: 1px solid #e5e5ea; margin: 16px 0; }
 <p>These routes stay unauthenticated and unconditional, so pointing your own Cloudflare Tunnel at Apple Core vends the Apple Core logo from your own domain with no extra configuration.</p>
 <p>If your MCP client still shows a different icon after updating, the cause is likely outside Apple Core: some clients resolve a connector's icon at the registrable domain rather than the exact hostname, so a subdomain's own favicon may never be requested.</p>
 <h2>Upgrading</h2>
-<p>1.0.3 and later update automatically. Installs on 1.0.0 through 1.0.2 still need the one-time manual reinstall described in the <a href="v1.0.3.md">1.0.3 notes</a>, because their update signing key no longer matches the feed.</p>
+<p>1.0.3 and later update automatically. Installs on 1.0.0 through 1.0.2 still need the one-time manual reinstall described in the <a href="https://github.com/oliverames/apple-core/releases/tag/v1.0.3">1.0.3 notes</a>, because their update signing key no longer matches the feed.</p>
       ]]></description>
       <pubDate>Thu, 30 Jul 2026 17:13:53 +0000</pubDate>
       <enclosure url="https://github.com/oliverames/apple-core/releases/download/v1.0.5/Apple.Core-1.0.5.zip"
@@ -428,7 +510,7 @@ hr { border: 0; border-top: 1px solid #e5e5ea; margin: 16px 0; }
 <li><strong>Refused permission prompts are named as such</strong>: macOS reports a plain "denied" both when you click Don't Allow and when it declines to show a prompt at all. The second case is the normal one on a Mac reached over Screen Sharing, where another process holds the foreground, <code class="notranslate">tccd</code> logs "Policy disallows prompt", and nothing is written to the privacy database — so no service can ever be granted there. Apple Core now distinguishes the two and says which happened.</li>
 </ul>
 <h2>Upgrading</h2>
-<p>1.0.3 and later update automatically. Installs on 1.0.0 through 1.0.2 still need the one-time manual reinstall described in the <a href="v1.0.3.md">1.0.3 notes</a>, because their update signing key no longer matches the feed.</p>
+<p>1.0.3 and later update automatically. Installs on 1.0.0 through 1.0.2 still need the one-time manual reinstall described in the <a href="https://github.com/oliverames/apple-core/releases/tag/v1.0.3">1.0.3 notes</a>, because their update signing key no longer matches the feed.</p>
       ]]></description>
       <pubDate>Thu, 30 Jul 2026 15:47:49 +0000</pubDate>
       <enclosure url="https://github.com/oliverames/apple-core/releases/download/v1.0.4/Apple.Core-1.0.4.zip"
@@ -698,6 +780,6 @@ hr { border: 0; border-top: 1px solid #e5e5ea; margin: 16px 0; }
     <!-- `Scripts/release.sh appcast` prepends signed release entries here. -->
   </channel>
 </rss><!-- sparkle-signatures:
-edSignature: pEXxNnLhdzWcvG9LQVSlAyodrjw9sFxNG4dQoEwkZRTRp6yy+W9NW9FTJWM3lIjLtZf9jT8ollemzmtw7ynhBg==
-length: 41244
+edSignature: QZ6ONNNYh5qj5Xz3eVDYwFxdVveL25GsetrElrZUvK4JrnEQBGc8tyg/KF93j+Q91eYZ+tIEya4vHeUEt2iwAA==
+length: 46332
 -->
