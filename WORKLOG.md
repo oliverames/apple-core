@@ -1,5 +1,54 @@
 # Apple Core worklog
 
+## 2026-08-28 - Expanded the Notes and Filesystem surfaces, shipped 1.2.0
+
+**What changed**: Started as a connectivity test of every tool and turned into
+two surface expansions. Notes went 21 -> 32 tools and Filesystem 5 -> 10.
+`notes_list` was resolving each note's folder with its own Apple Event, so a
+default page of 50 outran the client's timeout and read as an unresponsive
+server; it also returned every note twice. Both fixed. Ported the remaining
+AppleScript-only tools from sweetrb/apple-notes-mcp, added a Notes-scoped
+`health_check`/`doctor`, and added four NoteStore.sqlite readers
+(`get_link`, `get_metadata`, `get_checklist_state`, `get_sync_status`).
+Filesystem gained `stat`, `create_folder`, `move`, `copy`, `trash` plus
+`limit`/`offset` paging. Released as v1.2.0 (build 15).
+
+**Decisions made**: Reversed BUILD_PLAN §3.5 and recorded the reversal in the
+plan rather than quietly making it; the original objection stands, but
+`MessagesDatabaseReader` had already established a defensive shape and those
+four capabilities have no AppleScript route. Declined to port
+`get-note-by-id`, `get-note-plaintext` and `get-default-location`: `notes_get`
+and `notes_list_accounts` already cover them, and duplicates would make two
+tools compete for one job. Dropped the containment guard on shared filesystem
+roots after learning the goal is Dropbox-like behaviour; sharing the home
+folder had been silently blocking every folder inside it. Delete goes to the
+Trash, never `removeItem`. Gated the five window-fronting tools behind an
+active GUI session, since the bridge runs headless.
+
+**Verification**: 90 tests pass, `swift format lint --strict` clean, gitleaks
+clean over 239 commits. Notarized, stapled, Gatekeeper `source=Notarized
+Developer ID`. Published zip re-downloaded and hashed to
+`f5ccfead...a1ab`, matching the local build. Sparkle keychain key matches
+`SUPublicEDKey`. Enclosure returns HTTP 200 at the published 9358679 bytes.
+Verification caught two bugs assumption would have shipped: Apple measures
+checklist attribute runs in UTF-16 code units, so `Character` indexing drifts
+one place per emoji, and CoreData ids are per-device, so a foreign id resolves
+to a real but unrelated note. Both now have tests.
+
+**Left off at**: v1.2.0 released, appcast published to gh-pages.
+
+**Open questions**: Apple Home is not feasible as designed. HomeKit is absent
+from the macOS SDK and reachable only from a Mac Catalyst target, and
+`com.apple.developer.homekit` is documented for iOS/iPadOS/tvOS/visionOS/
+watchOS but not macOS. The blocking unknown is whether the developer account
+can enable the HomeKit capability on a Mac App ID; that is a portal check. NEW.
+
+The Home Server still runs the old build; nothing here is live there yet. NEW.
+
+The `sync` automation committed mid-session at 10:55 and pushed part of this
+work under a generic message before it could be committed deliberately. Worth
+knowing that a long editing session races that job. NEW.
+
 ## 2026-08-27 - Shipped the interrupted OAuth hardening as 1.1.1
 
 **What changed**: A Codex session had validated a v1.1.1 release and was killed
