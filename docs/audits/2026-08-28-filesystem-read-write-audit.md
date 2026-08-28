@@ -1,0 +1,231 @@
+# Apple Core filesystem read/write audit
+
+Date: 2026-08-28
+Scope: the 14 filesystem tools, audited against the deployment on home-server
+and against the 1.3.0 source. Findings are marked by how they were established,
+because the live half of this audit could not be completed.
+
+## Summary
+
+The audit began by calling `filesystem_roots` on the live server and getting
+`Connection closed`. That turned out to be a real outage rather than a client
+problem, and diagnosing it consumed the first half of the session. The outage is
+fixed and verified. The authenticated half of the audit — actually reading and
+writing files through the deployed server — remains blocked on a credential
+that is not available unattended, and is the one piece of the requested work
+not delivered.
+
+| Area | Verified how | Verdict |
+| --- | --- | --- |
+| Public endpoint availability | Live | Was broken; fixed and verified |
+| OAuth discovery and unauthenticated refusal | Live | Correct |
+| Authenticated read/write tool calls | Not run | Blocked, see below |
+| Path containment and access control | Source + tests | Sound |
+| Read surface behaviour | Source | Sound, with one flag bug |
+| Write surface behaviour | Source | Sound, with one design inconsistency |
+| Filesystem test suite | Executed | 16 of 16 pass |
+
+## The outage, and why it was not a client problem
+
+`https://applecore.amesvt.com/mcp` returned 502 on six consecutive probes.
+Healthy for this endpoint is 401, not 200, because the server refuses
+unauthenticated calls.
+
+The Cloudflare API reported **two connectors** on tunnel
+`6f89c86d-5f0a-42a5-94eb-ce71c8b877e8`. This is failure mode 4 from the
+`apple-core-cloudflare-funnel` memory: the tunnel is one tunnel, but its
+credentials and LaunchAgent existed on both home-server and this MacBook, so
+Cloudflare round-robined a working origin against a dead one.
+
+The MacBook's leg was the dead one, and its own log named the cause:
+
+```
+ERR Request failed error="Unable to reach the origin service ...
+dial tcp 127.0.0.1:8756: connect: connection refused"
+dest=https://applecore.amesvt.com/mcp
+```
+
+Nothing listens on 8756 here, because Apple Core does not run on this machine.
+The timestamps line up with the probes sent during this audit.
+
+The agent plist was dated 15:47 on 2026-08-28, a few hours before the audit,
+which makes this failure mode 5 rather than a recurrence of 4: a debug build on
+this MacBook re-created `com.oliverames.applecore.cloudflared`, because
+`APPLECORE_CONFIG_HOME` isolates the config directory but not the LaunchAgent
+label or its plist path. The 2026-08-18 fix had been silently undone.
+
+### Fix applied
+
+Restored the documented-correct state on this MacBook, with the user's approval.
+All user-level, no sudo:
+
+```
+launchctl bootout  gui/501/com.oliverames.applecore.cloudflared
+launchctl disable  gui/501/com.oliverames.applecore.cloudflared
+trash ~/Library/LaunchAgents/com.oliverames.applecore.cloudflared.plist
+```
+
+Verified afterwards: plist gone, label reads `disabled`, no cloudflared process
+for the apple-core config, Cloudflare reports **1 connector**, and the endpoint
+returned 401 on twelve consecutive probes across three rounds spaced 20 seconds
+apart. The flap is gone.
+
+The credentials file `~/.cloudflared/6f89c86d-....json` still exists here, so
+the hazard stays latent. Any future debug run that touches remote access on this
+MacBook will re-create the agent and break the endpoint again. That is a bug in
+the app worth fixing at the source: the LaunchAgent label should be namespaced
+by `APPLECORE_CONFIG_HOME` the way the config directory already is.
+
+## What was verified live
+
+With the tunnel healthy, the unauthenticated surface is correct and
+spec-compliant.
+
+The 401 carries a well-formed challenge pointing at its own metadata:
+
+```
+www-authenticate: Bearer realm="Apple Core",
+  resource_metadata="https://applecore.amesvt.com/.well-known/oauth-protected-resource/mcp"
+```
+
+Both discovery documents serve 200 and agree with each other. The authorization
+server metadata advertises `authorization_code` and `refresh_token`, S256 PKCE
+only, and a registration endpoint for dynamic client registration.
+
+Most usefully, `issuer` and `resource` are both the public HTTPS host. That is
+the trap from failure mode 2 in the funnel memory, where a server first run
+without a hostname keeps advertising `http://localhost:8756` through the public
+tunnel. The deployed build is not doing that.
+
+An unauthenticated `tools/list` is refused, so the tool surface is not
+enumerable without a token.
+
+## What could not be verified, and why
+
+Calling the tools with credentials was not possible in this session:
+
+1. **The MCP client session was dead.** It was established while the endpoint
+   was 502 and does not reconnect mid-session.
+2. **SSH to home-server fails.** The 1Password SSH agent returns
+   `communication with agent failed` when signing. The app is running and the
+   agent socket exists, so it is almost certainly locked and needs a Touch ID or
+   password unlock that only Oliver can give.
+3. **There is no Apple Core bearer token in 1Password.** The only Apple Core
+   item in any vault is the Sparkle EdDSA signing key.
+4. **OAuth registration is not viable unattended.** Even with a token, Apple
+   Core holds requests from an unrecognised client until they are approved in
+   the menu bar, and home-server's screen is hard to reach remotely.
+
+So no file was read or written through the deployed server, and consequently
+**no test artifacts were created on home-server** — there was nothing there to
+clean up. The local plist was moved to the Trash rather than deleted, and a copy
+was kept in the session scratchpad in case a rollback is wanted.
+
+One observation that deserves a live check once access is restored. The tool
+schemas this client held were the pre-1.3.0 shapes: `filesystem_read` with no
+`offset`, `filesystem_list` with no `limit`/`offset`, and no
+`filesystem_search_content` at all. That is consistent with a stale client-side
+cache, but it is also what a home-server still running an older build would
+look like. **It is worth confirming that home-server actually serves 1.3.0**,
+since the 502 meant this session never saw a live `tools/list`.
+
+## Source findings
+
+All three are from reading 1.3.0 and are untested by the current suite.
+
+### 1. `filesystem_write` overwrites silently, against the surface's own rule
+
+`filesystem_move` and `filesystem_copy` both refuse to overwrite
+(`Filesystem.swift:221`, `Filesystem.swift:268`), and the error type explains
+why in a comment that states the principle plainly: replacing a file the caller
+did not know was there is "the one mistake in this surface with no undo, since
+the overwritten copy never reaches the Trash."
+
+`filesystem_write` does exactly that. It checks whether the file exists only to
+report the fact afterwards:
+
+```swift
+let existed = FileManager.default.fileExists(atPath: url.path)   // :273
+try content.write(to: url, atomically: true, encoding: .utf8)    // :274
+```
+
+The tool is annotated `destructiveHint: true` and its description says
+"Create or replace", so this is deliberate rather than an oversight, and a
+create-or-replace primitive is a reasonable thing to have. The inconsistency is
+still worth resolving, because the destructive case here is the one the
+surface's own reasoning singles out as unrecoverable, and it is also the case a
+model is most likely to hit by accident: writing a file it believes is new. An
+optional `overwrite` flag defaulting to false would bring it in line with move
+and copy without removing the capability. This is the finding I would act on
+first.
+
+### 2. `filesystem_search_content` reports `truncated` when nothing was truncated
+
+Spotlight hits are re-checked against the allowlist, which is the right thing to
+do, since `mdfind -onlyin` is a separate process and must not be the access
+control. Hits outside the roots are skipped:
+
+```swift
+for hit in hits where matches.count < limit { ... continue ... }  // :703
+"truncated": .bool(hits.count > matches.count),                   // :717
+```
+
+But the truncation flag compares raw hits against returned matches, so every
+filtered-out hit also trips it. A search that returned every permitted match
+still reports `truncated: true` whenever Spotlight saw anything outside the
+roots. A client is then told to narrow a search that was already complete. The
+flag should count hits dropped for the limit, not hits dropped by the
+allowlist.
+
+### 3. Hidden files are listable but not searchable
+
+`filesystem_search` walks with `.skipsHiddenFiles` (`Filesystem.swift:333`),
+while `filesystem_list` applies no such option. A dotfile is therefore visible
+when listing its directory but can never be found by name. Minor, and defensible
+either way, but the two tools should agree. `filesystem_recent` inherits
+Spotlight's own indexing rules and is a third behaviour again.
+
+Also noted, not a defect: `filesystem_recent` caps its results by `limit` but
+returns no `nextOffset`, unlike `filesystem_list` and `filesystem_search`. There
+is no way to page past the cap.
+
+## Access control review
+
+`FilesystemAccess.resolve` is the whole boundary for this surface, and it holds
+up well. It canonicalises with symlinks resolved before comparing, compares
+whole path components so `/Documents-private` is not accepted against a
+`/Documents` root, resolves the parent for files that do not exist yet so writes
+can be checked before creation, refuses a dangling symlink at the final
+component rather than blessing the raw name, and refuses a root that has become
+a symlink since approval instead of following it. Each of those has a stated
+reason in the source and a test behind it.
+
+Worth stating explicitly, since it looks like a hole and is not one:
+`filesystem_copy` takes its source from any readable root and its destination
+from a writable one, so bytes can move from a read-only root into a writable
+one. A client that can read those bytes could already write them back itself, so
+this grants nothing new.
+
+## Test results
+
+`FilesystemAccessTests` and `FilesystemServiceTests`, run on macOS via the
+`Apple Core` scheme: **16 of 16 pass.** Coverage is strong on containment
+(traversal, symlink escape, sibling prefixes, retargeted roots, read-only roots,
+nested writable roots) and on the read windowing (multibyte round-trips,
+windows cut mid-character, non-text windows), plus tag round-trips and Spotlight
+query escaping.
+
+Nothing covers the write path's overwrite behaviour or any of the pagination and
+truncation flags, which is where all three findings above sit.
+
+## Follow-ups
+
+1. Namespace the cloudflared LaunchAgent label by `APPLECORE_CONFIG_HOME` so a
+   debug run cannot overwrite the production agent. This has now broken the
+   public endpoint twice.
+2. Confirm home-server is serving 1.3.0, and re-run the authenticated read/write
+   audit once a token or an unlocked SSH path is available.
+3. Give `filesystem_write` an `overwrite` flag defaulting to false.
+4. Fix the `truncated` flag in `filesystem_search_content`.
+5. Decide on hidden-file handling and make `filesystem_list` and
+   `filesystem_search` agree.
