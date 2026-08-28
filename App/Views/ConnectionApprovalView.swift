@@ -12,6 +12,8 @@ import SwiftUI
 
 struct ConnectionApprovalView: View {
     let clientName: String
+    let authenticationDetail: String
+    let canAlwaysTrust: Bool
     let onApprove: (Bool) -> Void  // Bool parameter is for "always trust"
     let onDeny: () -> Void
 
@@ -50,16 +52,34 @@ struct ConnectionApprovalView: View {
 
                 Divider()
 
-                Toggle(isOn: $alwaysTrust) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Always trust this client")
-                        Text("Trusted clients connect without asking again. Manage them in Settings › Clients.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(authenticationDetail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    if canAlwaysTrust {
+                        Toggle(isOn: $alwaysTrust) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Always trust this OAuth client")
+                                Text(
+                                    "Trusted OAuth clients connect without asking again. Manage them in Settings › Clients."
+                                )
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                        .toggleStyle(.checkbox)
+                    } else {
+                        Text(
+                            "Apple Core will ask again next time because the shared token does not identify one client."
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                     }
                 }
-                .toggleStyle(.checkbox)
             }
             .padding(14)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -98,6 +118,8 @@ final class ConnectionApprovalWindowController: NSObject, NSWindowDelegate {
 
     func showApprovalWindow(
         clientName: String,
+        authenticationDetail: String = "Authenticated OAuth client.",
+        canAlwaysTrust: Bool = true,
         onApprove: @escaping (Bool) -> Void,
         onDeny: @escaping () -> Void
     ) {
@@ -106,6 +128,8 @@ final class ConnectionApprovalWindowController: NSObject, NSWindowDelegate {
         pendingDeny = onDeny
         let approvalView = ConnectionApprovalView(
             clientName: clientName,
+            authenticationDetail: authenticationDetail,
+            canAlwaysTrust: canAlwaysTrust,
             onApprove: { alwaysTrust in
                 self.resolveVisibleDialogAsApproved(
                     clientName: clientName,
@@ -190,6 +214,8 @@ final class ConnectionApprovalWindowController: NSObject, NSWindowDelegate {
 #Preview {
     ConnectionApprovalView(
         clientName: "Claude Desktop",
+        authenticationDetail: "Authenticated OAuth client ames_example…",
+        canAlwaysTrust: true,
         onApprove: { alwaysTrust in
             print("Approved with always trust: \(alwaysTrust)")
         },

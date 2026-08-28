@@ -97,6 +97,46 @@ public enum CloudflareAccount {
         (try? readCertificate(at: certificatePath, fileManager: fileManager)) != nil
     }
 
+    /// Verifies that an existing hostname is the CNAME for the tunnel Apple
+    /// Core is about to adopt. An unreadable certificate, refused API call, or
+    /// malformed response is not treated as proof that the route is safe.
+    public static func dnsRouteStatus(
+        hostname: String,
+        tunnelID: String,
+        certificatePath: String = CloudflareManager.originCertificatePath(),
+        session: URLSession = .shared,
+        fileManager: FileManager = .default
+    ) async -> CloudflareDNSRouteStatus {
+        let certificate: OriginCertificate
+        do {
+            certificate = try readCertificate(at: certificatePath, fileManager: fileManager)
+        } catch {
+            return .unavailable(error.localizedDescription)
+        }
+
+        guard
+            let request = CloudflareDNSRouteVerifier.request(
+                zoneID: certificate.zoneID,
+                hostname: hostname,
+                apiToken: certificate.apiToken
+            )
+        else {
+            return .unavailable("The Cloudflare login did not contain usable DNS credentials.")
+        }
+
+        do {
+            let (data, response) = try await session.data(for: request)
+            return CloudflareDNSRouteVerifier.evaluate(
+                data: data,
+                response: response,
+                hostname: hostname,
+                tunnelID: tunnelID
+            )
+        } catch {
+            return .unavailable("Cloudflare DNS verification failed: \(error.localizedDescription)")
+        }
+    }
+
     // MARK: - Certificate
 
     private static func readCertificate(

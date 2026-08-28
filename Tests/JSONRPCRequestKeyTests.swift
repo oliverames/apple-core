@@ -68,4 +68,28 @@ struct JSONRPCRequestKeyTests {
         #expect(!request.canStartSession)
         #expect(!notification.canStartSession)
     }
+
+    @Test("Cancellation identifiers preserve their JSON type")
+    func cancellationIdentifiersPreserveType() {
+        let numeric = JSONRPCRequestKey.cancelledRequestKey(
+            from: #"{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":1}}"#
+        )
+        let string = JSONRPCRequestKey.cancelledRequestKey(
+            from: #"{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":"1"}}"#
+        )
+
+        #expect(numeric == "number:1")
+        #expect(string == "string:1")
+        #expect(numeric != string)
+
+        for invalid in [
+            #"{"jsonrpc":"2.0","method":"notifications/cancelled","params":{}}"#,
+            #"{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":null}}"#,
+            #"{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":true}}"#,
+            #"{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":1.5}}"#,
+            #"{"jsonrpc":"2.0","method":"notifications/progress","params":{"requestId":1}}"#,
+        ] {
+            #expect(JSONRPCRequestKey.cancelledRequestKey(from: invalid) == nil)
+        }
+    }
 }

@@ -59,6 +59,21 @@ enum JSONRPCRequestKey {
         return hasResult != hasError ? .notificationOrResponse : .invalid
     }
 
+    /// Returns the type-preserving request key named by an MCP cancellation
+    /// notification. String ID `"1"` and numeric ID `1` remain distinct.
+    static func cancelledRequestKey(from message: String) -> String? {
+        guard let data = message.data(using: .utf8),
+            let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            object["jsonrpc"] as? String == "2.0",
+            object["method"] as? String == "notifications/cancelled",
+            let params = object["params"] as? [String: Any],
+            let identifier = params["requestId"]
+        else {
+            return nil
+        }
+        return from(identifier: identifier)
+    }
+
     private static func from(identifier: Any) -> String? {
         if let string = identifier as? String {
             return "string:\(string)"

@@ -302,7 +302,6 @@ public actor CloudflareManager {
 
     public func bootstrapTunnel() async -> CloudflareOperationResult {
         let before = settings
-        var dnsRouteForNewTunnel = false
         guard settings.enabled else {
             let status = await status(
                 messageOverride: "Enable Cloudflare before creating a tunnel.",
@@ -330,14 +329,11 @@ public actor CloudflareManager {
         }
 
         if settings.tunnelId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            let createdThisRun: Bool
             if let existingTunnelId = await existingTunnelID(named: settings.tunnelName) {
                 settings.tunnelId = existingTunnelId
-                createdThisRun = false
             } else if let createdTunnelId = await createTunnel() {
                 settings.tunnelId = createdTunnelId
                 settings.createdByAppleCore = true
-                createdThisRun = true
             } else {
                 let status = await status(
                     messageOverride:
@@ -350,11 +346,6 @@ public actor CloudflareManager {
                     didChangeSettings: before != settings
                 )
             }
-            // A record that already exists is only suspicious when this run
-            // just minted a brand-new tunnel: for it, any pre-existing CNAME
-            // points somewhere else. For a rerun or a linked tunnel the
-            // record is expected to be ours.
-            dnsRouteForNewTunnel = createdThisRun
         }
 
         if settings.credentialsFilePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -368,7 +359,7 @@ public actor CloudflareManager {
         } else if let invalid = Self.hostnameValidationError(for: settings.hostname) {
             routingWarning = invalid
         } else {
-            routingWarning = await ensureDNSRoute(createdThisRun: dnsRouteForNewTunnel)
+            routingWarning = await ensureDNSRoute()
         }
 
         writeCloudflaredConfigIfPossible()
@@ -873,7 +864,7 @@ public actor CloudflareManager {
     /// not be created. The caller surfaces that in the pane: routing failures
     /// used to be logged and discarded, so a tunnel that could never resolve
     /// still reported itself as started.
-    private func ensureDNSRoute(createdThisRun: Bool) async -> String? {
+    private func ensureDNSRoute() async -> String? {
         let tunnel =
             settings.tunnelId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ? settings.tunnelName
@@ -882,29 +873,36 @@ public actor CloudflareManager {
             settings.cloudflaredPath,
             ["tunnel", "route", "dns", tunnel, settings.hostname]
         )
-        if result.status == 0 {
-            return nil
-        }
-
         let combined = "\(result.stdout)\n\(result.stderr)".lowercased()
-        if combined.contains("already exists") || combined.contains("record exists") {
-            // For a brand-new tunnel, an existing record cannot be ours: it
-            // points at another tunnel or origin, and reporting success sent
-            // users chasing ghosts on a setup that looked healthy and could
-            // never work. Reruns and linked tunnels expect the record.
-            if createdThisRun {
-                return
-                    "\(settings.hostname) already has a DNS record pointing elsewhere. Verify it points at tunnel \(tunnel), or delete the record and retry."
+        let recordAlreadyExists = combined.contains("already exists") || combined.contains("record exists")
+        if result.status != 0, !recordAlreadyExists {
+            let detail = sanitized(result.stderr).isEmpty ? sanitized(result.stdout) : sanitized(result.stderr)
+            logMessage("CloudflareManager: DNS route setup failed: \(detail)")
+            if combined.contains("cert.pem") || combined.contains("login") || combined.contains("origincert") {
+                return "Cloudflare login required before \(settings.hostname) can be routed. Use Log In to Cloudflare."
             }
-            return nil
+            return "Could not route \(settings.hostname) to this tunnel: \(detail)"
         }
 
-        let detail = sanitized(result.stderr).isEmpty ? sanitized(result.stdout) : sanitized(result.stderr)
-        logMessage("CloudflareManager: DNS route setup failed: \(detail)")
-        if combined.contains("cert.pem") || combined.contains("login") || combined.contains("origincert") {
-            return "Cloudflare login required before \(settings.hostname) can be routed. Use Log In to Cloudflare."
+        // `cloudflared tunnel route dns` reports an existing record without
+        // proving where it points. Verify every successful or idempotent route
+        // through Cloudflare's DNS API before treating adoption as complete.
+        let routeStatus = await CloudflareAccount.dnsRouteStatus(
+            hostname: settings.hostname,
+            tunnelID: settings.tunnelId
+        )
+        switch routeStatus {
+        case .matches:
+            return nil
+        case .missing:
+            return
+                "Cloudflare did not return a CNAME for \(settings.hostname). Wait for DNS to update, then try again."
+        case let .pointsElsewhere(target):
+            return
+                "\(settings.hostname) points to \(target), not tunnel \(settings.tunnelId). Update or remove that DNS record, then retry."
+        case let .unavailable(detail):
+            return "Apple Core could not verify the existing Cloudflare DNS route: \(detail)"
         }
-        return "Could not route \(settings.hostname) to this tunnel: \(detail)"
     }
 
     private func isLaunchAgentRunning() async -> Bool {

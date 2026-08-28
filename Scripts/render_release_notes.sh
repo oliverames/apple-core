@@ -65,6 +65,17 @@ fi
 # GitHub release page rendering).
 HTML_BODY=$(printf '%s' "$SECTION" | gh api -X POST /markdown -F mode=gfm -F text=@-)
 
+# A relative vX.Y.Z.md link resolves beside appcast.xml, not beside the source
+# Markdown file. Use the stable GitHub release URL in Sparkle's rendered notes.
+HTML_BODY=$(
+    printf '%s' "$HTML_BODY" \
+        | sed -E 's#href="v([0-9]+\.[0-9]+\.[0-9]+)\.md"#href="https://github.com/oliverames/apple-core/releases/tag/v\1"#g'
+)
+if printf '%s' "$HTML_BODY" | rg -q 'href="v[0-9]+\.[0-9]+\.[0-9]+\.md"'; then
+    echo "Error: rendered release notes contain a relative version link" >&2
+    exit 2
+fi
+
 # CDATA safety: escape `]]>` so it cannot prematurely close the appcast
 # description CDATA section.
 HTML_BODY_SAFE=$(printf '%s' "$HTML_BODY" | sed 's/]]>/]]]]><![CDATA[>/g')

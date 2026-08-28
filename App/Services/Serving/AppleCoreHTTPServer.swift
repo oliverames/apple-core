@@ -32,13 +32,20 @@ public actor AppleCoreHTTPServer {
     /// to plumb SSE bytes in and out; everything upstream of it (the
     /// `MCP.Server` instance, approval flow, `registerHandlers`) is owned by
     /// ServerNetworkManager.
-    public typealias SessionFactory = @Sendable (_ id: String, _ surface: MCPAccessSurface) async -> MCPSSESession
+    public typealias SessionFactory =
+        @Sendable (
+            _ id: String,
+            _ surface: MCPAccessSurface,
+            _ principal: AuthenticatedPrincipal
+        ) async -> MCPSSESession
 
     private let config: AppleCoreServingConfig
     private let oauthStore: OAuthTokenStore
     private var server: HTTPServer?
     private var sessions: [String: MCPSSESession] = [:]
     private var sessionSurfaces: [String: MCPAccessSurface] = [:]
+    private var sessionPrincipals: [String: AuthenticatedPrincipal] = [:]
+    private var oauthClientGate = OAuthClientOperationGate()
     private var pendingSessionReservations = 0
     private var sessionFactory: SessionFactory?
     private var sessionCloseHandler: (@Sendable (String) -> Void)?
@@ -67,6 +74,41 @@ public actor AppleCoreHTTPServer {
 
     public func activeSessionCount() -> Int {
         sessions.count
+    }
+
+    @discardableResult
+    public func disconnectOAuthClient(_ clientID: String) async throws -> Bool {
+        // Block synchronously before the first suspension. Requests that were
+        // authenticated just before this administrative action cannot create
+        // a new session while the token store write is in flight.
+        oauthClientGate.beginDisconnect(for: clientID)
+        defer { oauthClientGate.finishDisconnect(for: clientID) }
+        let matchingSessionIDs = sessionPrincipals.compactMap { sessionID, principal in
+            principal.trustedClientID == clientID ? sessionID : nil
+        }
+        let matchingSessions = matchingSessionIDs.compactMap { sessionID -> (String, MCPSSESession)? in
+            guard let session = sessions.removeValue(forKey: sessionID) else { return nil }
+            sessionSurfaces.removeValue(forKey: sessionID)
+            sessionPrincipals.removeValue(forKey: sessionID)
+            return (sessionID, session)
+        }
+
+        let removed: Bool
+        do {
+            removed = try await oauthStore.removeClient(id: clientID)
+        } catch {
+            for (sessionID, session) in matchingSessions {
+                await session.close(callOnClose: false)
+                sessionCloseHandler?(sessionID)
+            }
+            throw error
+        }
+
+        for (sessionID, session) in matchingSessions {
+            await session.close(callOnClose: false)
+            sessionCloseHandler?(sessionID)
+        }
+        return removed
     }
 
     public func start() async throws {
@@ -173,6 +215,16 @@ public actor AppleCoreHTTPServer {
             return await self.oauthToken(request)
         }
 
+        handler.appendRoute("OPTIONS /oauth/revoke") { [weak self] request in
+            guard let self else { return HTTPResponse(statusCode: .internalServerError) }
+            return await self.oauthPreflightResponse(for: request)
+        }
+
+        handler.appendRoute("POST /oauth/revoke") { [weak self] request in
+            guard let self else { return HTTPResponse(statusCode: .internalServerError) }
+            return await self.oauthRevoke(request)
+        }
+
         handler.appendRoute("GET /oauth/authorize") { [weak self] request in
             guard let self else { return HTTPResponse(statusCode: .internalServerError) }
             return await self.oauthAuthorizeForm(request)
@@ -185,43 +237,53 @@ public actor AppleCoreHTTPServer {
 
         handler.appendRoute("GET /status") { [weak self] request in
             guard let self else { return HTTPResponse(statusCode: .internalServerError) }
-            guard await self.isAuthorized(request) else { return await self.unauthorizedResponse(for: request) }
+            guard await self.authenticate(request) != nil else { return await self.unauthorizedResponse(for: request) }
             return await self.statusResponse()
         }
 
         handler.appendRoute("GET /sse") { [weak self] request in
             guard let self else { return HTTPResponse(statusCode: .internalServerError) }
             guard await self.isRequestAllowed(request) else { return Self.textResponse(.forbidden, "Forbidden\n") }
-            guard await self.isAuthorized(request) else { return await self.unauthorizedResponse(for: request) }
-            return await self.openLegacySSE(request)
+            guard let principal = await self.authenticate(request) else {
+                return await self.unauthorizedResponse(for: request)
+            }
+            return await self.openLegacySSE(request, principal: principal)
         }
 
         handler.appendRoute("POST /message") { [weak self] request in
             guard let self else { return HTTPResponse(statusCode: .internalServerError) }
             guard await self.isRequestAllowed(request) else { return Self.textResponse(.forbidden, "Forbidden\n") }
-            guard await self.isAuthorized(request) else { return await self.unauthorizedResponse(for: request) }
-            return await self.postLegacyMessage(request)
+            guard let principal = await self.authenticate(request) else {
+                return await self.unauthorizedResponse(for: request)
+            }
+            return await self.postLegacyMessage(request, principal: principal)
         }
 
         handler.appendRoute("GET /mcp") { [weak self] request in
             guard let self else { return HTTPResponse(statusCode: .internalServerError) }
             guard await self.isRequestAllowed(request) else { return Self.textResponse(.forbidden, "Forbidden\n") }
-            guard await self.isAuthorized(request) else { return await self.unauthorizedResponse(for: request) }
-            return await self.openStreamableHTTP(request)
+            guard let principal = await self.authenticate(request) else {
+                return await self.unauthorizedResponse(for: request)
+            }
+            return await self.openStreamableHTTP(request, principal: principal)
         }
 
         handler.appendRoute("POST /mcp") { [weak self] request in
             guard let self else { return HTTPResponse(statusCode: .internalServerError) }
             guard await self.isRequestAllowed(request) else { return Self.textResponse(.forbidden, "Forbidden\n") }
-            guard await self.isAuthorized(request) else { return await self.unauthorizedResponse(for: request) }
-            return await self.postStreamableHTTP(request)
+            guard let principal = await self.authenticate(request) else {
+                return await self.unauthorizedResponse(for: request)
+            }
+            return await self.postStreamableHTTP(request, principal: principal)
         }
 
         handler.appendRoute("DELETE /mcp") { [weak self] request in
             guard let self else { return HTTPResponse(statusCode: .internalServerError) }
             guard await self.isRequestAllowed(request) else { return Self.textResponse(.forbidden, "Forbidden\n") }
-            guard await self.isAuthorized(request) else { return await self.unauthorizedResponse(for: request) }
-            return await self.deleteStreamableHTTPSession(request)
+            guard let principal = await self.authenticate(request) else {
+                return await self.unauthorizedResponse(for: request)
+            }
+            return await self.deleteStreamableHTTPSession(request, principal: principal)
         }
 
         handler.appendRoute("*") { _ in
@@ -252,6 +314,7 @@ public actor AppleCoreHTTPServer {
         }
         sessions.removeAll()
         sessionSurfaces.removeAll()
+        sessionPrincipals.removeAll()
     }
 
     private func reapIdleSessions() async {
@@ -260,6 +323,7 @@ public actor AppleCoreHTTPServer {
             logMessage("AppleCoreHTTPServer: Closing idle session \(id)")
             sessions.removeValue(forKey: id)
             sessionSurfaces.removeValue(forKey: id)
+            sessionPrincipals.removeValue(forKey: id)
             await session.close(callOnClose: false)
             sessionCloseHandler?(id)
         }
@@ -304,6 +368,7 @@ public actor AppleCoreHTTPServer {
                 "issuer": oauthIssuer,
                 "authorization_endpoint": "\(oauthIssuer)/oauth/authorize",
                 "token_endpoint": "\(oauthIssuer)/oauth/token",
+                "revocation_endpoint": "\(oauthIssuer)/oauth/revoke",
                 "registration_endpoint": "\(oauthIssuer)/oauth/register",
                 "response_types_supported": ["code"],
                 "grant_types_supported": ["authorization_code", "refresh_token"],
@@ -360,7 +425,7 @@ public actor AppleCoreHTTPServer {
             }
 
             let clientName = (object["client_name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
-            let client = await oauthStore.registerClient(
+            let client = try await oauthStore.registerClient(
                 clientName: clientName?.isEmpty == false ? clientName! : "Claude",
                 redirectURIs: redirectURIs
             )
@@ -379,6 +444,14 @@ public actor AppleCoreHTTPServer {
                 request: request,
                 noStore: true
             )
+        } catch let error as OAuthTokenStoreError {
+            logMessage("AppleCoreHTTPServer: OAuth registration persistence failed: \(error.localizedDescription)")
+            return Self.oauthErrorResponse(
+                .internalServerError,
+                "server_error",
+                "Apple Core could not save the OAuth client registration.",
+                request: request
+            )
         } catch {
             return Self.oauthErrorResponse(
                 .badRequest,
@@ -391,16 +464,25 @@ public actor AppleCoreHTTPServer {
 
     private func oauthAuthorizeForm(_ request: HTTPRequest) async -> HTTPResponse {
         let query = OAuthSupport.queryDictionary(request.query.map { URLQueryItem(name: $0.name, value: $0.value) })
-        guard let validation = await validatedAuthorizationRequest(query) else {
+        do {
+            guard let validation = try await validatedAuthorizationRequest(query) else {
+                return Self.oauthErrorResponse(
+                    .badRequest,
+                    "invalid_request",
+                    "Invalid OAuth authorization request.",
+                    request: request
+                )
+            }
+            return Self.htmlResponse(.ok, authorizationFormHTML(validation: validation, error: nil))
+        } catch {
+            logMessage("AppleCoreHTTPServer: OAuth client adoption persistence failed: \(error.localizedDescription)")
             return Self.oauthErrorResponse(
-                .badRequest,
-                "invalid_request",
-                "Invalid OAuth authorization request.",
+                .internalServerError,
+                "server_error",
+                "Apple Core could not save the OAuth client registration.",
                 request: request
             )
         }
-
-        return Self.htmlResponse(.ok, authorizationFormHTML(validation: validation, error: nil))
     }
 
     private func oauthApproveAuthorization(_ request: HTTPRequest) async -> HTTPResponse {
@@ -413,7 +495,7 @@ public actor AppleCoreHTTPServer {
             }
 
             let form = OAuthSupport.parseFormURLEncoded(data)
-            guard let validation = await validatedAuthorizationRequest(form) else {
+            guard let validation = try await validatedAuthorizationRequest(form) else {
                 return Self.oauthErrorResponse(
                     .badRequest,
                     "invalid_request",
@@ -467,6 +549,14 @@ public actor AppleCoreHTTPServer {
             var headers = HTTPHeaders()
             headers[HTTPHeader("Location")] = components.url?.absoluteString ?? validation.redirectURI
             return HTTPResponse(statusCode: .seeOther, headers: headers)
+        } catch let error as OAuthTokenStoreError {
+            logMessage("AppleCoreHTTPServer: OAuth approval persistence failed: \(error.localizedDescription)")
+            return Self.oauthErrorResponse(
+                .internalServerError,
+                "server_error",
+                "Apple Core could not save the OAuth client registration.",
+                request: request
+            )
         } catch {
             return Self.oauthErrorResponse(
                 .badRequest,
@@ -497,29 +587,44 @@ public actor AppleCoreHTTPServer {
             }
 
             let form = OAuthSupport.parseFormURLEncoded(data)
+            guard let resource = form["resource"], isAllowedOAuthResource(resource) else {
+                return Self.oauthErrorResponse(
+                    .badRequest,
+                    "invalid_target",
+                    "The resource must exactly match the advertised Apple Core MCP resource.",
+                    request: request
+                )
+            }
             let grantType = form["grant_type"]
             let tokenPair: OAuthTokenPair?
+            let clientID: String
+            let issuanceSnapshot: OAuthClientOperationGate.TokenIssuanceSnapshot
 
             if grantType == "authorization_code",
                 let code = form["code"],
-                let clientID = form["client_id"],
+                let formClientID = form["client_id"],
                 let redirectURI = form["redirect_uri"],
                 let verifier = form["code_verifier"]
             {
-                tokenPair = await oauthStore.redeemAuthorizationCode(
+                clientID = formClientID
+                issuanceSnapshot = oauthClientGate.tokenIssuanceSnapshot(for: formClientID)
+                tokenPair = try await oauthStore.redeemAuthorizationCode(
                     code: code,
-                    clientID: clientID,
+                    clientID: formClientID,
                     redirectURI: redirectURI,
-                    codeVerifier: verifier
+                    codeVerifier: verifier,
+                    resource: resource
                 )
             } else if grantType == "refresh_token",
                 let refreshToken = form["refresh_token"],
-                let clientID = form["client_id"]
+                let formClientID = form["client_id"]
             {
-                tokenPair = await oauthStore.redeemRefreshToken(
+                clientID = formClientID
+                issuanceSnapshot = oauthClientGate.tokenIssuanceSnapshot(for: formClientID)
+                tokenPair = try await oauthStore.redeemRefreshToken(
                     refreshToken,
-                    clientID: clientID,
-                    resource: form["resource"]
+                    clientID: formClientID,
+                    resource: resource
                 )
             } else {
                 return Self.oauthErrorResponse(
@@ -538,6 +643,26 @@ public actor AppleCoreHTTPServer {
                     request: request
                 )
             }
+            guard oauthClientGate.acceptTokenIssuance(for: clientID, snapshot: issuanceSnapshot) else {
+                do {
+                    _ = try await oauthStore.revokeToken(
+                        tokenPair.refreshToken,
+                        clientID: clientID,
+                        tokenTypeHint: "refresh_token"
+                    )
+                } catch {
+                    logMessage(
+                        "AppleCoreHTTPServer: Failed to discard token issued across a client disconnect: "
+                            + error.localizedDescription
+                    )
+                }
+                return Self.oauthErrorResponse(
+                    .badRequest,
+                    "invalid_grant",
+                    "The OAuth client was disconnected during this token exchange.",
+                    request: request
+                )
+            }
 
             return Self.jsonResponse(
                 .ok,
@@ -551,6 +676,14 @@ public actor AppleCoreHTTPServer {
                 request: request,
                 noStore: true
             )
+        } catch let error as OAuthTokenStoreError {
+            logMessage("AppleCoreHTTPServer: OAuth token persistence failed: \(error.localizedDescription)")
+            return Self.oauthErrorResponse(
+                .internalServerError,
+                "server_error",
+                "Apple Core could not save the OAuth token exchange.",
+                request: request
+            )
         } catch {
             return Self.oauthErrorResponse(
                 .badRequest,
@@ -561,11 +694,74 @@ public actor AppleCoreHTTPServer {
         }
     }
 
+    private func oauthRevoke(_ request: HTTPRequest) async -> HTTPResponse {
+        do {
+            guard Self.isContentLengthAllowed(request),
+                let data = try await boundedRequestBody(request)
+            else {
+                return Self.oauthErrorResponse(
+                    .payloadTooLarge,
+                    "invalid_request",
+                    "Request body too large.",
+                    request: request
+                )
+            }
+
+            let form = OAuthSupport.parseFormURLEncoded(data)
+            guard let token = form["token"], !token.isEmpty,
+                let clientID = form["client_id"], !clientID.isEmpty
+            else {
+                return Self.oauthErrorResponse(
+                    .badRequest,
+                    "invalid_request",
+                    "Expected token and client_id.",
+                    request: request
+                )
+            }
+            guard await oauthStore.client(id: clientID) != nil else {
+                return Self.oauthErrorResponse(
+                    .badRequest,
+                    "invalid_client",
+                    "The OAuth client is not registered.",
+                    request: request
+                )
+            }
+
+            _ = try await oauthStore.revokeToken(
+                token,
+                clientID: clientID,
+                tokenTypeHint: form["token_type_hint"]
+            )
+            return HTTPResponse(
+                statusCode: .ok,
+                headers: Self.oauthCORSHeaders(for: request)
+            )
+        } catch let error as OAuthTokenStoreError {
+            logMessage("AppleCoreHTTPServer: OAuth revocation persistence failed: \(error.localizedDescription)")
+            return Self.oauthErrorResponse(
+                .internalServerError,
+                "server_error",
+                "Apple Core could not persist token revocation.",
+                request: request
+            )
+        } catch {
+            return Self.oauthErrorResponse(
+                .badRequest,
+                "invalid_request",
+                "Could not read OAuth revocation request.",
+                request: request
+            )
+        }
+    }
+
     // MARK: - Legacy SSE
 
-    private func openLegacySSE(_ request: HTTPRequest) async -> HTTPResponse {
+    private func openLegacySSE(
+        _ request: HTTPRequest,
+        principal: AuthenticatedPrincipal
+    ) async -> HTTPResponse {
         do {
-            let (session, _) = try await makeSession(for: request)
+            let (session, _) = try await makeSession(for: request, principal: principal)
             let endpointEvent = "event: endpoint\ndata: /message?sessionId=\(session.id)\n\n"
             let (_, stream) = await session.addPersistentStream(initialEvents: [endpointEvent])
             return sseResponse(stream: stream, sessionId: session.id)
@@ -577,7 +773,10 @@ public actor AppleCoreHTTPServer {
         }
     }
 
-    private func postLegacyMessage(_ request: HTTPRequest) async -> HTTPResponse {
+    private func postLegacyMessage(
+        _ request: HTTPRequest,
+        principal: AuthenticatedPrincipal
+    ) async -> HTTPResponse {
         guard let sessionId = request.query.first(where: { $0.name == "sessionId" })?.value,
             !sessionId.isEmpty
         else {
@@ -589,6 +788,9 @@ public actor AppleCoreHTTPServer {
         }
         guard sessionSurfaces[sessionId] == requestSurface(for: request) else {
             return Self.textResponse(.forbidden, "Session access surface changed\n")
+        }
+        guard sessionPrincipals[sessionId] == principal else {
+            return Self.textResponse(.forbidden, "Session authenticated client changed\n")
         }
 
         do {
@@ -610,7 +812,10 @@ public actor AppleCoreHTTPServer {
 
     // MARK: - Streamable HTTP
 
-    private func openStreamableHTTP(_ request: HTTPRequest) async -> HTTPResponse {
+    private func openStreamableHTTP(
+        _ request: HTTPRequest,
+        principal: AuthenticatedPrincipal
+    ) async -> HTTPResponse {
         // A standalone GET stream belongs to an initialized session. Creating
         // a fresh session here let authenticated clients occupy all 64 slots
         // with streams that could never initialize and never became idle.
@@ -620,11 +825,11 @@ public actor AppleCoreHTTPServer {
             return Self.textResponse(.badRequest, "Missing Mcp-Session-Id header\n")
         }
         let session: MCPSSESession
-        switch resolveSession(request) {
+        switch resolveSession(request, principal: principal) {
         case .notFound:
             return Self.textResponse(.notFound, "Session not found\n")
         case .scopeMismatch:
-            return Self.textResponse(.forbidden, "Session access surface changed\n")
+            return Self.textResponse(.forbidden, "Session access scope changed\n")
         case .existing(let existing, _):
             session = existing
         case .new:
@@ -634,7 +839,10 @@ public actor AppleCoreHTTPServer {
         return sseResponse(stream: stream, sessionId: session.id)
     }
 
-    private func postStreamableHTTP(_ request: HTTPRequest) async -> HTTPResponse {
+    private func postStreamableHTTP(
+        _ request: HTTPRequest,
+        principal: AuthenticatedPrincipal
+    ) async -> HTTPResponse {
         do {
             guard Self.isContentLengthAllowed(request) else {
                 return Self.textResponse(.payloadTooLarge, "Request body too large\n")
@@ -652,11 +860,11 @@ public actor AppleCoreHTTPServer {
             }
 
             let session: MCPSSESession
-            switch resolveSession(request) {
+            switch resolveSession(request, principal: principal) {
             case .notFound:
                 return Self.textResponse(.notFound, "Session not found\n")
             case .scopeMismatch:
-                return Self.textResponse(.forbidden, "Session access surface changed\n")
+                return Self.textResponse(.forbidden, "Session access scope changed\n")
             case .existing(let existing, _):
                 session = existing
             case .new(let newSurface):
@@ -666,11 +874,14 @@ public actor AppleCoreHTTPServer {
                         "Only initialize requests can start an MCP session\n"
                     )
                 }
-                (session, _) = try await makeSession(surface: newSurface)
+                (session, _) = try await makeSession(surface: newSurface, principal: principal)
             }
 
             guard case .request(let requestId, _) = message else {
                 await session.writeToServer(bodyString)
+                if let cancelledRequestID = JSONRPCRequestKey.cancelledRequestKey(from: bodyString) {
+                    await session.finishResponseStream(for: cancelledRequestID)
+                }
                 var headers = HTTPHeaders()
                 headers[Self.sessionHeader] = session.id
                 return HTTPResponse(statusCode: .accepted, headers: headers)
@@ -687,7 +898,10 @@ public actor AppleCoreHTTPServer {
         }
     }
 
-    private func deleteStreamableHTTPSession(_ request: HTTPRequest) async -> HTTPResponse {
+    private func deleteStreamableHTTPSession(
+        _ request: HTTPRequest,
+        principal: AuthenticatedPrincipal
+    ) async -> HTTPResponse {
         guard let sessionId = request.headers[Self.sessionHeader],
             let session = sessions[sessionId]
         else {
@@ -696,8 +910,12 @@ public actor AppleCoreHTTPServer {
         guard sessionSurfaces[sessionId] == requestSurface(for: request) else {
             return Self.textResponse(.forbidden, "Session access surface changed\n")
         }
+        guard sessionPrincipals[sessionId] == principal else {
+            return Self.textResponse(.forbidden, "Session authenticated client changed\n")
+        }
         sessions.removeValue(forKey: sessionId)
         sessionSurfaces.removeValue(forKey: sessionId)
+        sessionPrincipals.removeValue(forKey: sessionId)
         await session.close(callOnClose: false)
         sessionCloseHandler?(sessionId)
         return HTTPResponse(statusCode: .accepted)
@@ -749,11 +967,27 @@ public actor AppleCoreHTTPServer {
         )
     }
 
-    private func makeSession(for request: HTTPRequest) async throws -> (MCPSSESession, MCPAccessSurface) {
-        try await makeSession(surface: requestSurface(for: request))
+    private func makeSession(
+        for request: HTTPRequest,
+        principal: AuthenticatedPrincipal
+    ) async throws -> (MCPSSESession, MCPAccessSurface) {
+        try await makeSession(surface: requestSurface(for: request), principal: principal)
     }
 
-    private func makeSession(surface: MCPAccessSurface) async throws -> (MCPSSESession, MCPAccessSurface) {
+    private func makeSession(
+        surface: MCPAccessSurface,
+        principal: AuthenticatedPrincipal
+    ) async throws -> (MCPSSESession, MCPAccessSurface) {
+        let clientID = principal.trustedClientID
+        let sessionGeneration: UInt64?
+        if let clientID {
+            guard let generation = oauthClientGate.sessionGeneration(for: clientID) else {
+                throw AppleCoreHTTPServerError.clientDisconnected
+            }
+            sessionGeneration = generation
+        } else {
+            sessionGeneration = nil
+        }
         guard let sessionFactory else {
             throw AppleCoreHTTPServerError.sessionFactoryNotConfigured
         }
@@ -767,12 +1001,23 @@ public actor AppleCoreHTTPServer {
         defer { pendingSessionReservations -= 1 }
 
         let id = UUID().uuidString.lowercased()
-        let session = await sessionFactory(id, surface)
+        let session = await sessionFactory(id, surface, principal)
+        if let clientID,
+            let sessionGeneration,
+            !oauthClientGate.permitsSession(for: clientID, generation: sessionGeneration)
+        {
+            // The factory owns upstream MCP state, so retire both halves when
+            // a disconnect crossed this suspension point.
+            await session.close(callOnClose: false)
+            sessionCloseHandler?(id)
+            throw AppleCoreHTTPServerError.clientDisconnected
+        }
         // Register here rather than at the call sites: callers await more
         // work before they would have registered, which would release the
         // reservation while the session is still invisible to the counters.
         sessions[id] = session
         sessionSurfaces[id] = surface
+        sessionPrincipals[id] = principal
         return (session, surface)
     }
 
@@ -786,7 +1031,10 @@ public actor AppleCoreHTTPServer {
     /// A request without an Mcp-Session-Id header starts a new session. A
     /// request with one must reference a live session; otherwise the client
     /// gets 404 and re-initializes per the Streamable HTTP spec.
-    private func resolveSession(_ request: HTTPRequest) -> SessionResolution {
+    private func resolveSession(
+        _ request: HTTPRequest,
+        principal: AuthenticatedPrincipal
+    ) -> SessionResolution {
         let surface = requestSurface(for: request)
         guard let sessionId = request.headers[Self.sessionHeader], !sessionId.isEmpty else {
             return .new(surface)
@@ -794,7 +1042,7 @@ public actor AppleCoreHTTPServer {
         guard let session = sessions[sessionId], let originalSurface = sessionSurfaces[sessionId] else {
             return .notFound
         }
-        guard originalSurface == surface else {
+        guard originalSurface == surface, sessionPrincipals[sessionId] == principal else {
             return .scopeMismatch
         }
         return .existing(session, originalSurface)
@@ -832,22 +1080,12 @@ public actor AppleCoreHTTPServer {
     }
 
     private func isAllowedOAuthResource(_ resource: String) -> Bool {
-        guard let resourceComponents = URLComponents(string: resource),
-            let issuerComponents = URLComponents(string: oauthIssuer),
-            resourceComponents.scheme?.lowercased() == issuerComponents.scheme?.lowercased(),
-            resourceComponents.host?.lowercased() == issuerComponents.host?.lowercased(),
-            resourceComponents.port == issuerComponents.port
-        else {
-            return false
-        }
-
-        let pathComponents = resourceComponents.path.split(separator: "/", omittingEmptySubsequences: true).map(
-            String.init
-        )
-        return pathComponents == ["mcp"]
+        OAuthSupport.isCanonicalResource(resource, canonicalResource: oauthMCPResourceURL)
     }
 
-    private func validatedAuthorizationRequest(_ values: [String: String]) async -> OAuthAuthorizationValidation? {
+    private func validatedAuthorizationRequest(_ values: [String: String]) async throws
+        -> OAuthAuthorizationValidation?
+    {
         guard values["response_type"] == "code",
             values["code_challenge_method"] == "S256",
             let clientID = values["client_id"],
@@ -862,7 +1100,7 @@ public actor AppleCoreHTTPServer {
 
         var client = await oauthStore.client(id: clientID)
         if client == nil {
-            client = await oauthStore.adoptClientIfNeeded(
+            client = try await oauthStore.adoptClientIfNeeded(
                 clientID: clientID,
                 clientName: Self.oauthClientName(from: redirectURI),
                 redirectURI: redirectURI
@@ -966,19 +1204,23 @@ public actor AppleCoreHTTPServer {
         return allowedOrigins.contains(origin)
     }
 
-    private func isAuthorized(_ request: HTTPRequest) async -> Bool {
+    private func authenticate(_ request: HTTPRequest) async -> AuthenticatedPrincipal? {
         let token = config.token ?? ""
-        guard !token.isEmpty else { return false }
+        guard !token.isEmpty else { return nil }
 
         if let authHeader = request.headers[.authorization] {
             if Self.constantTimeEquals(authHeader, "Bearer \(token)") {
-                return true
+                return .sharedBearer
             }
 
             if authHeader.lowercased().hasPrefix("bearer ") {
                 let accessToken = String(authHeader.dropFirst("Bearer ".count))
-                if await oauthStore.isValidAccessToken(accessToken, resource: oauthMCPResourceURL) {
-                    return true
+                if let client = await oauthStore.authenticatedClient(
+                    forAccessToken: accessToken,
+                    resource: oauthMCPResourceURL
+                ) {
+                    guard !oauthClientGate.isBlocked(client.clientID) else { return nil }
+                    return .oauth(clientID: client.clientID, registeredName: client.clientName)
                 }
             }
         }
@@ -988,7 +1230,7 @@ public actor AppleCoreHTTPServer {
         // browser history and Referer headers, which is exactly what the
         // Authorization header exists to avoid. It was described as a fallback
         // for legacy clients, and no MCP client needs it.
-        return false
+        return nil
     }
 
     private static func textResponse(_ statusCode: HTTPStatusCode, _ text: String) -> HTTPResponse {
@@ -1254,6 +1496,7 @@ public actor AppleCoreHTTPServer {
 }
 
 public enum AppleCoreHTTPServerError: Swift.Error {
+    case clientDisconnected
     case sessionFactoryNotConfigured
     case tooManySessions
 }

@@ -19,6 +19,28 @@ public struct OAuthRegisteredClient: Codable, Sendable {
     public let issuedAt: Int
 }
 
+/// Server-derived identity for one authenticated HTTP client. MCP's
+/// `clientInfo` is display metadata supplied by the client and must never be
+/// used as an authorization or durable-trust key.
+public enum AuthenticatedPrincipal: Sendable, Hashable {
+    case sharedBearer
+    case oauth(clientID: String, registeredName: String)
+
+    public var trustedClientID: String? {
+        guard case let .oauth(clientID, _) = self else { return nil }
+        return clientID
+    }
+
+    public var registeredName: String? {
+        guard case let .oauth(_, registeredName) = self else { return nil }
+        return registeredName
+    }
+
+    public var canBeTrusted: Bool {
+        trustedClientID != nil
+    }
+}
+
 private struct PersistedOAuthClientRegistry: Codable {
     let clients: [OAuthRegisteredClient]
 }
@@ -46,6 +68,8 @@ private struct PersistedOAuthAccessTokens: Codable {
 
 private struct PersistedOAuthAccessToken: Codable {
     let token: String
+    let clientID: String?
+    let grantID: String?
     let resource: String
     let expiresAt: Date
 }
@@ -53,6 +77,7 @@ private struct PersistedOAuthAccessToken: Codable {
 private struct PersistedOAuthRefreshToken: Codable {
     let token: String
     let clientID: String
+    let grantID: String?
     let resource: String
     let expiresAt: Date
 }
@@ -68,6 +93,8 @@ private struct OAuthAuthorizationCode: Sendable {
 
 private struct OAuthAccessToken: Sendable {
     let token: String
+    let clientID: String
+    let grantID: String
     let resource: String
     let expiresAt: Date
 }
@@ -75,6 +102,7 @@ private struct OAuthAccessToken: Sendable {
 private struct OAuthRefreshToken: Sendable {
     let token: String
     let clientID: String
+    let grantID: String
     let resource: String
     let expiresAt: Date
 }
@@ -84,6 +112,91 @@ public struct OAuthTokenPair: Sendable, Equatable {
     public let refreshToken: String
 }
 
+public enum OAuthTokenStoreError: LocalizedError, Equatable, Sendable {
+    case persistenceFailed(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case let .persistenceFailed(detail):
+            return "Apple Core could not save the OAuth client state: \(detail)"
+        }
+    }
+}
+
+/// Coordinates administrative disconnects with actor-reentrant token and
+/// session creation. A monotonically increasing generation prevents work
+/// that began before a disconnect from becoming valid after a later OAuth
+/// exchange reconnects the same client ID.
+struct OAuthClientOperationGate: Sendable {
+    struct TokenIssuanceSnapshot: Equatable, Sendable {
+        fileprivate let generation: UInt64
+        fileprivate let beganDuringDisconnect: Bool
+    }
+
+    private struct ClientState: Sendable {
+        var generation: UInt64 = 0
+        var activeDisconnects = 0
+        var isBlocked = false
+    }
+
+    private var states: [String: ClientState] = [:]
+
+    mutating func beginDisconnect(for clientID: String) {
+        var state = states[clientID] ?? ClientState()
+        state.generation &+= 1
+        state.activeDisconnects += 1
+        state.isBlocked = true
+        states[clientID] = state
+    }
+
+    mutating func finishDisconnect(for clientID: String) {
+        guard var state = states[clientID], state.activeDisconnects > 0 else {
+            assertionFailure("OAuth disconnect finished without a matching start")
+            return
+        }
+        state.activeDisconnects -= 1
+        states[clientID] = state
+    }
+
+    func isBlocked(_ clientID: String) -> Bool {
+        states[clientID]?.isBlocked ?? false
+    }
+
+    func sessionGeneration(for clientID: String) -> UInt64? {
+        let state = states[clientID] ?? ClientState()
+        return state.isBlocked ? nil : state.generation
+    }
+
+    func permitsSession(for clientID: String, generation: UInt64) -> Bool {
+        let state = states[clientID] ?? ClientState()
+        return !state.isBlocked && state.generation == generation
+    }
+
+    func tokenIssuanceSnapshot(for clientID: String) -> TokenIssuanceSnapshot {
+        let state = states[clientID] ?? ClientState()
+        return TokenIssuanceSnapshot(
+            generation: state.generation,
+            beganDuringDisconnect: state.activeDisconnects > 0
+        )
+    }
+
+    mutating func acceptTokenIssuance(
+        for clientID: String,
+        snapshot: TokenIssuanceSnapshot
+    ) -> Bool {
+        var state = states[clientID] ?? ClientState()
+        guard state.generation == snapshot.generation,
+            state.activeDisconnects == 0,
+            !snapshot.beganDuringDisconnect
+        else {
+            return false
+        }
+        state.isBlocked = false
+        states[clientID] = state
+        return true
+    }
+}
+
 public actor OAuthTokenStore {
     private static let maxPersistedClients = 256
     public static let accessTokenLifetime: TimeInterval = 12 * 60 * 60
@@ -91,22 +204,30 @@ public actor OAuthTokenStore {
 
     private let clientRegistryURL: URL?
     private let accessTokenStoreURL: URL?
+    private let persistenceWriter: (@Sendable (Data, URL) throws -> Void)?
     private var clients: [String: OAuthRegisteredClient]
     private var authorizationCodes: [String: OAuthAuthorizationCode] = [:]
     private var accessTokens: [String: OAuthAccessToken]
     private var refreshTokens: [String: OAuthRefreshToken]
 
-    public init(clientRegistryURL: URL? = nil, accessTokenStoreURL: URL? = nil) {
+    public init(
+        clientRegistryURL: URL? = nil,
+        accessTokenStoreURL: URL? = nil,
+        persistenceWriter: (@Sendable (Data, URL) throws -> Void)? = nil
+    ) {
         self.clientRegistryURL = clientRegistryURL
         self.accessTokenStoreURL = accessTokenStoreURL
+        self.persistenceWriter = persistenceWriter
         self.clients = Self.loadClients(from: clientRegistryURL)
         let persistedTokens = Self.loadTokens(from: accessTokenStoreURL)
         self.accessTokens = persistedTokens.accessTokens
         self.refreshTokens = persistedTokens.refreshTokens
     }
 
-    public func registerClient(clientName: String, redirectURIs: [String], now: Date = Date()) -> OAuthRegisteredClient
+    public func registerClient(clientName: String, redirectURIs: [String], now: Date = Date()) throws
+        -> OAuthRegisteredClient
     {
+        let previousClients = clients
         let client = OAuthRegisteredClient(
             clientID: OAuthSupport.generateSecureToken(),
             clientName: clientName,
@@ -115,7 +236,12 @@ public actor OAuthTokenStore {
         )
         clients[client.clientID] = client
         pruneClientsIfNeeded()
-        persistClients()
+        do {
+            try persistClients()
+        } catch {
+            clients = previousClients
+            throw error
+        }
         return client
     }
 
@@ -123,9 +249,16 @@ public actor OAuthTokenStore {
         clients[id]
     }
 
-    public func adoptClientIfNeeded(clientID: String, clientName: String, redirectURI: String, now: Date = Date())
-        -> OAuthRegisteredClient?
-    {
+    public func registeredClients() -> [OAuthRegisteredClient] {
+        clients.values.sorted { $0.issuedAt > $1.issuedAt }
+    }
+
+    public func adoptClientIfNeeded(
+        clientID: String,
+        clientName: String,
+        redirectURI: String,
+        now: Date = Date()
+    ) throws -> OAuthRegisteredClient? {
         if let client = clients[clientID] {
             return client
         }
@@ -136,6 +269,7 @@ public actor OAuthTokenStore {
             return nil
         }
 
+        let previousClients = clients
         let client = OAuthRegisteredClient(
             clientID: clientID,
             clientName: clientName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -145,7 +279,12 @@ public actor OAuthTokenStore {
         )
         clients[clientID] = client
         pruneClientsIfNeeded()
-        persistClients()
+        do {
+            try persistClients()
+        } catch {
+            clients = previousClients
+            throw error
+        }
         return client
     }
 
@@ -178,19 +317,31 @@ public actor OAuthTokenStore {
         clientID: String,
         redirectURI: String,
         codeVerifier: String,
+        resource: String,
         now: Date = Date()
-    ) -> OAuthTokenPair? {
+    ) throws -> OAuthTokenPair? {
         cleanup(now: now)
+        let previousAuthorizationCodes = authorizationCodes
+        let previousAccessTokens = accessTokens
+        let previousRefreshTokens = refreshTokens
         guard let pending = authorizationCodes.removeValue(forKey: code),
             pending.clientID == clientID,
             pending.redirectURI == redirectURI,
+            OAuthSupport.constantTimeEquals(pending.resource, resource),
             OAuthSupport.constantTimeEquals(OAuthSupport.pkceS256Challenge(for: codeVerifier), pending.codeChallenge)
         else {
             return nil
         }
 
         let tokenPair = issueTokenPair(clientID: clientID, resource: pending.resource, now: now)
-        persistAccessTokens()
+        do {
+            try persistAccessTokens()
+        } catch {
+            authorizationCodes = previousAuthorizationCodes
+            accessTokens = previousAccessTokens
+            refreshTokens = previousRefreshTokens
+            throw error
+        }
         return tokenPair
     }
 
@@ -199,8 +350,10 @@ public actor OAuthTokenStore {
         clientID: String,
         resource: String? = nil,
         now: Date = Date()
-    ) -> OAuthTokenPair? {
+    ) throws -> OAuthTokenPair? {
         cleanup(now: now)
+        let previousAccessTokens = accessTokens
+        let previousRefreshTokens = refreshTokens
         guard let pending = refreshTokens[token],
             OAuthSupport.constantTimeEquals(pending.clientID, clientID),
             resource.map({ OAuthSupport.constantTimeEquals(pending.resource, $0) }) ?? true
@@ -209,20 +362,142 @@ public actor OAuthTokenStore {
         }
 
         refreshTokens.removeValue(forKey: token)
-        let tokenPair = issueTokenPair(clientID: pending.clientID, resource: pending.resource, now: now)
-        persistAccessTokens()
+        let tokenPair = issueTokenPair(
+            clientID: pending.clientID,
+            grantID: pending.grantID,
+            resource: pending.resource,
+            now: now
+        )
+        do {
+            try persistAccessTokens()
+        } catch {
+            accessTokens = previousAccessTokens
+            refreshTokens = previousRefreshTokens
+            throw error
+        }
         return tokenPair
     }
 
     public func isValidAccessToken(_ token: String, resource: String, now: Date = Date()) -> Bool {
+        authenticatedClient(forAccessToken: token, resource: resource, now: now) != nil
+    }
+
+    /// Resolves a bearer token to the registered OAuth client that owns it.
+    /// Legacy access-token records without a client ID are deliberately not
+    /// loaded, so they cannot become durable identities.
+    public func authenticatedClient(
+        forAccessToken token: String,
+        resource: String,
+        now: Date = Date()
+    ) -> OAuthRegisteredClient? {
         cleanup(now: now)
         guard let accessToken = accessTokens[token] else {
-            return false
+            return nil
         }
         guard accessToken.expiresAt > now else {
-            return false
+            return nil
         }
-        return OAuthSupport.constantTimeEquals(accessToken.resource, resource)
+        guard OAuthSupport.constantTimeEquals(accessToken.resource, resource) else {
+            return nil
+        }
+        return clients[accessToken.clientID]
+    }
+
+    /// RFC 7009 revocation policy: revoking a refresh token invalidates its
+    /// complete grant, while revoking an access token invalidates only that
+    /// token. A token owned by another client is treated like an unknown token.
+    @discardableResult
+    public func revokeToken(
+        _ token: String,
+        clientID: String,
+        tokenTypeHint: String? = nil,
+        now: Date = Date()
+    ) throws -> Bool {
+        cleanup(now: now)
+        let previousAccessTokens = accessTokens
+        let previousRefreshTokens = refreshTokens
+
+        let searchRefreshFirst = tokenTypeHint != "access_token"
+        if searchRefreshFirst,
+            let refresh = refreshTokens[token],
+            OAuthSupport.constantTimeEquals(refresh.clientID, clientID)
+        {
+            revokeGrant(refresh.grantID)
+            do {
+                try persistAccessTokens()
+            } catch {
+                accessTokens = previousAccessTokens
+                refreshTokens = previousRefreshTokens
+                throw error
+            }
+            return true
+        }
+
+        if let access = accessTokens[token],
+            OAuthSupport.constantTimeEquals(access.clientID, clientID)
+        {
+            accessTokens.removeValue(forKey: token)
+            do {
+                try persistAccessTokens()
+            } catch {
+                accessTokens = previousAccessTokens
+                refreshTokens = previousRefreshTokens
+                throw error
+            }
+            return true
+        }
+
+        if !searchRefreshFirst,
+            let refresh = refreshTokens[token],
+            OAuthSupport.constantTimeEquals(refresh.clientID, clientID)
+        {
+            revokeGrant(refresh.grantID)
+            do {
+                try persistAccessTokens()
+            } catch {
+                accessTokens = previousAccessTokens
+                refreshTokens = previousRefreshTokens
+                throw error
+            }
+            return true
+        }
+
+        return false
+    }
+
+    /// Removes one dynamic registration and every credential issued to it.
+    /// Settings can use this as an explicit disconnect operation without
+    /// parsing or rewriting the token files itself.
+    @discardableResult
+    public func removeClient(id clientID: String) throws -> Bool {
+        guard let removedClient = clients.removeValue(forKey: clientID) else { return false }
+        let previousAuthorizationCodes = authorizationCodes
+        let previousAccessTokens = accessTokens
+        let previousRefreshTokens = refreshTokens
+        authorizationCodes = authorizationCodes.filter { $0.value.clientID != clientID }
+        accessTokens = accessTokens.filter { $0.value.clientID != clientID }
+        refreshTokens = refreshTokens.filter { $0.value.clientID != clientID }
+
+        do {
+            // Revoke credentials first. If the registry write then fails, the
+            // client stays visible for a retry but its old credentials remain
+            // unusable after a restart.
+            try persistAccessTokens()
+        } catch {
+            clients[clientID] = removedClient
+            authorizationCodes = previousAuthorizationCodes
+            accessTokens = previousAccessTokens
+            refreshTokens = previousRefreshTokens
+            throw error
+        }
+
+        do {
+            try persistClients()
+        } catch {
+            clients[clientID] = removedClient
+            throw error
+        }
+        return true
     }
 
     private func cleanup(now: Date) {
@@ -232,25 +507,38 @@ public actor OAuthTokenStore {
         if liveTokens.count != accessTokens.count || liveRefreshTokens.count != refreshTokens.count {
             accessTokens = liveTokens
             refreshTokens = liveRefreshTokens
-            persistAccessTokens()
+            persistAccessTokensBestEffort()
         }
     }
 
-    private func issueTokenPair(clientID: String, resource: String, now: Date) -> OAuthTokenPair {
+    private func issueTokenPair(
+        clientID: String,
+        grantID: String = OAuthSupport.generateSecureToken(),
+        resource: String,
+        now: Date
+    ) -> OAuthTokenPair {
         let accessToken = OAuthSupport.generateSecureToken()
         let refreshToken = OAuthSupport.generateSecureToken()
         accessTokens[accessToken] = OAuthAccessToken(
             token: accessToken,
+            clientID: clientID,
+            grantID: grantID,
             resource: resource,
             expiresAt: now.addingTimeInterval(Self.accessTokenLifetime)
         )
         refreshTokens[refreshToken] = OAuthRefreshToken(
             token: refreshToken,
             clientID: clientID,
+            grantID: grantID,
             resource: resource,
             expiresAt: now.addingTimeInterval(Self.refreshTokenLifetime)
         )
         return OAuthTokenPair(accessToken: accessToken, refreshToken: refreshToken)
+    }
+
+    private func revokeGrant(_ grantID: String) {
+        accessTokens = accessTokens.filter { $0.value.grantID != grantID }
+        refreshTokens = refreshTokens.filter { $0.value.grantID != grantID }
     }
 
     private func pruneClientsIfNeeded() {
@@ -293,8 +581,13 @@ public actor OAuthTokenStore {
 
         var accessTokens: [String: OAuthAccessToken] = [:]
         for entry in persisted.tokens where entry.expiresAt > now {
+            guard let clientID = entry.clientID, let grantID = entry.grantID else {
+                continue
+            }
             accessTokens[entry.token] = OAuthAccessToken(
                 token: entry.token,
+                clientID: clientID,
+                grantID: grantID,
                 resource: entry.resource,
                 expiresAt: entry.expiresAt
             )
@@ -304,6 +597,7 @@ public actor OAuthTokenStore {
             refreshTokens[entry.token] = OAuthRefreshToken(
                 token: entry.token,
                 clientID: entry.clientID,
+                grantID: entry.grantID ?? OAuthSupport.legacyGrantID(for: entry.token),
                 resource: entry.resource,
                 expiresAt: entry.expiresAt
             )
@@ -311,16 +605,16 @@ public actor OAuthTokenStore {
         return (accessTokens, refreshTokens)
     }
 
-    private func persistClients() {
+    private func persistClients() throws {
         guard let clientRegistryURL else {
             return
         }
 
         let registry = PersistedOAuthClientRegistry(clients: clients.values.sorted { $0.clientID < $1.clientID })
-        Self.writePrivateJSON(registry, to: clientRegistryURL, label: "OAuth client registry")
+        try writePrivateJSON(registry, to: clientRegistryURL)
     }
 
-    private func persistAccessTokens() {
+    private func persistAccessTokens() throws {
         guard let accessTokenStoreURL else {
             return
         }
@@ -328,36 +622,85 @@ public actor OAuthTokenStore {
         let persisted = PersistedOAuthAccessTokens(
             tokens: accessTokens.values
                 .sorted { $0.token < $1.token }
-                .map { PersistedOAuthAccessToken(token: $0.token, resource: $0.resource, expiresAt: $0.expiresAt) },
+                .map {
+                    PersistedOAuthAccessToken(
+                        token: $0.token,
+                        clientID: $0.clientID,
+                        grantID: $0.grantID,
+                        resource: $0.resource,
+                        expiresAt: $0.expiresAt
+                    )
+                },
             refreshTokens: refreshTokens.values
                 .sorted { $0.token < $1.token }
                 .map {
                     PersistedOAuthRefreshToken(
                         token: $0.token,
                         clientID: $0.clientID,
+                        grantID: $0.grantID,
                         resource: $0.resource,
                         expiresAt: $0.expiresAt
                     )
                 }
         )
-        Self.writePrivateJSON(persisted, to: accessTokenStoreURL, label: "OAuth access tokens")
+        try writePrivateJSON(persisted, to: accessTokenStoreURL)
     }
 
-    private static func writePrivateJSON<T: Encodable>(_ value: T, to url: URL, label: String) {
+    private func persistClientsBestEffort() {
+        do {
+            try persistClients()
+        } catch {
+            NSLog("OAuthTokenStore: Failed to persist OAuth client registry: %@", String(describing: error))
+        }
+    }
+
+    private func persistAccessTokensBestEffort() {
+        do {
+            try persistAccessTokens()
+        } catch {
+            NSLog("OAuthTokenStore: Failed to persist OAuth access tokens: %@", String(describing: error))
+        }
+    }
+
+    private func writePrivateJSON<T: Encodable>(_ value: T, to url: URL) throws {
         do {
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             let data = try encoder.encode(value)
+            if let persistenceWriter {
+                try persistenceWriter(data, url)
+                return
+            }
+
             let directory = url.deletingLastPathComponent()
             let fileManager = FileManager.default
             if !fileManager.fileExists(atPath: directory.path) {
                 try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
             }
             try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
-            try data.write(to: url, options: .atomic)
-            try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+
+            let candidate = directory.appendingPathComponent(".\(url.lastPathComponent).\(UUID().uuidString).tmp")
+            defer {
+                if fileManager.fileExists(atPath: candidate.path) {
+                    try? fileManager.removeItem(at: candidate)
+                }
+            }
+            try data.write(to: candidate, options: .atomic)
+            try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: candidate.path)
+            if fileManager.fileExists(atPath: url.path) {
+                _ = try fileManager.replaceItemAt(
+                    url,
+                    withItemAt: candidate,
+                    backupItemName: nil,
+                    options: .usingNewMetadataOnly
+                )
+            } else {
+                try fileManager.moveItem(at: candidate, to: url)
+            }
+        } catch let error as OAuthTokenStoreError {
+            throw error
         } catch {
-            NSLog("OAuthTokenStore: Failed to persist %@: %@", label, String(describing: error))
+            throw OAuthTokenStoreError.persistenceFailed(error.localizedDescription)
         }
     }
 }
@@ -476,5 +819,16 @@ public enum OAuthSupport {
             difference |= Int(lhsByte ^ rhsByte)
         }
         return difference == 0
+    }
+
+    /// Apple Core uses one exact RFC 8707 audience. Accepting textual aliases
+    /// creates tokens that cannot later authenticate against that audience.
+    public static func isCanonicalResource(_ value: String, canonicalResource: String) -> Bool {
+        constantTimeEquals(value, canonicalResource)
+    }
+
+    fileprivate static func legacyGrantID(for token: String) -> String {
+        let digest = SHA256.hash(data: Data(token.utf8))
+        return "legacy-" + base64URLEncoded(Data(digest))
     }
 }

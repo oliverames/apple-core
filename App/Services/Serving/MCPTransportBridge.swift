@@ -141,6 +141,15 @@ public actor MCPSSESession {
         return stream
     }
 
+    /// Ends the HTTP response waiting for a request that the client cancelled.
+    /// MCP cancellation intentionally has no JSON-RPC response, so without this
+    /// explicit finish the original POST remains parked in `responseStreams`.
+    public func finishResponseStream(for requestId: String) {
+        guard let continuation = responseStreams.removeValue(forKey: requestId) else { return }
+        continuation.finish()
+        lastActivityAt = Date()
+    }
+
     /// True when the session has no open client streams and has seen no
     /// traffic for longer than `interval`, so it can be reclaimed safely.
     /// Clients that reuse the session id after a reap receive 404 and

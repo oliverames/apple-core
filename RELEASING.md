@@ -45,12 +45,12 @@ VERSION=1.0.0 Scripts/release.sh check      # quick release-build check
 VERSION=1.0.0 Scripts/release.sh bump       # bump MARKETING_VERSION / CURRENT_PROJECT_VERSION
 VERSION=1.0.0 Scripts/release.sh archive    # xcodebuild archive
 VERSION=1.0.0 Scripts/release.sh export     # export Developer ID signed app (requires TEAM_ID / signing identity)
-VERSION=1.0.0 Scripts/release.sh package    # zip + sha256
+VERSION=1.0.0 Scripts/release.sh package    # creates Apple.Core-1.0.0.zip + sha256
 ```
 
-`Scripts/release.sh all` uses the verified `notarytool-profile` keychain profile by default and performs the complete signed, notarized, stapled, and validated local preparation. Override `KEYCHAIN_PROFILE` if another Mac uses a different profile name. Individual subcommands remain available for diagnosis, but `commit` also refuses to tag an app that fails Developer ID, Gatekeeper, or stapler validation.
+`Scripts/release.sh all` uses the verified `notarytool-profile` keychain profile by default and performs the complete signed, notarized, stapled, and validated local preparation. Override `KEYCHAIN_PROFILE` if another Mac uses a different profile name. If the profile is unavailable, set `NOTARY_KEY_FILE`, `NOTARY_KEY_ID`, and `NOTARY_ISSUER_ID` together from a temporary, private 1Password-backed scratch directory. The script never stores those values in the repository. Individual subcommands remain available for diagnosis, but `commit` also refuses to tag an app that fails Developer ID, Gatekeeper, or stapler validation.
 
-Notarization (`Scripts/release.sh notarize`, `staple`) requires `KEYCHAIN_PROFILE` pointing at App Store Connect credentials. A public release must be Developer ID signed, notarized, stapled, and validated before packaging. Ad hoc or unnotarized builds are for local development only.
+Notarization (`Scripts/release.sh notarize`, `staple`) requires either `KEYCHAIN_PROFILE` or the complete three-variable API-key set above. A public release must be Developer ID signed, notarized, stapled, and validated before packaging. Ad hoc or unnotarized builds are for local development only.
 
 ## Publish
 
@@ -61,11 +61,13 @@ VERSION=1.0.0 Scripts/release.sh push-tags  # push the release commit and tag (p
 
 The command pushes the current `main` or `master` branch with the tag. The tag then triggers `release.yml`, which re-runs CI as a gate and creates the GitHub release (using `docs/release-notes/vX.Y.Z.md` if present, otherwise auto-generated notes).
 
-If a signed/notarized zip was produced locally, attach it:
+If a signed/notarized zip was produced locally, attach it and its SHA-256 file:
 
 ```bash
 VERSION=1.0.0 Scripts/release.sh upload
 ```
+
+The upload command requires both `dist/Apple.Core-<version>.zip` and its `.sha256` sibling, then publishes both assets together.
 
 ## Sparkle Auto-Updates
 
@@ -94,7 +96,7 @@ rm /tmp/sparkle.key
 - **Per release**, after `package` (and `notarize`/`staple` if signing):
 
 ```bash
-VERSION=1.0.0 Scripts/release.sh appcast   # signs dist/Apple Core-1.0.0.zip, prepends an item to appcast.xml
+VERSION=1.0.0 Scripts/release.sh appcast   # signs dist/Apple.Core-1.0.0.zip, prepends an item to appcast.xml
 ```
 
   The item's release notes come from `docs/release-notes/v<version>.md`, rendered to HTML by `Scripts/render_release_notes.sh`; write that file first. The enclosure URL points at the GitHub release asset, so `upload` must publish the same zip that was signed. `SURequireSignedFeed` also requires a signature over the complete appcast XML. The script adds and verifies that feed signature after every edit.

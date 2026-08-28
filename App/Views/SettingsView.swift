@@ -78,6 +78,36 @@ struct SettingsView: View {
             )
             .interactiveDismissDisabled()
         }
+        .alert(
+            "Could Not Save Settings",
+            isPresented: Binding(
+                get: { model.configurationSaveError != nil },
+                set: { isPresented in
+                    if !isPresented { model.configurationSaveError = nil }
+                }
+            )
+        ) {
+            Button("OK", role: .cancel) {
+                model.configurationSaveError = nil
+            }
+        } message: {
+            Text(model.configurationSaveError ?? "Apple Core could not save its configuration.")
+        }
+        .alert(
+            "Could Not Disconnect Client",
+            isPresented: Binding(
+                get: { model.clientManagementError != nil },
+                set: { isPresented in
+                    if !isPresented { model.clientManagementError = nil }
+                }
+            )
+        ) {
+            Button("OK", role: .cancel) {
+                model.clientManagementError = nil
+            }
+        } message: {
+            Text(model.clientManagementError ?? "Apple Core could not disconnect the OAuth client.")
+        }
         .task {
             model.reloadConfigFromDisk()
             await model.refreshCloudflareStatus()
@@ -348,20 +378,30 @@ private struct ClientsPane: View {
                 }
             }
 
-            TrustedClientsSection(
-                clients: serverController.getTrustedClients(),
-                onRemove: { serverController.removeTrustedClient($0) },
+            OAuthClientsSection(
+                clients: model.registeredOAuthClients,
+                trustedClientIDs: Set(serverController.getTrustedClients().map(\.clientID)),
+                isBusy: model.isManagingOAuthClients,
+                onDisconnect: { client in
+                    Task { await model.disconnectOAuthClient(client.clientID) }
+                },
                 onRemoveAll: { isConfirmingRemoveAll = true }
             )
         }
         .formStyle(.grouped)
         .groupedPageLayout()
         .navigationTitle("Clients")
-        .alert("Remove all approved clients?", isPresented: $isConfirmingRemoveAll) {
+        .task {
+            await model.reloadOAuthClients()
+        }
+        .alert("Disconnect all OAuth clients?", isPresented: $isConfirmingRemoveAll) {
             Button("Cancel", role: .cancel) {}
-            Button("Remove All", role: .destructive) { serverController.resetTrustedClients() }
+            Button("Disconnect All", role: .destructive) {
+                Task { await model.disconnectAllOAuthClients() }
+            }
+            .disabled(model.isManagingOAuthClients)
         } message: {
-            Text("Each one will have to be approved again the next time it connects.")
+            Text("Apple Core will revoke their credentials and close their active sessions.")
         }
     }
 }
@@ -423,33 +463,48 @@ private struct ClientRow: View {
     }
 }
 
-private struct TrustedClientsSection: View {
-    let clients: [String]
-    let onRemove: (String) -> Void
+private struct OAuthClientsSection: View {
+    let clients: [OAuthRegisteredClient]
+    let trustedClientIDs: Set<String>
+    let isBusy: Bool
+    let onDisconnect: (OAuthRegisteredClient) -> Void
     let onRemoveAll: () -> Void
 
     var body: some View {
         Section {
             if clients.isEmpty {
-                Text("No clients approved yet.")
+                Text("No OAuth clients registered yet.")
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .center)
                     .padding(.vertical, 10)
             } else {
-                ForEach(clients, id: \.self) { client in
+                ForEach(clients, id: \.clientID) { client in
                     HStack {
-                        Text(client)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(client.clientName)
+                            Text("OAuth client \(client.clientID.prefix(12))…")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Text(
+                                trustedClientIDs.contains(client.clientID)
+                                    ? "Connects without approval" : "Approval required"
+                            )
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        }
                         Spacer(minLength: 12)
-                        Button("Remove") { onRemove(client) }
+                        Button("Disconnect") { onDisconnect(client) }
+                            .disabled(isBusy)
                     }
                     .padding(.vertical, 2)
                 }
-                Button("Remove All…", role: .destructive, action: onRemoveAll)
+                Button("Disconnect All…", role: .destructive, action: onRemoveAll)
+                    .disabled(isBusy)
             }
         } header: {
             SectionHeader(
-                title: "Approved",
-                subtitle: "These connect without asking again."
+                title: "OAuth Clients",
+                subtitle: "Disconnecting a client revokes its credentials and closes its active sessions."
             )
         }
     }

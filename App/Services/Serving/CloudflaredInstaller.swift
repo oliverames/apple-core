@@ -13,6 +13,7 @@
 // than executed.
 
 import CryptoKit
+import Darwin
 import Foundation
 
 public enum CloudflaredInstallProgress: Sendable, Equatable {
@@ -43,6 +44,8 @@ public enum CloudflaredInstallError: LocalizedError, Equatable {
     case digestMismatch(expected: String, actual: String)
     case extractionFailed(String)
     case binaryMissingAfterExtraction
+    case untrustedPublisher(String)
+    case quarantineRemovalFailed(String)
 
     public var errorDescription: String? {
         switch self {
@@ -64,6 +67,10 @@ public enum CloudflaredInstallError: LocalizedError, Equatable {
             return "The cloudflared archive could not be unpacked: \(detail)"
         case .binaryMissingAfterExtraction:
             return "The cloudflared archive unpacked without producing a cloudflared binary."
+        case let .untrustedPublisher(detail):
+            return "The downloaded cloudflared was not signed by Cloudflare and was discarded: \(detail)"
+        case let .quarantineRemovalFailed(detail):
+            return "Apple Core verified cloudflared but could not prepare it to run: \(detail)"
         }
     }
 }
@@ -258,28 +265,35 @@ public actor CloudflaredInstaller {
             throw CloudflaredInstallError.binaryMissingAfterExtraction
         }
 
+        do {
+            try CloudflaredPublisherVerifier.verify(at: unpacked)
+        } catch {
+            throw CloudflaredInstallError.untrustedPublisher(error.localizedDescription)
+        }
+
         let destination = URL(fileURLWithPath: Self.managedBinaryPath())
+        let destinationDirectory = destination.deletingLastPathComponent()
+        let candidate = destinationDirectory.appendingPathComponent(".cloudflared-install-\(UUID().uuidString)")
+        defer {
+            if fileManager.fileExists(atPath: candidate.path) {
+                try? fileManager.removeItem(at: candidate)
+            }
+        }
         do {
             try fileManager.createDirectory(
-                at: destination.deletingLastPathComponent(),
+                at: destinationDirectory,
                 withIntermediateDirectories: true
             )
-            if fileManager.fileExists(atPath: destination.path) {
-                try fileManager.removeItem(at: destination)
-            }
-            try fileManager.moveItem(at: unpacked, to: destination)
-            try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: destination.path)
+            try fileManager.copyItem(at: unpacked, to: candidate)
+            try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: candidate.path)
+            try Self.clearQuarantine(at: candidate)
+
+            try CloudflaredBinaryReplacement.install(candidate, at: destination)
+        } catch let error as CloudflaredInstallError {
+            throw error
         } catch {
             throw CloudflaredInstallError.extractionFailed(error.localizedDescription)
         }
-
-        // A file written by a downloading process carries the quarantine
-        // attribute, and launchd refuses to run a quarantined binary without a
-        // Finder approval the user never sees. cloudflared is signed and
-        // notarized by Cloudflare, and the archive was checksum-verified above,
-        // so clearing it here is the whole difference between a tunnel that
-        // starts and one that dies silently at login.
-        runShell("/usr/bin/xattr", ["-d", "com.apple.quarantine", destination.path])
 
         return destination.path
     }
@@ -303,5 +317,15 @@ public actor CloudflaredInstaller {
 
     private static func sha256Hex(_ data: Data) -> String {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// Clear only quarantine, and only after both digest and publisher checks.
+    /// ENOATTR means the file was never quarantined and is already ready.
+    private static func clearQuarantine(at url: URL) throws {
+        let result = removexattr(url.path, "com.apple.quarantine", XATTR_NOFOLLOW)
+        guard result == 0 || errno == ENOATTR else {
+            let detail = String(cString: strerror(errno))
+            throw CloudflaredInstallError.quarantineRemovalFailed(detail)
+        }
     }
 }

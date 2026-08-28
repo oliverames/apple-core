@@ -48,6 +48,9 @@ final class ServingSettingsModel: ObservableObject {
     @Published var isAppLaunchAgentLoaded = false
     @Published var isOpenAtLoginEnabled = false
     @Published var lastStatusMessage = "Ready"
+    @Published var configurationSaveError: String?
+    @Published var clientManagementError: String?
+    @Published var isManagingOAuthClients = false
 
     /// Non-nil while cloudflared is being downloaded and installed.
     @Published var cloudflaredInstallProgress: CloudflaredInstallProgress?
@@ -92,7 +95,6 @@ final class ServingSettingsModel: ObservableObject {
         self.allowedOriginsText = (loaded.allowedOrigins ?? []).joined(separator: "\n")
         refreshAppLaunchAgentStatus()
         refreshOpenAtLoginStatus()
-        reloadOAuthClients()
     }
 
     var port: UInt16 {
@@ -200,6 +202,9 @@ final class ServingSettingsModel: ObservableObject {
             })
         else {
             lastStatusMessage = "Config could not be saved; check the existing config file."
+            configurationSaveError =
+                "Apple Core could not save \(AppleCoreServingPaths.configURL().path). "
+                + "Repair or move the existing file, then try the change again. Your current file was not overwritten."
             return false
         }
         let before = update.before
@@ -210,6 +215,7 @@ final class ServingSettingsModel: ObservableObject {
         allowedOriginsText = (merged.allowedOrigins ?? []).joined(separator: "\n")
         dirtyFields.removeAll()
         lastStatusMessage = "Saved"
+        configurationSaveError = nil
 
         // The HTTP server reads its config once at startup, so a wizard step
         // that saves with restartServer:false still has to bounce it when a
@@ -321,6 +327,10 @@ final class ServingSettingsModel: ObservableObject {
     @discardableResult
     func installCloudflared() async -> Bool {
         cloudflareSetupError = nil
+        guard save(restartServer: false) else {
+            cloudflareSetupError = configurationSaveError
+            return false
+        }
         let installer = CloudflaredInstaller()
         do {
             let path = try await installer.install { [weak self] progress in
@@ -329,7 +339,11 @@ final class ServingSettingsModel: ObservableObject {
             var settings = cloudflare
             settings.cloudflaredPath = path
             cloudflare = settings
-            save(restartServer: false)
+            guard save(restartServer: false) else {
+                cloudflaredInstallProgress = nil
+                cloudflareSetupError = configurationSaveError
+                return false
+            }
             cloudflaredInstallProgress = nil
             await refreshCloudflareStatus()
             lastStatusMessage = "cloudflared installed"
@@ -402,6 +416,11 @@ final class ServingSettingsModel: ObservableObject {
         }
         cloudflareSetupError = nil
 
+        guard save(restartServer: false) else {
+            cloudflareSetupError = configurationSaveError
+            return
+        }
+
         if !isCloudflaredInstalled {
             guard await installCloudflared() else { return }
         }
@@ -418,6 +437,10 @@ final class ServingSettingsModel: ObservableObject {
 
         remoteSetupStage = "Reading your Cloudflare account…"
         await refreshCloudflareAccount()
+        guard configurationSaveError == nil else {
+            cloudflareSetupError = configurationSaveError
+            return
+        }
 
         guard !cloudflare.hostname.isEmpty else {
             cloudflareSetupError =
@@ -435,7 +458,10 @@ final class ServingSettingsModel: ObservableObject {
         settings.enabled = true
         cloudflare = settings
         setPublicBaseURL(CloudflareManager.publicBaseURL(for: settings))
-        save(restartServer: false)
+        guard save(restartServer: false) else {
+            cloudflareSetupError = configurationSaveError
+            return
+        }
 
         remoteSetupStage = "Creating the tunnel and routing \(settings.hostname)…"
         await bootstrapCloudflareTunnel()
@@ -450,7 +476,10 @@ final class ServingSettingsModel: ObservableObject {
         // then clicked away from was still absent from disk when the tunnel
         // was set up. Normalize and persist what is on screen first.
         normalizeCloudflareHostFields()
-        save(restartServer: false)
+        guard save(restartServer: false) else {
+            cloudflareSetupError = configurationSaveError
+            return
+        }
         let result = await cloudflareManager().bootstrapTunnel()
         applyCloudflareResult(result)
     }
@@ -504,6 +533,10 @@ final class ServingSettingsModel: ObservableObject {
     }
 
     func stopCloudflareTunnel() async {
+        guard save(restartServer: false) else {
+            cloudflareSetupError = configurationSaveError
+            return
+        }
         let result = await cloudflareManager().disableTunnel()
         applyCloudflareResult(result)
     }
@@ -514,29 +547,55 @@ final class ServingSettingsModel: ObservableObject {
         setPublicBaseURL(
             result.settings.enabled ? CloudflareManager.publicBaseURL(for: result.settings) : nil
         )
+        var saved = true
         if result.didChangeSettings || before != config {
-            save(restartServer: false)
+            saved = save(restartServer: false)
         }
         cloudflareStatus = result.status
-        lastStatusMessage = result.status.message
+        if saved {
+            lastStatusMessage = result.status.message
+        } else {
+            cloudflareSetupError = configurationSaveError
+        }
     }
 
     // MARK: - OAuth Clients
 
-    /// The client registry file is owned by `OAuthTokenStore`; this reads the
-    /// same JSON for display. (`OAuthTokenStore` has no list/revoke API yet.)
-    func reloadOAuthClients() {
-        struct Registry: Codable {
-            let clients: [OAuthRegisteredClient]
-        }
-        let url = AppleCoreServingPaths.oauthClientRegistryURL()
-        guard let data = try? Data(contentsOf: url),
-            let registry = try? JSONDecoder().decode(Registry.self, from: data)
-        else {
+    /// Administrative state comes from the same actor that authenticates
+    /// requests. Reading the JSON file directly could hide a live client
+    /// after a persistence error and remove the controls needed to revoke it.
+    func reloadOAuthClients() async {
+        guard let serverController else {
             registeredOAuthClients = []
             return
         }
-        registeredOAuthClients = registry.clients.sorted { $0.issuedAt > $1.issuedAt }
+        registeredOAuthClients = await serverController.registeredOAuthClients()
+    }
+
+    func disconnectOAuthClient(_ clientID: String) async {
+        guard let serverController, !isManagingOAuthClients else { return }
+        isManagingOAuthClients = true
+        defer { isManagingOAuthClients = false }
+        clientManagementError = nil
+        do {
+            try await serverController.disconnectOAuthClient(clientID)
+        } catch {
+            clientManagementError = error.localizedDescription
+        }
+        await reloadOAuthClients()
+    }
+
+    func disconnectAllOAuthClients() async {
+        guard let serverController, !isManagingOAuthClients else { return }
+        isManagingOAuthClients = true
+        defer { isManagingOAuthClients = false }
+        clientManagementError = nil
+        do {
+            try await serverController.disconnectAllOAuthClients()
+        } catch {
+            clientManagementError = error.localizedDescription
+        }
+        await reloadOAuthClients()
     }
 
     // MARK: - Open at Login

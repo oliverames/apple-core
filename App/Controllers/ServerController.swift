@@ -194,6 +194,13 @@ enum ServiceRegistry {
     }
 }
 
+struct TrustedOAuthClient: Codable, Hashable, Identifiable {
+    let clientID: String
+    let displayName: String
+
+    var id: String { clientID }
+}
+
 @MainActor
 final class ServerController: ObservableObject {
     @Published var serverStatus: String = "Starting..."
@@ -218,7 +225,9 @@ final class ServerController: ObservableObject {
     @AppStorage("weatherEnabled") private var weatherEnabled = false
 
     // MARK: - AppStorage for Trusted Clients
-    @AppStorage("trustedClients") private var trustedClientsData = Data()
+    // The previous `trustedClients` value contained only self-reported MCP
+    // names. It is deliberately not migrated into active trust.
+    @AppStorage("trustedOAuthClientsV2") private var trustedClientsData = Data()
 
     // MARK: - Computed Properties for Service Configurations and Bindings
     var computedServiceConfigs: [ServiceConfig] {
@@ -248,37 +257,74 @@ final class ServerController: ObservableObject {
     }
 
     // MARK: - Trusted Clients Management
-    private var trustedClients: Set<String> {
+    private var trustedClients: Set<TrustedOAuthClient> {
         get {
-            (try? JSONDecoder().decode(Set<String>.self, from: trustedClientsData)) ?? []
+            (try? JSONDecoder().decode(Set<TrustedOAuthClient>.self, from: trustedClientsData)) ?? []
         }
         set {
             trustedClientsData = (try? JSONEncoder().encode(newValue)) ?? Data()
         }
     }
 
-    private func isClientTrusted(_ clientName: String) -> Bool {
-        trustedClients.contains(clientName)
+    private func isClientTrusted(_ principal: AuthenticatedPrincipal) -> Bool {
+        guard let clientID = principal.trustedClientID else { return false }
+        return trustedClients.contains { $0.clientID == clientID }
     }
 
-    private func addTrustedClient(_ clientName: String) {
+    private func addTrustedClient(_ principal: AuthenticatedPrincipal) {
+        guard let clientID = principal.trustedClientID,
+            let displayName = principal.registeredName
+        else {
+            return
+        }
         var clients = trustedClients
-        clients.insert(clientName)
+        clients = Set(clients.filter { $0.clientID != clientID })
+        clients.insert(TrustedOAuthClient(clientID: clientID, displayName: displayName))
         trustedClients = clients
     }
 
-    func removeTrustedClient(_ clientName: String) {
+    func removeTrustedClient(_ clientID: String) {
         var clients = trustedClients
-        clients.remove(clientName)
+        clients = Set(clients.filter { $0.clientID != clientID })
         trustedClients = clients
     }
 
-    func getTrustedClients() -> [String] {
-        Array(trustedClients).sorted()
+    func getTrustedClients() -> [TrustedOAuthClient] {
+        Array(trustedClients).sorted {
+            if $0.displayName == $1.displayName { return $0.clientID < $1.clientID }
+            return $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
+        }
     }
 
     func resetTrustedClients() {
-        trustedClients = Set<String>()
+        trustedClients = Set<TrustedOAuthClient>()
+    }
+
+    func disconnectOAuthClient(_ clientID: String) async throws {
+        _ = try await networkManager.disconnectOAuthClient(clientID)
+        removeTrustedClient(clientID)
+    }
+
+    func registeredOAuthClients() async -> [OAuthRegisteredClient] {
+        await networkManager.registeredOAuthClients()
+    }
+
+    func disconnectAllOAuthClients() async throws {
+        let clients = await networkManager.registeredOAuthClients()
+        var failures: [String] = []
+        for client in clients {
+            do {
+                _ = try await networkManager.disconnectOAuthClient(client.clientID)
+                removeTrustedClient(client.clientID)
+            } catch {
+                failures.append(client.clientName)
+            }
+        }
+        if !failures.isEmpty {
+            throw OAuthTokenStoreError.persistenceFailed(
+                "Could not disconnect \(failures.joined(separator: ", ")). Other OAuth clients were disconnected."
+            )
+        }
     }
 
     // MARK: - Connection Approval Methods
@@ -288,7 +334,10 @@ final class ServerController: ObservableObject {
     /// wait here instead of overwriting each other's callbacks.
     private struct ApprovalRequest {
         let connectionID: UUID
-        let clientID: String
+        let subjectID: String
+        let displayName: String
+        let authenticationDetail: String
+        let principal: AuthenticatedPrincipal
         let approve: () -> Void
         let deny: () -> Void
     }
@@ -300,14 +349,14 @@ final class ServerController: ObservableObject {
     private var isApprovalDialogVisible = false
     private let approvalWindowController = ConnectionApprovalWindowController()
 
-    private func handlePendingApprovals(for clientID: String, approved: Bool) {
-        while let pendingIndex = pendingApprovals.firstIndex(where: { $0.0 == clientID }) {
+    private func handlePendingApprovals(for subjectID: String, approved: Bool) {
+        while let pendingIndex = pendingApprovals.firstIndex(where: { $0.0 == subjectID }) {
             let (_, pendingApprove, pendingDeny) = pendingApprovals.remove(at: pendingIndex)
             if approved {
-                log.notice("Approving pending connection for client: \(clientID)")
+                log.notice("Approving pending connection for authenticated subject: \(subjectID)")
                 pendingApprove()
             } else {
-                log.notice("Denying pending connection for client: \(clientID)")
+                log.notice("Denying pending connection for authenticated subject: \(subjectID)")
                 pendingDeny()
             }
         }
@@ -320,14 +369,14 @@ final class ServerController: ObservableObject {
         if visibleApprovalRequest?.connectionID == request.connectionID {
             visibleApprovalRequest = nil
         }
-        activeApprovalDialogs.remove(request.clientID)
+        activeApprovalDialogs.remove(request.subjectID)
 
-        if pendingConnectionID == request.clientID {
+        if pendingConnectionID == request.subjectID {
             pendingConnectionID = nil
             pendingClientName = ""
         }
 
-        handlePendingApprovals(for: request.clientID, approved: approved)
+        handlePendingApprovals(for: request.subjectID, approved: approved)
         presentNextApprovalIfNeeded()
     }
 
@@ -338,9 +387,9 @@ final class ServerController: ObservableObject {
     func approvalConnectionDropped(_ connectionID: UUID) {
         if let index = approvalDialogQueue.firstIndex(where: { $0.connectionID == connectionID }) {
             let request = approvalDialogQueue.remove(at: index)
-            activeApprovalDialogs.remove(request.clientID)
+            activeApprovalDialogs.remove(request.subjectID)
             log.info(
-                "Connection for pending approval of \(request.clientID) dropped; resolving as denied"
+                "Connection for pending approval of \(request.subjectID) dropped; resolving as denied"
             )
             request.deny()
         }
@@ -351,7 +400,7 @@ final class ServerController: ObservableObject {
             // slot; only fall back to finishing here if the window had
             // already moved on to a different request.
             visibleApprovalRequest = nil
-            if !approvalWindowController.resolveVisibleDialogAsDenied(clientName: current.clientID) {
+            if !approvalWindowController.resolveVisibleDialogAsDenied(clientName: current.displayName) {
                 current.deny()
                 finishActiveApproval(for: current, approved: false)
             }
@@ -366,15 +415,17 @@ final class ServerController: ObservableObject {
 
         isApprovalDialogVisible = true
         visibleApprovalRequest = next
-        pendingConnectionID = next.clientID
-        pendingClientName = next.clientID
+        pendingConnectionID = next.subjectID
+        pendingClientName = next.displayName
 
         approvalWindowController.showApprovalWindow(
-            clientName: next.clientID,
+            clientName: next.displayName,
+            authenticationDetail: next.authenticationDetail,
+            canAlwaysTrust: next.principal.canBeTrusted,
             onApprove: { [weak self] alwaysTrust in
                 guard let self else { return }
                 if alwaysTrust {
-                    self.addTrustedClient(next.clientID)
+                    self.addTrustedClient(next.principal)
 
                     // Ask for notification permission to alert on future trusted connections.
                     UNUserNotificationCenter.current().requestAuthorization(options: [
@@ -423,7 +474,7 @@ final class ServerController: ObservableObject {
             // client arriving in the gap between listen and handler-install
             // used to be rejected outright by the nil-handler guard.
             await networkManager.setConnectionApprovalHandler {
-                [weak self] connectionID, clientInfo in
+                [weak self] connectionID, principal, clientInfo in
                 guard let self = self else {
                     return false
                 }
@@ -441,7 +492,8 @@ final class ServerController: ObservableObject {
                     Task { @MainActor in
                         self.showConnectionApprovalAlert(
                             connectionID: connectionID,
-                            clientID: clientInfo.name,
+                            principal: principal,
+                            reportedClientName: clientInfo.name,
                             approve: {
                                 Task { await resumeOnce(true) }
                             },
@@ -526,31 +578,50 @@ final class ServerController: ObservableObject {
 
     private func showConnectionApprovalAlert(
         connectionID: UUID,
-        clientID: String,
+        principal: AuthenticatedPrincipal,
+        reportedClientName: String,
         approve: @escaping () -> Void,
         deny: @escaping () -> Void
     ) {
-        log.notice("Connection approval requested for client: \(clientID)")
+        let subjectID: String
+        let displayName: String
+        let authenticationDetail: String
+        switch principal {
+        case .sharedBearer:
+            subjectID = "connection:\(connectionID.uuidString.lowercased())"
+            displayName = reportedClientName
+            authenticationDetail =
+                "Authenticated with the shared Apple Core token. This name is supplied by the client."
+        case let .oauth(clientID, registeredName):
+            subjectID = "oauth:\(clientID)"
+            displayName = registeredName
+            authenticationDetail =
+                reportedClientName == registeredName
+                ? "Authenticated OAuth client \(clientID.prefix(12))…"
+                : "Authenticated OAuth client \(clientID.prefix(12))…; it reports itself as “\(reportedClientName)”."
+        }
+
+        log.notice("Connection approval requested for authenticated subject: \(subjectID)")
 
         // Trusted clients auto-approve without showing the dialog.
-        if isClientTrusted(clientID) {
-            log.notice("Client \(clientID) is already trusted, auto-approving")
+        if isClientTrusted(principal) {
+            log.notice("Authenticated subject \(subjectID) is already trusted, auto-approving")
             approve()
 
             // Notify the user on auto-approved connections.
-            sendClientConnectionNotification(clientName: clientID)
+            sendClientConnectionNotification(clientName: displayName)
 
             return
         }
 
         // Coalesce concurrent approvals for the same client: one dialog
         // resolves every queued request from that client.
-        guard !activeApprovalDialogs.contains(clientID) else {
-            log.info("Adding to pending approvals for client: \(clientID)")
-            pendingApprovals.append((clientID, approve, deny))
+        guard !activeApprovalDialogs.contains(subjectID) else {
+            log.info("Adding to pending approvals for authenticated subject: \(subjectID)")
+            pendingApprovals.append((subjectID, approve, deny))
             return
         }
-        activeApprovalDialogs.insert(clientID)
+        activeApprovalDialogs.insert(subjectID)
 
         // One shared window controller means dialogs must be serialized.
         // Queue the request; a second client's dialog appears as soon as the
@@ -558,7 +629,10 @@ final class ServerController: ObservableObject {
         approvalDialogQueue.append(
             ApprovalRequest(
                 connectionID: connectionID,
-                clientID: clientID,
+                subjectID: subjectID,
+                displayName: displayName,
+                authenticationDetail: authenticationDetail,
+                principal: principal,
                 approve: approve,
                 deny: deny
             )
@@ -675,6 +749,10 @@ actor ServerNetworkManager {
     private var connections: [UUID: MCPConnectionManager] = [:]
     private var connectionTasks: [UUID: Task<Void, Never>] = [:]
     private var connectionsAwaitingApproval: Set<UUID> = []
+    private let oauthStore = OAuthTokenStore(
+        clientRegistryURL: AppleCoreServingPaths.oauthClientRegistryURL(),
+        accessTokenStoreURL: AppleCoreServingPaths.oauthAccessTokenStoreURL()
+    )
 
     /// Set when the most recent `start()` failed to bind. The controller
     /// reads it to report the truth instead of a green "Running".
@@ -699,7 +777,12 @@ actor ServerNetworkManager {
         }
     }
 
-    typealias ConnectionApprovalHandler = @Sendable (UUID, MCP.Client.Info) async -> Bool
+    typealias ConnectionApprovalHandler =
+        @Sendable (
+            UUID,
+            AuthenticatedPrincipal,
+            MCP.Client.Info
+        ) async -> Bool
     private var connectionApprovalHandler: ConnectionApprovalHandler?
 
     /// Fired when a connection goes away; the controller uses it to resolve
@@ -737,10 +820,10 @@ actor ServerNetworkManager {
 
         let servingConfig = Self.bootstrappedServingConfig()
         self.servingConfig = servingConfig
-        let httpServer = AppleCoreHTTPServer(config: servingConfig)
+        let httpServer = AppleCoreHTTPServer(config: servingConfig, oauthStore: oauthStore)
         self.httpServer = httpServer
 
-        await httpServer.setSessionFactory { [weak self] sessionID, accessSurface in
+        await httpServer.setSessionFactory { [weak self] sessionID, accessSurface, principal in
             guard let self else {
                 // Should not happen: the HTTP server is owned by (and only
                 // ever started from) this actor. Fabricate a disconnected
@@ -748,7 +831,11 @@ actor ServerNetworkManager {
                 let orphanTransport = SSETransport()
                 return MCPSSESession(id: sessionID, transport: orphanTransport)
             }
-            return await self.handleNewConnection(sessionID: sessionID, accessSurface: accessSurface)
+            return await self.handleNewConnection(
+                sessionID: sessionID,
+                accessSurface: accessSurface,
+                principal: principal
+            )
         }
 
         await httpServer.setSessionCloseHandler { [weak self] sessionID in
@@ -778,6 +865,18 @@ actor ServerNetworkManager {
             return false
         }
         return true
+    }
+
+    func registeredOAuthClients() async -> [OAuthRegisteredClient] {
+        await oauthStore.registeredClients()
+    }
+
+    @discardableResult
+    func disconnectOAuthClient(_ clientID: String) async throws -> Bool {
+        if let httpServer {
+            return try await httpServer.disconnectOAuthClient(clientID)
+        }
+        return try await oauthStore.removeClient(id: clientID)
     }
 
     /// Loads the persisted serving config, generating and persisting a
@@ -867,7 +966,8 @@ actor ServerNetworkManager {
     // AppleCoreHTTPServer so it can plumb request/response bytes.
     private func handleNewConnection(
         sessionID: String,
-        accessSurface: MCPAccessSurface
+        accessSurface: MCPAccessSurface,
+        principal: AuthenticatedPrincipal
     ) async -> MCPSSESession {
         let connectionID = UUID(uuidString: sessionID) ?? UUID()
         log.info("Handling new connection: \(connectionID)")
@@ -900,7 +1000,7 @@ actor ServerNetworkManager {
                     // to tear down sessions mid-dialog and strand the
                     // approval continuation forever.
                     self.markApprovalPending(connectionID, true)
-                    let approved = await approvalHandler(connectionID, clientInfo)
+                    let approved = await approvalHandler(connectionID, principal, clientInfo)
                     self.markApprovalPending(connectionID, false)
                     return approved
                 }

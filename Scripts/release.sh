@@ -8,6 +8,9 @@ if [[ -n "${APP_BUNDLE:-}" ]]; then
 fi
 APP_BUNDLE="${APP_BUNDLE:-${APP_NAME}.app}"
 KEYCHAIN_PROFILE="${KEYCHAIN_PROFILE:-notarytool-profile}"
+NOTARY_KEY_FILE="${NOTARY_KEY_FILE:-}"
+NOTARY_KEY_ID="${NOTARY_KEY_ID:-}"
+NOTARY_ISSUER_ID="${NOTARY_ISSUER_ID:-}"
 GITHUB_REPOSITORY="${GITHUB_REPOSITORY:-oliverames/apple-core}"
 VERSION="${VERSION:-}"
 BUILD_NUMBER="${BUILD_NUMBER:-}"
@@ -32,6 +35,7 @@ NOTARY_ZIP="${DIST_DIR}/${APP_NAME}-notarize.zip"
 # strings. Build release products under a neutral path so public binaries do
 # not disclose the build user's username or home directory.
 RELEASE_DERIVED_DATA_PATH="${RELEASE_DERIVED_DATA_PATH:-/private/tmp/apple-core-release-derived-data}"
+NOTARYTOOL_AUTH_ARGS=()
 
 print_usage() {
   cat <<'EOF'
@@ -58,6 +62,9 @@ Environment:
   APP_NAME          App name (default: Apple Core)
   APP_BUNDLE        App bundle path (default: ${APP_NAME}.app)
   KEYCHAIN_PROFILE  Notarytool profile (default: notarytool-profile)
+  NOTARY_KEY_FILE   App Store Connect .p8 key path; use with NOTARY_KEY_ID and NOTARY_ISSUER_ID
+  NOTARY_KEY_ID     App Store Connect API key ID
+  NOTARY_ISSUER_ID  App Store Connect issuer ID
   GITHUB_REPOSITORY GitHub repository used for release publishing
   RELEASE_DERIVED_DATA_PATH Neutral DerivedData path used for public builds
   VERSION           Required for bumping, commit, release, and upload
@@ -116,6 +123,28 @@ require_keychain_profile() {
     echo "Missing keychain profile. Set KEYCHAIN_PROFILE." >&2
     exit 1
   fi
+}
+
+require_notary_credentials() {
+  if [[ -n "${NOTARY_KEY_FILE}" || -n "${NOTARY_KEY_ID}" || -n "${NOTARY_ISSUER_ID}" ]]; then
+    if [[ -z "${NOTARY_KEY_FILE}" || -z "${NOTARY_KEY_ID}" || -z "${NOTARY_ISSUER_ID}" ]]; then
+      echo "Set NOTARY_KEY_FILE, NOTARY_KEY_ID, and NOTARY_ISSUER_ID together." >&2
+      exit 1
+    fi
+    if [[ ! -f "${NOTARY_KEY_FILE}" || ! -r "${NOTARY_KEY_FILE}" ]]; then
+      echo "Notary API key is missing or unreadable: ${NOTARY_KEY_FILE}" >&2
+      exit 1
+    fi
+    NOTARYTOOL_AUTH_ARGS=(
+      --key "${NOTARY_KEY_FILE}"
+      --key-id "${NOTARY_KEY_ID}"
+      --issuer "${NOTARY_ISSUER_ID}"
+    )
+    return 0
+  fi
+
+  require_keychain_profile
+  NOTARYTOOL_AUTH_ARGS=(--keychain-profile "${KEYCHAIN_PROFILE}")
 }
 
 require_version() {
@@ -231,11 +260,16 @@ resolve_exported_app() {
 
 release_zip() {
   require_version
-  printf '%s/%s-%s.zip' "${DIST_DIR}" "${APP_NAME}" "${VERSION}"
+  # GitHub replaces spaces in uploaded asset names with periods. Use that
+  # public basename locally too, so the companion checksum works unchanged
+  # after both files are downloaded.
+  printf '%s/%s-%s.zip' "${DIST_DIR}" "${APP_NAME// /.}" "${VERSION}"
 }
 
 cleanup() {
-  rm -f "${NOTARY_ZIP}"
+  if [[ -e "${NOTARY_ZIP}" ]]; then
+    /usr/bin/trash "${NOTARY_ZIP}"
+  fi
 }
 
 trap cleanup EXIT
@@ -359,12 +393,12 @@ export_app() {
 
 notarize() {
   require_app_bundle
-  require_keychain_profile
+  require_notary_credentials
   ensure_dist_dir
   echo "Zipping for notarization: ${NOTARY_ZIP}"
   ditto -c -k --keepParent "${APP_BUNDLE}" "${NOTARY_ZIP}"
   echo "Submitting to notarization"
-  xcrun notarytool submit "${NOTARY_ZIP}" --wait --keychain-profile="${KEYCHAIN_PROFILE}"
+  xcrun notarytool submit "${NOTARY_ZIP}" --wait "${NOTARYTOOL_AUTH_ARGS[@]}"
 }
 
 staple() {
@@ -375,10 +409,12 @@ staple() {
 
 package_release() {
   require_app_bundle
-  local release_zip_path
+  local digest release_zip_name release_zip_path
   release_zip_path="$(release_zip)"
+  release_zip_name="${release_zip_path##*/}"
   build_zip "${APP_BUNDLE}" "${release_zip_path}"
-  shasum -a 256 "${release_zip_path}" > "${release_zip_path}.sha256"
+  digest="$(shasum -a 256 "${release_zip_path}" | awk '{print $1}')"
+  printf '%s  %s\n' "${digest}" "${release_zip_name}" > "${release_zip_path}.sha256"
   echo "Done: ${release_zip_path}"
 }
 
@@ -480,6 +516,15 @@ item = f"""    <item>
 
 with open("appcast.xml") as f:
     content = f.read()
+
+# Old Markdown links were rendered relative to the appcast URL, where they
+# resolve to a 404. Normalize every historical item before the complete feed
+# is signed so existing and future descriptions use stable release URLs.
+content = re.sub(
+    r'href="v([0-9]+\.[0-9]+\.[0-9]+)\.md"',
+    lambda match: f'href="https://github.com/{repo_slug}/releases/tag/v{match.group(1)}"',
+    content,
+)
 
 if f"<sparkle:shortVersionString>{version}</sparkle:shortVersionString>" in content:
     print(f"appcast.xml already contains {version}; not adding a duplicate.", file=sys.stderr)
@@ -600,15 +645,21 @@ create_release() {
 
 upload_asset() {
   require_version
-  local release_zip_path tag
+  local checksum_path release_zip_path tag
   release_zip_path="$(release_zip)"
+  checksum_path="${release_zip_path}.sha256"
   tag="$(release_tag)"
   if [[ ! -f "${release_zip_path}" ]]; then
     echo "Missing release asset: ${release_zip_path}" >&2
     exit 1
   fi
-  echo "Uploading release asset ${release_zip_path}"
-  gh release upload "${tag}" "${release_zip_path}" --repo "${GITHUB_REPOSITORY}" --clobber
+  if [[ ! -f "${checksum_path}" ]]; then
+    echo "Missing release checksum: ${checksum_path}" >&2
+    exit 1
+  fi
+  echo "Uploading release asset and checksum"
+  gh release upload "${tag}" "${release_zip_path}" "${checksum_path}" \
+    --repo "${GITHUB_REPOSITORY}" --clobber
   gh release view --web "${tag}" --repo "${GITHUB_REPOSITORY}"
 }
 
@@ -616,7 +667,7 @@ all() {
   # Prepare verified local artifacts. Publishing remains a separate,
   # explicitly-invoked operation.
   require_clean_tree
-  require_keychain_profile
+  require_notary_credentials
   build_check
   bump_version
   archive_app
