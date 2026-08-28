@@ -220,10 +220,15 @@ private let listNotesScript = """
         const created = collection.creationDate();
         const locked = collection.passwordProtected();
 
+        // `Notes.notes` can yield the same note more than once when it is
+        // reachable by more than one enumeration path, so the same id would
+        // otherwise fill the page with repeats. Keep the first occurrence.
         const rows = [];
+        const seen = {};
         for (let i = 0; i < ids.length; i++) {
+            if (seen[ids[i]] === true) { continue; }
+            seen[ids[i]] = true;
             rows.push({
-                index: i,
                 id: ids[i],
                 name: names[i],
                 folderName: null,
@@ -236,15 +241,39 @@ private let listNotesScript = """
             (b.modificationDate || '').localeCompare(a.modificationDate || '')
         );
         const page = rows.slice(0, limit);
-        // Containers can't be bulk-fetched; resolve them one by one, but
-        // only for the returned page.
-        for (const row of page) {
-            if (folderName !== '') {
-                row.folderName = folderName;
-            } else {
-                try { row.folderName = collection[row.index].container().name(); } catch (e) {}
+
+        // Containers can't be bulk-fetched per note, and calling
+        // `container()` once per returned note costs one Apple Event each:
+        // at ~200ms per round trip a default page of 50 outlives the
+        // client's patience, which surfaces as "server isn't responding".
+        // Fold the whole page in with one bulk fetch per folder instead, so
+        // the cost tracks the folder count and not `limit`. A note missing
+        // from the map keeps a null folderName rather than dropping out.
+        if (folderName !== '') {
+            for (const row of page) { row.folderName = folderName; }
+        } else if (page.length > 0) {
+            const wanted = {};
+            for (const row of page) { wanted[row.id] = true; }
+            const folderOf = {};
+            let remaining = page.length;
+            const folders = Notes.folders();
+            for (const folder of folders) {
+                if (remaining === 0) { break; }
+                let folderIds;
+                try { folderIds = folder.notes.id(); } catch (e) { continue; }
+                if (folderIds.length === 0) { continue; }
+                let label = null;
+                for (const id of folderIds) {
+                    if (wanted[id] !== true || folderOf[id] !== undefined) { continue; }
+                    if (label === null) { label = folder.name(); }
+                    folderOf[id] = label;
+                    remaining -= 1;
+                }
             }
-            delete row.index;
+            for (const row of page) {
+                const found = folderOf[row.id];
+                row.folderName = found === undefined ? null : found;
+            }
         }
         return JSON.stringify(page);
     }

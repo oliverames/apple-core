@@ -289,18 +289,22 @@ final class ServingSettingsModel: ObservableObject {
         }
     }
 
-    /// Adds a folder, refusing duplicates and folders already covered by an
-    /// existing root — sharing ~/Documents twice, or sharing it and then a
-    /// folder inside it, only makes the list harder to reason about.
+    /// Adds a folder. Roots may overlap: sharing ~/Documents and then a
+    /// folder inside it is allowed, and so is sharing a folder already
+    /// covered by a broader root. `FilesystemAccess.resolve` takes the most
+    /// permissive matching root, so a writable inner root grants writes even
+    /// while the outer root stays read-only, which is how you narrow access
+    /// without first giving up the broad root.
+    ///
+    /// Only an exact repeat is refused, since two identical rows carry no
+    /// information and the second would shadow the first's writable flag.
     func addFilesystemRoot(_ url: URL, writable: Bool) {
         let path = FilesystemAccess.canonicalize(url.path)
         var roots = filesystemRoots
-        if roots.contains(where: { FilesystemAccess.isContained(path, in: FilesystemAccess.canonicalize($0.path)) }) {
-            lastStatusMessage = "That folder is already covered by one you have shared."
+        if roots.contains(where: { FilesystemAccess.canonicalize($0.path) == path }) {
+            lastStatusMessage = "That folder is already shared."
             return
         }
-        // Drop any existing roots the new one now contains.
-        roots.removeAll { FilesystemAccess.isContained(FilesystemAccess.canonicalize($0.path), in: path) }
         roots.append(FilesystemRoot(path: path, writable: writable))
         filesystemRoots = roots.sorted { $0.path < $1.path }
     }

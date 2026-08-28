@@ -166,4 +166,53 @@ struct FilesystemAccessTests {
             )
         }
     }
+
+    /// Roots are allowed to overlap, so the settings list can hold a broad
+    /// read-only root and a narrow writable one inside it. Resolution takes
+    /// the most permissive match, which is what lets a user grant writes to
+    /// one folder without opening up everything above it.
+    @Test("A writable root inside a read-only root grants writes to its own subtree")
+    func writableRootInsideReadOnlyRootGrantsWrites() throws {
+        let sandbox = try Self.makeSandbox()
+        defer { try? FileManager.default.removeItem(at: sandbox) }
+        let inner = sandbox.appendingPathComponent("drafts")
+        try FileManager.default.createDirectory(at: inner, withIntermediateDirectories: true)
+        let innerFile = inner.appendingPathComponent("draft.txt")
+        try "hello".write(to: innerFile, atomically: true, encoding: .utf8)
+        let outerFile = sandbox.appendingPathComponent("readme.txt")
+        try "hello".write(to: outerFile, atomically: true, encoding: .utf8)
+
+        let roots = [
+            FilesystemRoot(path: sandbox.path, writable: false),
+            FilesystemRoot(path: inner.path, writable: true),
+        ]
+
+        // The writable inner root covers this file, so the write is allowed
+        // even though the enclosing root is read-only.
+        let resolved = try FilesystemAccess.resolve(
+            requested: innerFile.path,
+            roots: roots,
+            requiringWrite: true
+        )
+        #expect(resolved.path == innerFile.path)
+
+        // A sibling covered only by the read-only root still refuses writes,
+        // and reports that it is shared rather than absent.
+        #expect(throws: FilesystemAccessError.rootNotWritable(outerFile.path)) {
+            try FilesystemAccess.resolve(
+                requested: outerFile.path,
+                roots: roots,
+                requiringWrite: true
+            )
+        }
+
+        // Both remain readable through the broad root.
+        #expect(
+            try FilesystemAccess.resolve(
+                requested: outerFile.path,
+                roots: roots,
+                requiringWrite: false
+            ).path == outerFile.path
+        )
+    }
 }
