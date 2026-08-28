@@ -7,6 +7,84 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <description>Updates for Apple Core - a native macOS MCP server for Apple services</description>
     <language>en</language>
     <item>
+      <title>Version 1.2.0</title>
+      <link>https://github.com/oliverames/apple-core/releases/tag/v1.2.0</link>
+      <sparkle:version>15</sparkle:version>
+      <sparkle:shortVersionString>1.2.0</sparkle:shortVersionString>
+      <description><![CDATA[
+<style>
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Helvetica, Arial, sans-serif;
+    font-size: 13px;
+    line-height: 1.55;
+    color: #1d1d1f;
+    margin: 0;
+    padding: 0;
+}
+h1, h2, h3 { color: #000; font-weight: 600; }
+h1 { font-size: 18px; margin: 0 0 10px 0; }
+h2 {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    color: #6e6e73;
+    margin: 18px 0 6px 0;
+}
+h3 { font-size: 13px; margin: 14px 0 6px 0; }
+p { margin: 0 0 10px 0; }
+ul, ol { padding-left: 20px; margin: 0 0 10px 0; }
+li { margin-bottom: 5px; }
+li > strong:first-child { color: #000; }
+code {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    background: #f2f2f7;
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-size: 12px;
+}
+a { color: #0071e3; text-decoration: none; }
+a:hover { text-decoration: underline; }
+hr { border: 0; border-top: 1px solid #e5e5ea; margin: 16px 0; }
+@media (prefers-color-scheme: dark) {
+    body { color: #f5f5f7; }
+    h1, h2, h3, li > strong:first-child { color: #fff; }
+    h2 { color: #98989d; }
+    code { background: #2c2c2e; }
+    hr { border-top-color: #38383a; }
+}
+</style>
+<h1>Apple Core 1.2.0</h1>
+<p>Apple Core 1.2.0 expands the two surfaces that were furthest from behaving like the cloud connectors they stand in for. Notes goes from 21 tools to 32, Filesystem from 5 to 10, and a listing bug that made several Notes tools look like a dead server is fixed.</p>
+<h2>Notes</h2>
+<ul>
+<li>Listing notes is fast again. <code class="notranslate">notes_list</code> resolved each note's folder with a separate request to Notes, so a default page of 50 outlived the client's patience and reported the server as unresponsive. It now fetches folders in bulk, and the cost no longer grows with the page size. The same call also returned every note twice; it does not any more.</li>
+<li>New tools: <code class="notranslate">notes_list_shared</code> for notes shared with other people, <code class="notranslate">notes_fetch_attachment</code> for small attachments inline, and <code class="notranslate">notes_show_folder</code>, <code class="notranslate">notes_show_account</code> and <code class="notranslate">notes_show_attachment</code> alongside the existing <code class="notranslate">notes_show</code>.</li>
+<li><code class="notranslate">notes_health_check</code> answers quickly whether the surface is usable. <code class="notranslate">notes_doctor</code> reports Apple Events reachability, automation permission, account state and database access, each with what to do about it.</li>
+<li>Four new tools read the local Notes database, because Notes offers no other route to them: <code class="notranslate">notes_get_link</code> for a note's <code class="notranslate">notes://</code> deep link, <code class="notranslate">notes_get_metadata</code> for pinned and trashed state and the password hint, <code class="notranslate">notes_get_checklist_state</code> for which checklist items are ticked, and <code class="notranslate">notes_get_sync_status</code>. They need Full Disk Access and say so plainly when they do not have it. Every other Notes tool works without it, and <code class="notranslate">notes_doctor</code> tells you which case you are in.</li>
+<li>Checklist state was previously invisible. Notes strips it out of the HTML body, so <code class="notranslate">notes_get</code> and <code class="notranslate">notes_get_markdown</code> show checklist items as ordinary list items and cannot tell you what is done.</li>
+</ul>
+<h2>Filesystem</h2>
+<ul>
+<li>Shared folders may now overlap. Sharing your home folder no longer silently blocks you from adding anything inside it, which is what made every folder after the first appear to do nothing. A narrower folder can be writable while the one containing it stays read-only, so you can grant writes to one place without opening up everything above it.</li>
+<li>New tools: <code class="notranslate">filesystem_stat</code>, <code class="notranslate">filesystem_create_folder</code>, <code class="notranslate">filesystem_move</code>, <code class="notranslate">filesystem_copy</code> and <code class="notranslate">filesystem_trash</code>.</li>
+<li>Deleting moves an item to the Trash. Nothing in this surface removes a file outright, so anything a client deletes can still be recovered.</li>
+<li>Moving and copying refuse to overwrite. An overwritten file is the only thing here with no way back, because the replaced copy never reaches the Trash.</li>
+<li><code class="notranslate">filesystem_list</code> and <code class="notranslate">filesystem_search</code> accept <code class="notranslate">limit</code> and <code class="notranslate">offset</code> and report <code class="notranslate">nextOffset</code>. Search previously stopped at 200 matches without saying so, so there was no way to tell a complete result from a truncated one.</li>
+</ul>
+<h2>Headless Macs</h2>
+<p>Apple Core is often reached on a Mac nobody is sitting at. The five tools that open a window, the <code class="notranslate">notes_show_*</code> family and <code class="notranslate">notes_selected</code>, now refuse on a machine with no active desktop session instead of reporting success for a window that nobody can see. <code class="notranslate">notes_selected</code> was the worst of these, answering that no notes were selected, which looks exactly like a real answer.</p>
+<h2>Upgrading</h2>
+<p>1.0.3 and later update automatically. Installs on 1.0.0 through 1.0.2 still need the one-time manual reinstall described in the <a href="https://github.com/oliverames/apple-core/releases/tag/v1.0.3">1.0.3 notes</a>, because their update signing key does not match the feed.</p>
+<p>To use the four database-backed Notes tools, grant Apple Core Full Disk Access in System Settings under Privacy &amp; Security, then quit and reopen it. Nothing else in Apple Core needs it.</p>
+      ]]></description>
+      <pubDate>Fri, 28 Aug 2026 15:49:23 +0000</pubDate>
+      <enclosure url="https://github.com/oliverames/apple-core/releases/download/v1.2.0/Apple.Core-1.2.0.zip"
+                 length="9358679"
+                 type="application/octet-stream"
+                 sparkle:edSignature="/qragpnwR5aUJQabnqU71/yWv6so58CfEFMOgG1Clizo/WLHLVDjta8MaECxMAmm+uqXB303bUyeLH0mdYo/Bw==" />
+      <sparkle:minimumSystemVersion>15.1</sparkle:minimumSystemVersion>
+    </item>
+    <item>
       <title>Version 1.1.1</title>
       <link>https://github.com/oliverames/apple-core/releases/tag/v1.1.1</link>
       <sparkle:version>13</sparkle:version>
@@ -780,6 +858,6 @@ hr { border: 0; border-top: 1px solid #e5e5ea; margin: 16px 0; }
     <!-- `Scripts/release.sh appcast` prepends signed release entries here. -->
   </channel>
 </rss><!-- sparkle-signatures:
-edSignature: QZ6ONNNYh5qj5Xz3eVDYwFxdVveL25GsetrElrZUvK4JrnEQBGc8tyg/KF93j+Q91eYZ+tIEya4vHeUEt2iwAA==
-length: 46332
+edSignature: 3Qs9BuyWzy2/o4gnozizi+ND0q1sndsg9Oj+bOUCHpCvp52crLcQBsOgG82+NWc4GV0kJSdfNUFYK955Hro4CQ==
+length: 52976
 -->
