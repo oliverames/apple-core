@@ -1158,7 +1158,46 @@ There is no public Notes API on macOS. The options are:
 
 - **AppleScript via `tell application "Notes"`**: works for read, search, create. Update via `set body of note to ...` works but rewrites the entire body and loses formatting if the new body isn't HTML.
 - **JXA (`Application('Notes')`) — same surface, JSON-friendly**: cleaner property access for reads. For complex object graphs, output `JSON.stringify(...)` to stdout and parse on the Swift side.
-- **Reading the SQLite store at `~/Library/Group Containers/group.com.apple.notes/NoteStore.sqlite`**: technically possible. Schema is undocumented, encrypted notes are not readable without the user's password, and Apple can change the schema at any release. **We don't.** The cost in maintenance dwarfs the speed win.
+- **Reading the SQLite store at `~/Library/Group Containers/group.com.apple.notes/NoteStore.sqlite`**: technically possible. Schema is undocumented, encrypted notes are not readable without the user's password, and Apple can change the schema at any release. **We did not, and then we did — read the reversal below.**
+
+#### Reversal: the SQLite store, revisited (2026-08-28)
+
+We now read `NoteStore.sqlite`, read-only, in `Shared/NotesDatabaseReader.swift`. The
+original objection above was not wrong and is not retracted. What changed is that the
+cost is now carried differently, and that four capabilities turned out to be reachable
+no other way.
+
+What forced it: `get-note-link`, `get-checklist-state`, `get-note-metadata` and
+`get-sync-status` have no AppleScript path at all. The `notes://` identifier is not in
+the scripting dictionary on this macOS (verified 2026-07-21), and `body of note` strips
+checklist state before we ever see it. The choice was the database or dropping the
+capability, not the database versus a safer route.
+
+Why the maintenance cost is now acceptable:
+
+- `MessagesDatabaseReader` had already established the pattern, so this is not a new
+  architecture in the app. Every table and column is checked before use, and a missing
+  one returns "unavailable, because X" rather than throwing. A schema change costs those
+  four tools, not the Notes surface.
+- The app is not sandboxed, so no entitlement changes. Full Disk Access is a TCC grant
+  the user makes, and `notes_doctor` reports whether it is present and names exactly
+  which tools are affected.
+- Encrypted notes remain unreadable. That part of the objection stands, and
+  `ZISPASSWORDPROTECTED` is surfaced so a caller can tell.
+
+What stays risky, stated plainly: `get-checklist-state` decompresses a gzip blob and
+walks Apple's undocumented protobuf to reach a `done` flag. It is the most likely thing
+here to break on a macOS update, and it fails soft when it does. Verification during
+implementation already caught one bug this shape produces: Apple counts attribute-run
+lengths in **UTF-16 code units**, so indexing the note text by `Character` drifts one
+position per emoji and returns a neighbouring item's text. Any future work on that
+parser should test against notes with emoji in them.
+
+**Per-device primary keys.** CoreData ids are `x-coredata://<STORE-UUID>/ICNote/p<PK>`,
+and both halves are local to one Mac. The same iCloud note is `p4496` on one machine and
+`p10247` on another. The reader compares the id's store UUID against `Z_METADATA.Z_UUID`
+and refuses a foreign id, because resolving it would silently return a real but
+unrelated note. That is worse than an error and would be very hard to notice.
 
 The choice is JXA where the shape benefits (reading note metadata into structured JSON), AppleScript for writes. Both go through the shared `AppleScriptRunner` actor (described in §1, summarized here):
 

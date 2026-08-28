@@ -29,6 +29,16 @@ after studying Carter Lasalle's mac_messages_mcp project
 Copyright 2023 Carter Lasalle. Its license is preserved at
 THIRD_PARTY_LICENSES/mac_messages_mcp.LICENSE.
 
+The Notes surface is designed against Rob Sweet's apple-notes-mcp project
+(https://github.com/sweetrb/apple-notes-mcp), licensed MIT, Copyright
+2025 Rob Sweet. Its tool surface is the reference Apple Core's Notes
+tools are derived from, including which tools exist and what each one
+returns, and the NoteStore.sqlite reads in Shared/NotesDatabaseReader.swift
+follow its documented approach — in particular the protobuf field path
+used to recover checklist done-state, which is Apple's own undocumented
+format as charted by that project. Its license is preserved at
+THIRD_PARTY_LICENSES/apple-notes-mcp.LICENSE.
+
 Additional patterns and design research are drawn from the Apple-related
 MCP server synthesis documented in docs/planning/DONORS.md and
 docs/planning/SYNTHESIS.md. When another surface implementation actually

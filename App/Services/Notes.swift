@@ -14,19 +14,34 @@ private let notesPermissionProbeScript = """
     }
     """
 
-// Deliberately excluded tool surface (vs sweetrb/apple-notes-mcp):
-// - get-checklist-state / sync status: not exposed by Notes' scripting
-//   dictionary or its HTML bodies.
-// - show-note / show-folder / show-attachment / get-selected-notes:
-//   GUI-context tools; Apple Core is headless by design.
-// - health-check / doctor: a cross-service doctor is planned separately
-//   (DONORS §4), not per-service.
-// - get-note-link: the notes:// deep-link UUID lives only in the NoteStore
-//   SQLite DB (ruled out by BUILD_PLAN §3.5), and this macOS's scripting
-//   dictionary has no `note link` property (verified 2026-07-21: it is
-//   absent from `note.properties()` and fails to compile in AppleScript).
-// - fetch-attachment (inline base64): notes_save_attachment covers the
-//   need without pushing megabytes of base64 through the MCP transport.
+// Tool surface relative to sweetrb/apple-notes-mcp.
+//
+// Consolidated rather than missing:
+// - get-note-by-id / get-note-plaintext: notes_get already resolves by id and
+//   returns both bodyHTML and bodyText, so separate tools would be duplicates
+//   competing for the same job.
+// - get-default-location: notes_list_accounts already reports each account's
+//   default folder.
+//
+// Still excluded:
+// - get-checklist-state / get-note-metadata / get-sync-status / get-note-link:
+//   all four need the NoteStore SQLite DB. On this macOS the scripting
+//   dictionary also has no `note link` property (verified 2026-07-21: absent
+//   from `note.properties()` and fails to compile in AppleScript).
+//
+// Present, with a caveat worth reading before adding more of them:
+// - show-note / show-folder / show-account / show-attachment /
+//   get-selected-notes activate Notes and front a window. Apple Core is
+//   usually reached as a headless bridge on a Mac nobody is sitting at, where
+//   that reports success and changes nothing observable. Each one therefore
+//   goes through requireGUISession and fails with NO_GUI_SESSION instead.
+// - health-check / doctor are Notes-scoped. The logic lives in
+//   NotesService.diagnose(deep:) returning structured checks, so the
+//   cross-service doctor in DONORS §4 can fold them into a wider report
+//   rather than re-deriving them.
+// - fetch-attachment returns base64 but refuses anything over
+//   maximumInlineAttachmentBytes, pointing at notes_save_attachment instead,
+//   so a large attachment never crosses the transport.
 
 private let defaultListLimit = 50
 private let defaultSearchLimit = 20
@@ -99,6 +114,22 @@ private struct NoteAccount: Codable, Sendable {
     let defaultFolderName: String?
 }
 
+/// One diagnostic line. `status` is "ok", "warn" or "fail": a warn means some
+/// tools are unavailable, a fail means the surface is unusable.
+///
+/// Internal rather than private, along with the report below, so the
+/// cross-service doctor in DONORS §4 can consume these directly.
+struct NoteCheck: Codable, Sendable {
+    let name: String
+    let status: String
+    let detail: String
+}
+
+struct NoteDiagnosticReport: Codable, Sendable {
+    let healthy: Bool
+    let checks: [NoteCheck]
+}
+
 private struct NoteFolderResult: Codable, Sendable {
     let id: String
     let name: String
@@ -148,6 +179,21 @@ private struct NoteAttachment: Codable, Sendable {
     let creationDate: String?
     let modificationDate: String?
     let isShared: Bool
+}
+
+/// Base64 is roughly a third larger than the bytes it encodes, so this cap is
+/// about the transport and the client's context window rather than the disk.
+/// Upstream uses the same 256KB default for inline images. Anything larger is
+/// refused with a pointer at notes_save_attachment, which leaves the file on
+/// disk where a large attachment belongs.
+private let maximumInlineAttachmentBytes = 256 * 1024
+
+private struct NoteAttachmentData: Codable, Sendable {
+    let noteId: String
+    let attachmentId: String
+    let attachmentName: String
+    let byteCount: Int
+    let base64: String
 }
 
 private struct AttachmentSaveResult: Codable, Sendable {
@@ -404,6 +450,130 @@ private let showNoteScript = """
         Notes.activate();
         Notes.show(note);
         return JSON.stringify({ id: note.id(), name: name, shown: true });
+    }
+    """
+
+// Shared notes are worth calling out on their own: editing or deleting one
+// affects every collaborator, so a caller that can see which notes are shared
+// can be careful with them.
+//
+// Upstream walks each account with an AppleScript `repeat` and tests `shared
+// of n` per note. That is one Apple Event per note. Bulk-fetch the whole
+// column instead, for the same reason notes_list stopped resolving containers
+// one at a time.
+private let listSharedNotesScript = """
+    function run(argv) {
+        const limit = parseInt(argv[0], 10);
+        const Notes = Application('Notes');
+        const collection = Notes.notes;
+
+        let shared;
+        try {
+            shared = collection.shared();
+        } catch (e) {
+            throw new Error(
+                'UNSUPPORTED: this macOS build does not expose a shared property on notes'
+            );
+        }
+
+        const ids = collection.id();
+        const names = collection.name();
+        const modified = collection.modificationDate();
+        const created = collection.creationDate();
+        const locked = collection.passwordProtected();
+
+        const rows = [];
+        const seen = {};
+        for (let i = 0; i < ids.length; i++) {
+            if (shared[i] !== true) { continue; }
+            if (seen[ids[i]] === true) { continue; }
+            seen[ids[i]] = true;
+            rows.push({
+                id: ids[i],
+                name: names[i],
+                folderName: null,
+                creationDate: created[i] ? created[i].toISOString() : null,
+                modificationDate: modified[i] ? modified[i].toISOString() : null,
+                isLocked: locked[i] === true,
+            });
+        }
+        rows.sort((a, b) =>
+            (b.modificationDate || '').localeCompare(a.modificationDate || '')
+        );
+        return JSON.stringify(rows.slice(0, limit));
+    }
+    """
+
+private let showFolderScript = """
+    function run(argv) {
+        const folderName = argv[0];
+        const accountName = argv[1];
+        const Notes = Application('Notes');
+
+        let folder = null;
+        for (const account of Notes.accounts()) {
+            if (accountName !== '' && account.name() !== accountName) { continue; }
+            for (const candidate of account.folders()) {
+                if (candidate.name() === folderName) { folder = candidate; break; }
+            }
+            if (folder !== null) { break; }
+        }
+        if (folder === null) {
+            throw new Error('NOT_FOUND: no folder named ' + folderName);
+        }
+
+        Notes.activate();
+        Notes.show(folder);
+        return JSON.stringify({ id: folder.id(), name: folder.name(), shown: true });
+    }
+    """
+
+private let showAccountScript = """
+    function run(argv) {
+        const accountName = argv[0];
+        const Notes = Application('Notes');
+
+        let account = null;
+        for (const candidate of Notes.accounts()) {
+            if (candidate.name() === accountName) { account = candidate; break; }
+        }
+        if (account === null) {
+            throw new Error('NOT_FOUND: no account named ' + accountName);
+        }
+
+        Notes.activate();
+        Notes.show(account);
+        return JSON.stringify({ id: account.id(), name: account.name(), shown: true });
+    }
+    """
+
+private let showAttachmentScript = """
+    function run(argv) {
+        const noteId = argv[0];
+        const attachmentId = argv[1];
+        const Notes = Application('Notes');
+        const note = Notes.notes.byId(noteId);
+
+        let attachments;
+        try { attachments = note.attachments(); } catch (e) {
+            throw new Error('NOT_FOUND: no note with id ' + noteId);
+        }
+
+        let target = null;
+        for (let i = 0; i < attachments.length; i++) {
+            if (attachments[i].id() === attachmentId) { target = attachments[i]; break; }
+        }
+        if (target === null) {
+            throw new Error('NOT_FOUND: no attachment with id ' + attachmentId);
+        }
+
+        Notes.activate();
+        Notes.show(target);
+        return JSON.stringify({
+            id: target.id(),
+            name: target.name() || '',
+            shown: true,
+        });
     }
     """
 
@@ -1038,6 +1208,10 @@ final class NotesService: Service {
                 openWorldHint: false
             )
         ) { _ in
+            // A headless Mac has no selection, so without this the tool
+            // answers "no notes are selected", which reads as a real answer
+            // and is indistinguishable from the user having selected nothing.
+            try Self.requireGUISession(for: "Reading the current selection")
             let selected = try await AppleScriptRunner.shared.runJSON(
                 .jxa,
                 script: selectedNotesScript,
@@ -1078,6 +1252,7 @@ final class NotesService: Service {
                 openWorldHint: false
             )
         ) { arguments in
+            try Self.requireGUISession(for: "Showing a note")
             let id = try Self.requiredString("id", from: arguments)
             let shown = try await AppleScriptRunner.shared.runJSON(
                 .jxa,
@@ -1090,6 +1265,276 @@ final class NotesService: Service {
                 "name": .string(shown.name),
                 "shown": .bool(shown.shown),
             ])
+        }
+
+        Tool(
+            name: "notes_show_folder",
+            description:
+                "Open a folder in the Notes app and bring it to the front for the user to look at",
+            inputSchema: .object(
+                properties: [
+                    "folder": .string(description: "Folder name (from notes_list_folders)"),
+                    "account": .string(
+                        description:
+                            "Account containing the folder (e.g. iCloud); first matching folder in any account if omitted"
+                    ),
+                ],
+                required: ["folder"],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Show Note Folder",
+                readOnlyHint: false,
+                idempotentHint: true,
+                openWorldHint: false
+            )
+        ) { arguments in
+            try Self.requireGUISession(for: "Showing a folder")
+            let folder = try Self.requiredString("folder", from: arguments)
+            let account = arguments["account"]?.stringValue ?? ""
+            let shown = try await AppleScriptRunner.shared.runJSON(
+                .jxa,
+                script: showFolderScript,
+                arguments: [folder, account],
+                as: NoteShown.self
+            )
+            return Value.object([
+                "id": .string(shown.id),
+                "name": .string(shown.name),
+                "shown": .bool(shown.shown),
+            ])
+        }
+
+        Tool(
+            name: "notes_show_account",
+            description:
+                "Open an account in the Notes app and bring it to the front for the user to look at",
+            inputSchema: .object(
+                properties: [
+                    "account": .string(description: "Account name (from notes_list_accounts)")
+                ],
+                required: ["account"],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Show Note Account",
+                readOnlyHint: false,
+                idempotentHint: true,
+                openWorldHint: false
+            )
+        ) { arguments in
+            try Self.requireGUISession(for: "Showing an account")
+            let account = try Self.requiredString("account", from: arguments)
+            let shown = try await AppleScriptRunner.shared.runJSON(
+                .jxa,
+                script: showAccountScript,
+                arguments: [account],
+                as: NoteShown.self
+            )
+            return Value.object([
+                "id": .string(shown.id),
+                "name": .string(shown.name),
+                "shown": .bool(shown.shown),
+            ])
+        }
+
+        Tool(
+            name: "notes_show_attachment",
+            description:
+                "Open one of a note's attachments in the Notes app and bring it to the front for the user to look at",
+            inputSchema: .object(
+                properties: [
+                    "id": .string(description: "Note id (from notes_list or notes_search)"),
+                    "attachment": .string(
+                        description:
+                            "Attachment id, name, or zero-based index (from notes_list_attachments)"
+                    ),
+                ],
+                required: ["id", "attachment"],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Show Note Attachment",
+                readOnlyHint: false,
+                idempotentHint: true,
+                openWorldHint: false
+            )
+        ) { arguments in
+            try Self.requireGUISession(for: "Showing an attachment")
+            let id = try Self.requiredString("id", from: arguments)
+            let selector = try Self.requiredString("attachment", from: arguments)
+            let attachments = try await AppleScriptRunner.shared.runJSON(
+                .jxa,
+                script: listAttachmentsScript,
+                arguments: [id],
+                as: [NoteAttachment].self
+            )
+            guard let attachment = Self.selectAttachment(selector, from: attachments) else {
+                throw NSError(
+                    domain: "NotesError",
+                    code: 4,
+                    userInfo: [
+                        NSLocalizedDescriptionKey:
+                            "NOT_FOUND: no attachment matching \"\(selector)\" (note has \(attachments.count))"
+                    ]
+                )
+            }
+            let shown = try await AppleScriptRunner.shared.runJSON(
+                .jxa,
+                script: showAttachmentScript,
+                arguments: [id, attachment.id],
+                as: NoteShown.self
+            )
+            return Value.object([
+                "id": .string(shown.id),
+                "name": .string(shown.name),
+                "shown": .bool(shown.shown),
+            ])
+        }
+
+        Tool(
+            name: "notes_list_shared",
+            description:
+                "List notes shared with other people, newest first. Editing or deleting one of these affects every collaborator, so check here before changing a note you did not create.",
+            inputSchema: .object(
+                properties: [
+                    "limit": .integer(
+                        description: "Maximum notes to return",
+                        default: .int(defaultListLimit)
+                    )
+                ],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "List Shared Notes",
+                readOnlyHint: true,
+                openWorldHint: false
+            )
+        ) { arguments in
+            let limit = Self.clampedLimit(arguments["limit"]?.intValue, default: defaultListLimit)
+            return try await AppleScriptRunner.shared.runJSON(
+                .jxa,
+                script: listSharedNotesScript,
+                arguments: [String(limit)],
+                as: [NoteSummary].self,
+                timeout: 120
+            )
+        }
+
+        Tool(
+            name: "notes_health_check",
+            description:
+                "Check quickly whether the Notes surface is usable: one probe confirming Notes.app is reachable and Apple Core holds Automation permission. Use notes_doctor when something is wrong and you want the fuller picture.",
+            inputSchema: .object(properties: [:], additionalProperties: false),
+            annotations: .init(
+                title: "Notes Health Check",
+                readOnlyHint: true,
+                openWorldHint: false
+            )
+        ) { _ in
+            await NotesService.diagnose(deep: false)
+        }
+
+        Tool(
+            name: "notes_doctor",
+            description:
+                "Diagnose the Notes surface end to end: Apple Events reachability, Automation permission, and account state, each reported as ok, warn or fail with what to do about it.",
+            inputSchema: .object(properties: [:], additionalProperties: false),
+            annotations: .init(
+                title: "Notes Doctor",
+                readOnlyHint: true,
+                openWorldHint: false
+            )
+        ) { _ in
+            await NotesService.diagnose(deep: true)
+        }
+
+        Tool(
+            name: "notes_get_link",
+            description:
+                "Get a note's notes:// deep link, which opens it in Notes on this Mac, on iPhone and on iPad. Store this in a reminder or a message when someone will want to jump back to the note. Needs Full Disk Access.",
+            inputSchema: .object(
+                properties: [
+                    "id": .string(description: "Note id (from notes_list or notes_search)")
+                ],
+                required: ["id"],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Get Note Link",
+                readOnlyHint: true,
+                openWorldHint: false
+            )
+        ) { arguments in
+            let id = try Self.requiredString("id", from: arguments)
+            let identifier = try NotesDatabaseReader().identifier(forNoteId: id)
+            return Value.object([
+                "id": .string(id),
+                "identifier": .string(identifier),
+                "url": .string("notes://showNote?identifier=\(identifier)"),
+            ])
+        }
+
+        Tool(
+            name: "notes_get_metadata",
+            description:
+                "Get the note properties AppleScript cannot see: pinned state, whether it is in Recently Deleted, password protection and its hint, and the preview snippet. Needs Full Disk Access.",
+            inputSchema: .object(
+                properties: [
+                    "id": .string(description: "Note id (from notes_list or notes_search)")
+                ],
+                required: ["id"],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Get Note Metadata",
+                readOnlyHint: true,
+                openWorldHint: false
+            )
+        ) { arguments in
+            let id = try Self.requiredString("id", from: arguments)
+            return try NotesDatabaseReader().metadata(forNoteId: id)
+        }
+
+        Tool(
+            name: "notes_get_checklist_state",
+            description:
+                "Get a note's checklist items with their ticked state. Notes strips this from the HTML body, so notes_get and notes_get_markdown both show checklist items as plain list items and cannot tell you what is done. Needs Full Disk Access.",
+            inputSchema: .object(
+                properties: [
+                    "id": .string(description: "Note id (from notes_list or notes_search)")
+                ],
+                required: ["id"],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Get Checklist State",
+                readOnlyHint: true,
+                openWorldHint: false
+            )
+        ) { arguments in
+            let id = try Self.requiredString("id", from: arguments)
+            let items = try NotesDatabaseReader().checklistItems(forNoteId: id)
+            return Value.object([
+                "id": .string(id),
+                "items": try Value(items),
+                "total": .int(items.count),
+                "done": .int(items.filter(\.isDone).count),
+            ])
+        }
+
+        Tool(
+            name: "notes_get_sync_status",
+            description:
+                "Count notes waiting to come down from iCloud and notes with no server record yet. Use when a note seems missing or stale on another device. Needs Full Disk Access.",
+            inputSchema: .object(properties: [:], additionalProperties: false),
+            annotations: .init(
+                title: "Get Notes Sync Status",
+                readOnlyHint: true,
+                openWorldHint: false
+            )
+        ) { _ in
+            try NotesDatabaseReader().syncStatus()
         }
 
         Tool(
@@ -1409,6 +1854,92 @@ final class NotesService: Service {
         }
 
         Tool(
+            name: "notes_fetch_attachment",
+            description:
+                "Get a note attachment's bytes as base64, for attachments up to \(maximumInlineAttachmentBytes / 1024)KB. Use notes_save_attachment instead for anything larger, or when the file only needs to land on disk.",
+            inputSchema: .object(
+                properties: [
+                    "id": .string(description: "Note id (from notes_list or notes_search)"),
+                    "attachment": .string(
+                        description:
+                            "Attachment id, name, or zero-based index (from notes_list_attachments)"
+                    ),
+                ],
+                required: ["id", "attachment"],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Fetch Note Attachment",
+                readOnlyHint: true,
+                openWorldHint: false
+            )
+        ) { arguments in
+            let id = try Self.requiredString("id", from: arguments)
+            let selector = try Self.requiredString("attachment", from: arguments)
+            let attachments = try await AppleScriptRunner.shared.runJSON(
+                .jxa,
+                script: listAttachmentsScript,
+                arguments: [id],
+                as: [NoteAttachment].self
+            )
+            guard let attachment = Self.selectAttachment(selector, from: attachments) else {
+                throw NSError(
+                    domain: "NotesError",
+                    code: 4,
+                    userInfo: [
+                        NSLocalizedDescriptionKey:
+                            "NOT_FOUND: no attachment matching \"\(selector)\" (note has \(attachments.count))"
+                    ]
+                )
+            }
+
+            // Notes will only hand an attachment to a file path, so stage it in
+            // a scratch directory, read it back, and take the directory with us
+            // on the way out. Reusing the save path also means one code path
+            // for the export itself.
+            let staging = FileManager.default.temporaryDirectory
+                .appendingPathComponent("apple-core-attachment-\(UUID().uuidString)")
+            try FileManager.default.createDirectory(
+                at: staging,
+                withIntermediateDirectories: true
+            )
+            defer { try? FileManager.default.removeItem(at: staging) }
+
+            let staged = staging.appendingPathComponent(
+                Self.sanitizedFilename(attachment.name)
+            )
+            _ = try await AppleScriptRunner.shared.run(
+                .appleScript,
+                script: saveAttachmentScript,
+                arguments: [id, attachment.id, staged.path],
+                timeout: 120
+            )
+
+            let data = try Data(contentsOf: staged)
+            guard data.count <= maximumInlineAttachmentBytes else {
+                throw NSError(
+                    domain: "NotesError",
+                    code: 5,
+                    userInfo: [
+                        NSLocalizedDescriptionKey:
+                            "TOO_LARGE: \"\(attachment.name)\" is \(data.count / 1024)KB, over the "
+                            + "\(maximumInlineAttachmentBytes / 1024)KB inline limit. "
+                            + "Use notes_save_attachment to write it to disk instead."
+                    ]
+                )
+            }
+
+            log.notice("Fetched attachment \(attachment.id, privacy: .private)")
+            return NoteAttachmentData(
+                noteId: id,
+                attachmentId: attachment.id,
+                attachmentName: attachment.name,
+                byteCount: data.count,
+                base64: data.base64EncodedString()
+            )
+        }
+
+        Tool(
             name: "notes_batch_move",
             description:
                 "Move up to \(maximumBatchSize) notes to a folder in one call, reporting success or failure per note id. Uses Notes' native move, preserving ids, dates, and attachments.",
@@ -1494,6 +2025,118 @@ final class NotesService: Service {
             )
         }
         return value
+    }
+
+    /// Refuses a show-style tool when no one could see the result.
+    ///
+    /// Apple Core is usually reached as a headless bridge, where activating
+    /// Notes and fronting a window reports success and changes nothing a
+    /// caller can observe. Failing loudly is more honest than that.
+    private static func requireGUISession(for action: String) throws {
+        guard GUISession.isActive else {
+            throw NSError(
+                domain: "NotesError",
+                code: 6,
+                userInfo: [
+                    NSLocalizedDescriptionKey: GUISession.unavailableMessage(for: action)
+                ]
+            )
+        }
+    }
+
+    /// Runs the Notes diagnostics and returns them as data rather than
+    /// prose, so the cross-service doctor planned in DONORS §4 can fold these
+    /// lines into a wider report instead of re-deriving them. That is why the
+    /// two tools below are thin wrappers and the logic lives here.
+    ///
+    /// `deep` adds the checks that cost real Apple Events, which keeps the
+    /// health check a fast liveness probe.
+    static func diagnose(deep: Bool) async -> NoteDiagnosticReport {
+        var checks: [NoteCheck] = []
+
+        // Everything else depends on Apple Events reaching Notes, so a failure
+        // here would make the rest of the report noise. Stop instead.
+        do {
+            _ = try await AppleScriptRunner.shared.run(
+                .jxa,
+                script: notesPermissionProbeScript
+            )
+            checks.append(
+                NoteCheck(
+                    name: "Notes.app",
+                    status: "ok",
+                    detail: "reachable via Apple Events"
+                )
+            )
+        } catch {
+            checks.append(
+                NoteCheck(
+                    name: "Notes.app",
+                    status: "fail",
+                    detail:
+                        "not reachable: \(error.localizedDescription). Grant Apple Core control "
+                        + "of Notes in System Settings > Privacy & Security > Automation, then "
+                        + "try again."
+                )
+            )
+            return NoteDiagnosticReport(healthy: false, checks: checks)
+        }
+
+        if deep {
+            do {
+                let accounts = try await AppleScriptRunner.shared.runJSON(
+                    .jxa,
+                    script: listAccountsScript,
+                    as: [NoteAccount].self
+                )
+                let names = accounts.map(\.name).joined(separator: ", ")
+                checks.append(
+                    NoteCheck(
+                        name: "Accounts",
+                        status: accounts.isEmpty ? "warn" : "ok",
+                        detail: accounts.isEmpty
+                            ? "no Notes accounts are configured, so every tool will come back empty"
+                            : "\(accounts.count) account(s): \(names)"
+                    )
+                )
+            } catch {
+                checks.append(
+                    NoteCheck(
+                        name: "Accounts",
+                        status: "fail",
+                        detail: "could not list accounts: \(error.localizedDescription)"
+                    )
+                )
+            }
+        }
+
+        if deep {
+            // Only the four database-backed tools need Full Disk Access.
+            // Name them, so somebody who never touches a checklist can tell
+            // whether this warning is about anything they use, rather than
+            // reading it as a general fault and granting access for nothing.
+            let database = NotesDatabaseReader()
+            let readable = database.isAvailable
+            checks.append(
+                NoteCheck(
+                    name: "Notes database",
+                    status: readable ? "ok" : "warn",
+                    detail: readable
+                        ? "readable, so notes_get_link, notes_get_metadata, "
+                            + "notes_get_checklist_state and notes_get_sync_status all work"
+                        : "not readable, so notes_get_link, notes_get_metadata, "
+                            + "notes_get_checklist_state and notes_get_sync_status will fail. "
+                            + "Grant Apple Core Full Disk Access in System Settings > Privacy & "
+                            + "Security, then quit and reopen it. Every other Notes tool is "
+                            + "unaffected."
+                )
+            )
+        }
+
+        return NoteDiagnosticReport(
+            healthy: !checks.contains { $0.status == "fail" },
+            checks: checks
+        )
     }
 
     private static func clampedLimit(_ requested: Int?, default defaultValue: Int) -> Int {
