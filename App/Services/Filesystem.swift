@@ -12,6 +12,7 @@
 // window on a file nobody can read anyway, so binary is reported as metadata
 // and left on disk.
 
+import CryptoKit
 import Foundation
 import JSONSchema
 import OSLog
@@ -42,6 +43,11 @@ private func sortedByName(_ urls: [URL]) -> [URL] {
         $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending
     }
 }
+
+/// Binary reads are capped for the same reason note attachments are: base64
+/// inflates by a third, and a client's context window is the real limit here,
+/// not the disk.
+private let maximumInlineBinaryBytes = 256 * 1024
 
 final class FilesystemService: Service {
     static let shared = FilesystemService()
@@ -146,10 +152,15 @@ final class FilesystemService: Service {
         Tool(
             name: "filesystem_read",
             description:
-                "Read a text file inside a shared folder. Binary files are not returned; their metadata is.",
+                "Read a text file inside a shared folder. Binary files are not returned; their metadata is. Large files come back capped, with nextOffset for reading on from there.",
             inputSchema: .object(
                 properties: [
-                    "path": .string(description: "File to read")
+                    "path": .string(description: "File to read"),
+                    "offset": .integer(
+                        description:
+                            "Byte to start reading from; pass a previous call's nextOffset",
+                        default: .int(0)
+                    ),
                 ],
                 required: ["path"],
                 additionalProperties: false
@@ -169,10 +180,14 @@ final class FilesystemService: Service {
                 requiringWrite: false
             )
             let metadataSize = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize
+            let byteOffset = max(0, arguments["offset"]?.intValue ?? 0)
             // Read only the cap, not the file: Data(contentsOf:) loaded a
             // multi-gigabyte file whole before the old slice applied.
             let handle = try FileHandle(forReadingFrom: url)
             defer { try? handle.close() }
+            if byteOffset > 0 {
+                try handle.seek(toOffset: UInt64(byteOffset))
+            }
             guard let data = try handle.read(upToCount: maximumReadBytes + 3) else {
                 return Value.object([
                     "path": .string(url.path),
@@ -182,31 +197,22 @@ final class FilesystemService: Service {
                 ])
             }
             let truncated = data.count > maximumReadBytes
-            var slice = Data(data.prefix(maximumReadBytes))
-            // A cap that lands mid-codepoint used to fail UTF-8 validation
-            // and misreport the whole file as binary. Drop any trailing
-            // partial sequence (at most 3 continuation bytes) before decode.
-            if truncated {
-                while let last = slice.last,
-                    last & 0b1100_0000 == 0b1000_0000
-                {
-                    slice.removeLast()
-                }
-                if let last = slice.last,
-                    last & 0b1110_0000 == 0b1100_0000
-                        || last & 0b1111_0000 == 0b1110_0000
-                        || last & 0b1111_1000 == 0b1111_0000
-                {
-                    slice.removeLast()
-                }
-            }
+            let window = FilesystemContent.textWindow(
+                data,
+                cap: maximumReadBytes,
+                resuming: byteOffset > 0,
+                truncated: truncated
+            )
 
-            guard let text = String(data: slice, encoding: .utf8) else {
+            guard let text = window.text else {
                 return Value.object([
                     "path": .string(url.path),
                     "isText": .bool(false),
                     "sizeBytes": .int(metadataSize ?? data.count),
-                    "note": .string("This file is not UTF-8 text, so its contents were not read."),
+                    "note": .string(
+                        "This file is not UTF-8 text, so its contents were not read. "
+                            + "Use filesystem_read_binary for small binary files."
+                    ),
                 ])
             }
             let sizeBytes = metadataSize ?? data.count
@@ -216,9 +222,19 @@ final class FilesystemService: Service {
                 "sizeBytes": .int(sizeBytes),
                 "content": .string(text),
             ]
+            if byteOffset > 0 {
+                result["offset"] = .int(byteOffset)
+            }
             if truncated {
                 result["truncated"] = .bool(true)
-                result["note"] = .string("Only the first \(maximumReadBytes) bytes are shown.")
+                // Count the bytes actually consumed, not the cap: the trims
+                // mean those differ, and a nextOffset built from the cap would
+                // skip or repeat a few bytes on every page.
+                result["nextOffset"] = .int(byteOffset + window.consumed)
+                result["note"] = .string(
+                    "Showing \(window.byteCount) bytes from offset \(byteOffset). "
+                        + "Read on from nextOffset."
+                )
             }
             return Value.object(result)
         }
@@ -544,8 +560,323 @@ final class FilesystemService: Service {
             }
             return Value.object(result)
         }
-    }
 
+        Tool(
+            name: "filesystem_append",
+            description:
+                "Add text to the end of a file inside a shared folder that allows writing, creating it if it is not there. Use this for logs and notes rather than reading a file back and rewriting it whole.",
+            inputSchema: .object(
+                properties: [
+                    "path": .string(description: "File to append to"),
+                    "content": .string(description: "Text to add at the end"),
+                ],
+                required: ["path", "content"],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Append to File",
+                readOnlyHint: false,
+                openWorldHint: false
+            )
+        ) { arguments in
+            guard let path = arguments["path"]?.stringValue else {
+                throw FilesystemServiceError.missingArgument("path")
+            }
+            guard let content = arguments["content"]?.stringValue else {
+                throw FilesystemServiceError.missingArgument("content")
+            }
+            let url = try FilesystemAccess.resolve(
+                requested: path,
+                roots: FilesystemService.shared.roots,
+                requiringWrite: true
+            )
+            let addition = Data(content.utf8)
+            if FileManager.default.fileExists(atPath: url.path) {
+                let handle = try FileHandle(forWritingTo: url)
+                defer { try? handle.close() }
+                try handle.seekToEnd()
+                try handle.write(contentsOf: addition)
+            } else {
+                try addition.write(to: url, options: .atomic)
+            }
+            let sizeBytes = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize
+            log.info("Appended to \(url.lastPathComponent, privacy: .public)")
+            return Value.object([
+                "path": .string(url.path),
+                "appendedBytes": .int(addition.count),
+                "sizeBytes": .int(sizeBytes ?? addition.count),
+            ])
+        }
+
+        Tool(
+            name: "filesystem_read_binary",
+            description:
+                "Read a non-text file as base64, for files up to \(maximumInlineBinaryBytes / 1024)KB. Use filesystem_read for text, and filesystem_stat for anything larger, which stays on disk.",
+            inputSchema: .object(
+                properties: [
+                    "path": .string(description: "File to read")
+                ],
+                required: ["path"],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Read Binary File",
+                readOnlyHint: true,
+                openWorldHint: false
+            )
+        ) { arguments in
+            guard let path = arguments["path"]?.stringValue else {
+                throw FilesystemServiceError.missingArgument("path")
+            }
+            let url = try FilesystemAccess.resolve(
+                requested: path,
+                roots: FilesystemService.shared.roots,
+                requiringWrite: false
+            )
+            let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+            guard size <= maximumInlineBinaryBytes else {
+                throw FilesystemServiceError.tooLargeToInline(
+                    path: url.path,
+                    sizeBytes: size,
+                    limitBytes: maximumInlineBinaryBytes
+                )
+            }
+            let handle = try FileHandle(forReadingFrom: url)
+            defer { try? handle.close() }
+            let data = try handle.read(upToCount: maximumInlineBinaryBytes + 1) ?? Data()
+            guard data.count <= maximumInlineBinaryBytes else {
+                throw FilesystemServiceError.tooLargeToInline(
+                    path: url.path,
+                    sizeBytes: data.count,
+                    limitBytes: maximumInlineBinaryBytes
+                )
+            }
+            return Value.object([
+                "path": .string(url.path),
+                "sizeBytes": .int(data.count),
+                "base64": .string(data.base64EncodedString()),
+            ])
+        }
+
+        Tool(
+            name: "filesystem_search_content",
+            description:
+                "Find files by what is inside them, not just their name, using Spotlight. Reaches inside PDFs, Pages and Word documents and anything else Spotlight indexes. Use filesystem_search when you know part of the file name instead.",
+            inputSchema: .object(
+                properties: [
+                    "path": .string(description: "Directory to search beneath"),
+                    "query": .string(description: "Text the file's contents must contain"),
+                    "limit": .integer(
+                        description: "Maximum matches to return",
+                        default: .int(defaultPageSize)
+                    ),
+                ],
+                required: ["path", "query"],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Search File Contents",
+                readOnlyHint: true,
+                openWorldHint: false
+            )
+        ) { arguments in
+            guard let path = arguments["path"]?.stringValue else {
+                throw FilesystemServiceError.missingArgument("path")
+            }
+            guard let query = arguments["query"]?.stringValue, !query.isEmpty else {
+                throw FilesystemServiceError.missingArgument("query")
+            }
+            let roots = FilesystemService.shared.roots
+            let url = try FilesystemAccess.resolve(
+                requested: path,
+                roots: roots,
+                requiringWrite: false
+            )
+            let limit = clampedPageSize(arguments["limit"]?.intValue)
+            let expression = "kMDItemTextContent == '*\(Spotlight.quoted(query))*'c"
+            let hits = try Spotlight.run(arguments: ["-onlyin", url.path, expression])
+
+            // mdfind is told where to look, but it is a separate process with
+            // its own view of the disk. Re-check every hit against the
+            // allowlist rather than trusting -onlyin to be the access control.
+            var matches: [Value] = []
+            for hit in hits where matches.count < limit {
+                guard
+                    let resolved = try? FilesystemAccess.resolve(
+                        requested: hit,
+                        roots: roots,
+                        requiringWrite: false
+                    )
+                else { continue }
+                matches.append(FilesystemService.describe(resolved))
+            }
+            return Value.object([
+                "path": .string(url.path),
+                "query": .string(query),
+                "matches": .array(matches),
+                "truncated": .bool(hits.count > matches.count),
+            ])
+        }
+
+        Tool(
+            name: "filesystem_recent",
+            description:
+                "List files changed most recently beneath a shared folder, newest first. Use when someone refers to what they were just working on.",
+            inputSchema: .object(
+                properties: [
+                    "path": .string(description: "Directory to look beneath"),
+                    "days": .integer(
+                        description: "How far back to look, in days",
+                        default: .int(7)
+                    ),
+                    "limit": .integer(
+                        description: "Maximum files to return",
+                        default: .int(defaultPageSize)
+                    ),
+                ],
+                required: ["path"],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "List Recent Files",
+                readOnlyHint: true,
+                openWorldHint: false
+            )
+        ) { arguments in
+            guard let path = arguments["path"]?.stringValue else {
+                throw FilesystemServiceError.missingArgument("path")
+            }
+            let roots = FilesystemService.shared.roots
+            let url = try FilesystemAccess.resolve(
+                requested: path,
+                roots: roots,
+                requiringWrite: false
+            )
+            let days = max(1, arguments["days"]?.intValue ?? 7)
+            let limit = clampedPageSize(arguments["limit"]?.intValue)
+            let seconds = days * 24 * 60 * 60
+            let expression = "kMDItemContentModificationDate >= $time.now(-\(seconds))"
+            let hits = try Spotlight.run(arguments: ["-onlyin", url.path, expression])
+
+            var found: [URL] = []
+            for hit in hits {
+                guard
+                    let resolved = try? FilesystemAccess.resolve(
+                        requested: hit,
+                        roots: roots,
+                        requiringWrite: false
+                    )
+                else { continue }
+                found.append(resolved)
+            }
+            // Spotlight returns matches unordered, so sort here rather than
+            // handing back an arbitrary slice of a "most recent" list.
+            let sorted = found.sorted { left, right in
+                let leftDate =
+                    (try? left.resourceValues(forKeys: [.contentModificationDateKey]))?
+                    .contentModificationDate ?? .distantPast
+                let rightDate =
+                    (try? right.resourceValues(forKeys: [.contentModificationDateKey]))?
+                    .contentModificationDate ?? .distantPast
+                return leftDate > rightDate
+            }
+            return Value.object([
+                "path": .string(url.path),
+                "days": .int(days),
+                "entries": .array(sorted.prefix(limit).map { FilesystemService.describe($0) }),
+                "totalMatched": .int(sorted.count),
+            ])
+        }
+
+        Tool(
+            name: "filesystem_hash",
+            description:
+                "Get a file's SHA-256 checksum, for confirming two files are identical or that a copy came through intact.",
+            inputSchema: .object(
+                properties: [
+                    "path": .string(description: "File to hash")
+                ],
+                required: ["path"],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Hash File",
+                readOnlyHint: true,
+                openWorldHint: false
+            )
+        ) { arguments in
+            guard let path = arguments["path"]?.stringValue else {
+                throw FilesystemServiceError.missingArgument("path")
+            }
+            let url = try FilesystemAccess.resolve(
+                requested: path,
+                roots: FilesystemService.shared.roots,
+                requiringWrite: false
+            )
+            // Hash in chunks. A checksum tool that has to hold the file in
+            // memory is useless on the large files most worth checksumming.
+            let handle = try FileHandle(forReadingFrom: url)
+            defer { try? handle.close() }
+            var digest = SHA256()
+            var byteCount = 0
+            while let chunk = try handle.read(upToCount: 1024 * 1024), !chunk.isEmpty {
+                digest.update(data: chunk)
+                byteCount += chunk.count
+            }
+            let hex = digest.finalize().map { String(format: "%02x", $0) }.joined()
+            return Value.object([
+                "path": .string(url.path),
+                "algorithm": .string("sha256"),
+                "hash": .string(hex),
+                "sizeBytes": .int(byteCount),
+            ])
+        }
+
+        Tool(
+            name: "filesystem_tags",
+            description:
+                "Read or replace a file's Finder tags. Pass tags to set them, or leave it out to read what is there. Setting replaces the whole list, so read first when adding one.",
+            inputSchema: .object(
+                properties: [
+                    "path": .string(description: "File or folder to read or tag"),
+                    "tags": .array(
+                        description:
+                            "Complete replacement tag list; omit to read the current tags instead",
+                        items: .string()
+                    ),
+                ],
+                required: ["path"],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "File Tags",
+                readOnlyHint: false,
+                idempotentHint: true,
+                openWorldHint: false
+            )
+        ) { arguments in
+            guard let path = arguments["path"]?.stringValue else {
+                throw FilesystemServiceError.missingArgument("path")
+            }
+            let requested = arguments["tags"]?.arrayValue?.compactMap(\.stringValue)
+            let url = try FilesystemAccess.resolve(
+                requested: path,
+                roots: FilesystemService.shared.roots,
+                requiringWrite: requested != nil
+            )
+            if let requested {
+                try FilesystemContent.setTags(requested, on: url)
+                log.info("Tagged \(url.lastPathComponent, privacy: .public)")
+            }
+            let current =
+                (try? url.resourceValues(forKeys: [.tagNamesKey]))?.tagNames ?? []
+            return Value.object([
+                "path": .string(url.path),
+                "tags": .array(current.map { .string($0) }),
+                "changed": .bool(requested != nil),
+            ])
+        }
+    }
     private static func describe(_ url: URL) -> Value {
         let values = try? url.resourceValues(
             forKeys: [.isDirectoryKey, .fileSizeKey, .contentModificationDateKey]
@@ -571,6 +902,7 @@ enum FilesystemServiceError: LocalizedError {
     /// the caller did not know was there is the one mistake in this surface
     /// with no undo, since the overwritten copy never reaches the Trash.
     case destinationExists(String)
+    case tooLargeToInline(path: String, sizeBytes: Int, limitBytes: Int)
 
     var errorDescription: String? {
         switch self {
@@ -580,6 +912,11 @@ enum FilesystemServiceError: LocalizedError {
             return
                 "Something already exists at \(path). Move or trash it first, or choose "
                 + "another name; this will not overwrite it."
+        case let .tooLargeToInline(path, sizeBytes, limitBytes):
+            return
+                "\(path) is \(sizeBytes / 1024)KB, over the \(limitBytes / 1024)KB limit for "
+                + "reading a file inline. Leave it on disk and use filesystem_stat, or copy it "
+                + "somewhere the user can open it."
         }
     }
 }

@@ -8,7 +8,7 @@
 
 A personal macOS MCP (Model Context Protocol) server that exposes local Apple services, including Calendar, Reminders, Contacts, Mail, Notes, Messages, Maps, Location, Capture, and Shortcuts, to MCP clients such as Claude Desktop, Claude Code, and Cursor.
 
-**Status:** Apple Core 1.0 is the first public release. The app serves MCP locally and through an optional authenticated Cloudflare Tunnel, with 122 tools in the standard build. Apple Core began as a hard-fork of [`mattt/iMCP`](https://github.com/mattt/iMCP); it now runs those per-surface implementations plus expanded Notes and Mail surfaces behind the HTTP/SSE serving shell ported from [Bridgeport](https://github.com/oliverames/bridgeport), replacing the original Bonjour transport. The architecture pivot is recorded in [`docs/planning/BUILD_PLAN.md` §0a](docs/planning/BUILD_PLAN.md).
+**Status:** Apple Core 1.0 is the first public release. The app serves MCP locally and through an optional authenticated Cloudflare Tunnel, with 128 tools in the standard build. Apple Core began as a hard-fork of [`mattt/iMCP`](https://github.com/mattt/iMCP); it now runs those per-surface implementations plus expanded Notes and Mail surfaces behind the HTTP/SSE serving shell ported from [Bridgeport](https://github.com/oliverames/bridgeport), replacing the original Bonjour transport. The architecture pivot is recorded in [`docs/planning/BUILD_PLAN.md` §0a](docs/planning/BUILD_PLAN.md).
 
 Download the signed and notarized app from [GitHub Releases](https://github.com/oliverames/apple-core/releases/latest). Each installation creates its own bearer token and stores its configuration and OAuth state under that Mac user's `~/.config/apple-core/` folder. The release does not contain Oliver's token, Cloudflare tunnel credentials, OAuth clients, Apple account data, or service permissions. Remote access starts off; until you turn it on, Apple Core is reachable only from this Mac.
 
@@ -31,11 +31,13 @@ Full architecture rationale, per-surface deep dives, and the build sequence are 
 
 ## Surfaces
 
-The standard build exposes 122 tools: Notes (32), Mail (28), Contacts (12), Filesystem (10), Reminders (7), Calendar (6), Utilities (6), Maps (5), Messages (5), Capture (4), Shortcuts (4), and Location (3). Surfaces start off except Maps and Utilities, so a fresh install advertises 11 tools until you enable more during onboarding or in Settings. The ten Filesystem tools additionally stay hidden until you share a folder, and six WeatherKit tools are excluded from every current build because their `WEATHERKIT_AVAILABLE` compilation condition is never set.
+The standard build exposes 128 tools: Notes (32), Mail (28), Filesystem (16), Contacts (12), Reminders (7), Calendar (6), Utilities (6), Maps (5), Messages (5), Capture (4), Shortcuts (4), and Location (3). Surfaces start off except Maps and Utilities, so a fresh install advertises 11 tools until you enable more during onboarding or in Settings. The sixteen Filesystem tools additionally stay hidden until you share a folder, and six WeatherKit tools are excluded from every current build because their `WEATHERKIT_AVAILABLE` compilation condition is never set.
 
 Four Notes tools read the local Notes database rather than going through AppleScript, because Notes exposes no other route to them: `notes_get_link`, `notes_get_metadata`, `notes_get_checklist_state`, and `notes_get_sync_status`. They need Full Disk Access and report clearly when they do not have it; every other Notes tool works without it. Run `notes_doctor` to see which applies. Five tools that put a window on screen — the `notes_show_*` family and `notes_selected` — refuse on a Mac with no active desktop session, since a headless bridge has nobody to show anything to.
 
-The Filesystem surface reports itself inactive and exposes nothing until you share a folder with it in Settings, so a fresh install has no filesystem access at all.
+The Filesystem surface reports itself inactive and exposes nothing until you share a folder with it in Settings, so a fresh install has no filesystem access at all. Shared folders may overlap, so a folder inside one you already share can be added and given write access on its own while the enclosing folder stays read-only.
+
+`filesystem_search_content` and `filesystem_recent` go through Spotlight, so they reach inside PDFs, Pages and Word documents and answer immediately rather than walking the tree. Both fall back to nothing useful on a volume with indexing turned off, and `filesystem_search` still matches on file names there. Deleting moves an item to the Trash and never removes it outright, and neither move nor copy will overwrite an existing file.
 
 ## macOS permissions
 
