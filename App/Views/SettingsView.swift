@@ -295,6 +295,8 @@ private struct AccessPane: View {
                 } header: {
                     SectionHeader(title: "Remote Access")
                 }
+
+                AuthorizationPageProtectionSection(model: model)
             }
         }
         .formStyle(.grouped)
@@ -319,6 +321,86 @@ private struct AccessPane: View {
                 }
             }
         )
+    }
+}
+
+/// Cloudflare Access over the OAuth authorization page, and nothing else.
+///
+/// The page is the only one on this host a person opens in a browser, so it is
+/// the only one an identity check can sit in front of without breaking things.
+/// The copy says so, because "protect my server with Access" is the obvious
+/// thing to want and the thing that would stop every client connecting.
+private struct AuthorizationPageProtectionSection: View {
+    @ObservedObject var model: ServingSettingsModel
+
+    private var protectBinding: Binding<Bool> {
+        Binding(
+            get: { model.cloudflare.accessProtectAuthorizePage },
+            set: { newValue in
+                var settings = model.cloudflare
+                settings.accessProtectAuthorizePage = newValue
+                model.cloudflare = settings
+            }
+        )
+    }
+
+    var body: some View {
+        Section {
+            Toggle("Require a Cloudflare login on the authorization page", isOn: protectBinding)
+
+            if model.cloudflare.accessProtectAuthorizePage {
+                LabeledContent("Allowed people") {
+                    TextField(
+                        "you@example.com, someone@example.com",
+                        text: $model.accessEmailsText,
+                        axis: .vertical
+                    )
+                    .lineLimit(1 ... 3)
+                    .textFieldStyle(.roundedBorder)
+                }
+
+                LabeledContent("API token") {
+                    SecureField("Cloudflare API token with Access permissions", text: $model.accessAPIToken)
+                        .textFieldStyle(.roundedBorder)
+                }
+            }
+
+            HStack {
+                Button(
+                    model.cloudflare.accessProtectAuthorizePage ? "Apply Protection" : "Remove Protection"
+                ) {
+                    Task { await model.applyAccessProtection() }
+                }
+                .disabled(model.isApplyingAccessProtection)
+
+                if model.isApplyingAccessProtection {
+                    ProgressView().controlSize(.small)
+                }
+            }
+
+            if let message = model.accessStatusMessage {
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if let error = model.accessErrorMessage {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        } header: {
+            SectionHeader(
+                title: "Authorization Page",
+                subtitle: "Adds a Cloudflare login in front of the page where the Apple Core token is typed."
+            )
+        } footer: {
+            TipFooter(
+                text:
+                    "Only that page is protected. The MCP endpoint and the client registration and token endpoints stay open, because clients call them without a browser and would otherwise stop connecting."
+            )
+        }
     }
 }
 

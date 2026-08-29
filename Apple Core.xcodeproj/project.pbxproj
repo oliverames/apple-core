@@ -38,6 +38,7 @@
 		AC0000010000000000000011 /* AttachmentSaveDirectory.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC0000010000000000000012 /* AttachmentSaveDirectory.swift */; };
 		AC0000010000000000000013 /* AttachmentSaveDirectory.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC0000010000000000000012 /* AttachmentSaveDirectory.swift */; };
 		AC0000010000000000000016 /* OAuthSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC0000010000000000000017 /* OAuthSupport.swift */; };
+		AC00000100000000000000D0 /* CloudflareAccess.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC00000100000000000000D1 /* CloudflareAccess.swift */; };
 		AC0000010000000000000019 /* ServicePermissionInventory.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC0000010000000000000018 /* ServicePermissionInventory.swift */; };
 		AC000001000000000000001A /* ServicePermissionInventory.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC0000010000000000000018 /* ServicePermissionInventory.swift */; };
 		F809556E2D7888920055B911 /* TypedStream in Frameworks */ = {isa = PBXBuildFile; productRef = F809556D2D7888920055B911 /* TypedStream */; };
@@ -101,6 +102,7 @@
 		AC000001000000000000000E /* ServiceAccessPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServiceAccessPolicy.swift; sourceTree = "<group>"; };
 		AC0000010000000000000012 /* AttachmentSaveDirectory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachmentSaveDirectory.swift; sourceTree = "<group>"; };
 		AC0000010000000000000017 /* OAuthSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = OAuthSupport.swift; path = App/Services/Serving/OAuthSupport.swift; sourceTree = SOURCE_ROOT; };
+		AC00000100000000000000D1 /* CloudflareAccess.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = CloudflareAccess.swift; path = App/Services/Serving/CloudflareAccess.swift; sourceTree = SOURCE_ROOT; };
 		AC0000010000000000000018 /* ServicePermissionInventory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServicePermissionInventory.swift; sourceTree = "<group>"; };
 		AC0000010000000000000003 /* Apple CoreTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "Apple CoreTests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
 		F8F44E6D2D59038D0075D79C /* iMCP.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = iMCP.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -190,6 +192,7 @@
 				F8F44EB72D5908D00075D79C /* CLI */,
 				AC0000010000000000000010 /* Shared */,
 				AC0000010000000000000017 /* OAuthSupport.swift */,
+				AC00000100000000000000D1 /* CloudflareAccess.swift */,
 				AC0000010000000000000045 /* LaunchAgentManager.swift */,
 				AC0000010000000000000047 /* ProcessShell.swift */,
 				AC000001000000000000003F /* ConnectionApprovalView.swift */,
@@ -393,6 +396,7 @@
 			files = (
 				AC0000010000000000000013 /* AttachmentSaveDirectory.swift in Sources */,
 				AC0000010000000000000016 /* OAuthSupport.swift in Sources */,
+				AC00000100000000000000D0 /* CloudflareAccess.swift in Sources */,
 				AC0000010000000000000031 /* FilesystemAccess.swift in Sources */,
 				AC0000010000000000000034 /* MessagesDatabaseReader.swift in Sources */,
 				AC00000100000000000000A2 /* GUISession.swift in Sources */,

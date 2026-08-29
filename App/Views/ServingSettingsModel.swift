@@ -69,6 +69,48 @@ final class ServingSettingsModel: ObservableObject {
     /// Set when the address could not be derived and has to be typed after all.
     @Published var needsManualHostname = false
 
+    // MARK: - Cloudflare Access over the authorization page
+    //
+    // Held separately from `cloudflare` because the API token belongs in the
+    // Keychain rather than the config file, and the email list is edited as
+    // free text before it becomes an array.
+    @Published var accessAPIToken: String = AccessTokenStore.read() ?? ""
+    @Published var accessEmailsText: String = ""
+    @Published var accessStatusMessage: String?
+    @Published var accessErrorMessage: String?
+    @Published var isApplyingAccessProtection = false
+
+    /// Pushes the current Access intent to Cloudflare and records the result.
+    ///
+    /// The application ID only reaches the config after Cloudflare confirms
+    /// it, so a failed call cannot leave the settings claiming a protection
+    /// that is not there.
+    func applyAccessProtection() async {
+        isApplyingAccessProtection = true
+        accessStatusMessage = nil
+        accessErrorMessage = nil
+        defer { isApplyingAccessProtection = false }
+
+        AccessTokenStore.write(accessAPIToken)
+
+        var settings = cloudflare
+        settings.accessAllowedEmails =
+            accessEmailsText
+            .split(whereSeparator: { $0 == "," || $0.isNewline })
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+
+        do {
+            let outcome = try await AccessProtectionCoordinator.apply(settings: settings)
+            settings.accessApplicationID = outcome.applicationID
+            cloudflare = settings
+            _ = save(restartServer: false)
+            accessStatusMessage = outcome.message
+        } catch {
+            accessErrorMessage = error.localizedDescription
+        }
+    }
+
     /// Drives the first-run sheet. Onboarding is presented on the Settings
     /// window rather than as a window of its own, matching skylight-bridge.
     @Published var isOnboardingPresented = false

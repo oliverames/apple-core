@@ -32,6 +32,14 @@ public struct CloudflareSettings: Codable, Sendable, Equatable {
     public var launchAgentLabel: String
     public var routeMode: String
     public var createdByAppleCore: Bool
+    /// Cloudflare Access over the OAuth authorization page only. Off by
+    /// default, and scoped to that one path: see `CloudflareAccess.swift` for
+    /// why protecting the whole host would break every MCP client.
+    public var accessProtectAuthorizePage: Bool
+    public var accessAllowedEmails: [String]
+    /// The Access application Apple Core created, so it can be updated or
+    /// removed later instead of accumulating duplicates.
+    public var accessApplicationID: String
 
     public init(
         enabled: Bool = false,
@@ -47,7 +55,10 @@ public struct CloudflareSettings: Codable, Sendable, Equatable {
         cloudflaredPath: String = "",
         launchAgentLabel: String = AppleCoreServingPaths.cloudflareLaunchAgentLabel(),
         routeMode: String = "single-hostname-path-routing",
-        createdByAppleCore: Bool = false
+        createdByAppleCore: Bool = false,
+        accessProtectAuthorizePage: Bool = false,
+        accessAllowedEmails: [String] = [],
+        accessApplicationID: String = ""
     ) {
         self.enabled = enabled
         self.profileName = profileName
@@ -63,6 +74,9 @@ public struct CloudflareSettings: Codable, Sendable, Equatable {
         self.launchAgentLabel = launchAgentLabel
         self.routeMode = routeMode
         self.createdByAppleCore = createdByAppleCore
+        self.accessProtectAuthorizePage = accessProtectAuthorizePage
+        self.accessAllowedEmails = accessAllowedEmails
+        self.accessApplicationID = accessApplicationID
     }
 
     // Tolerant decoding: every field falls back to its default when absent,
@@ -103,6 +117,15 @@ public struct CloudflareSettings: Codable, Sendable, Equatable {
         createdByAppleCore =
             try container.decodeIfPresent(Bool.self, forKey: .createdByAppleCore)
             ?? defaults.createdByAppleCore
+        accessProtectAuthorizePage =
+            try container.decodeIfPresent(Bool.self, forKey: .accessProtectAuthorizePage)
+            ?? defaults.accessProtectAuthorizePage
+        accessAllowedEmails =
+            try container.decodeIfPresent([String].self, forKey: .accessAllowedEmails)
+            ?? defaults.accessAllowedEmails
+        accessApplicationID =
+            try container.decodeIfPresent(String.self, forKey: .accessApplicationID)
+            ?? defaults.accessApplicationID
     }
 }
 
