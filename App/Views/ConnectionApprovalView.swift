@@ -14,6 +14,11 @@ struct ConnectionApprovalView: View {
     let clientName: String
     let authenticationDetail: String
     let canAlwaysTrust: Bool
+    /// Worded per principal: an OAuth client is one identifiable client,
+    /// whereas trusting the shared token trusts anything holding it. The
+    /// checkbox has to say which of those the user is agreeing to.
+    let alwaysTrustTitle: String
+    let alwaysTrustDetail: String
     let onApprove: (Bool) -> Void  // Bool parameter is for "always trust"
     let onDeny: () -> Void
 
@@ -61,23 +66,14 @@ struct ConnectionApprovalView: View {
                     if canAlwaysTrust {
                         Toggle(isOn: $alwaysTrust) {
                             VStack(alignment: .leading, spacing: 2) {
-                                Text("Always trust this OAuth client")
-                                Text(
-                                    "Trusted OAuth clients connect without asking again. Manage them in Settings › Clients."
-                                )
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .fixedSize(horizontal: false, vertical: true)
+                                Text(alwaysTrustTitle)
+                                Text(alwaysTrustDetail)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
                             }
                         }
                         .toggleStyle(.checkbox)
-                    } else {
-                        Text(
-                            "Apple Core will ask again next time because the shared token does not identify one client."
-                        )
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
                     }
                 }
             }
@@ -120,6 +116,9 @@ final class ConnectionApprovalWindowController: NSObject, NSWindowDelegate {
         clientName: String,
         authenticationDetail: String = "Authenticated OAuth client.",
         canAlwaysTrust: Bool = true,
+        alwaysTrustTitle: String = "Always trust this OAuth client",
+        alwaysTrustDetail: String =
+            "Trusted clients connect without asking again. Manage them in Settings › Clients.",
         onApprove: @escaping (Bool) -> Void,
         onDeny: @escaping () -> Void
     ) {
@@ -130,6 +129,8 @@ final class ConnectionApprovalWindowController: NSObject, NSWindowDelegate {
             clientName: clientName,
             authenticationDetail: authenticationDetail,
             canAlwaysTrust: canAlwaysTrust,
+            alwaysTrustTitle: alwaysTrustTitle,
+            alwaysTrustDetail: alwaysTrustDetail,
             onApprove: { alwaysTrust in
                 self.resolveVisibleDialogAsApproved(
                     clientName: clientName,
@@ -216,6 +217,9 @@ final class ConnectionApprovalWindowController: NSObject, NSWindowDelegate {
         clientName: "Claude Desktop",
         authenticationDetail: "Authenticated OAuth client ames_example…",
         canAlwaysTrust: true,
+        alwaysTrustTitle: "Always trust this OAuth client",
+        alwaysTrustDetail:
+            "Trusted clients connect without asking again. Manage them in Settings › Clients.",
         onApprove: { alwaysTrust in
             print("Approved with always trust: \(alwaysTrust)")
         },

@@ -267,19 +267,21 @@ final class ServerController: ObservableObject {
     }
 
     private func isClientTrusted(_ principal: AuthenticatedPrincipal) -> Bool {
-        guard let clientID = principal.trustedClientID else { return false }
-        return trustedClients.contains { $0.clientID == clientID }
+        let key = principal.trustKey
+        return trustedClients.contains { $0.clientID == key }
     }
 
     private func addTrustedClient(_ principal: AuthenticatedPrincipal) {
-        guard let clientID = principal.trustedClientID,
-            let displayName = principal.registeredName
-        else {
-            return
-        }
+        // Keyed on `trustKey`, not `trustedClientID`: the latter is nil for
+        // the shared token, which used to make "always trust" impossible to
+        // honour. Approving then silently forgetting is worse than not
+        // offering the choice, and it is what sent people back to the dialog
+        // on every reconnect.
+        let key = principal.trustKey
+        let displayName = principal.trustDisplayName
         var clients = trustedClients
-        clients = Set(clients.filter { $0.clientID != clientID })
-        clients.insert(TrustedOAuthClient(clientID: clientID, displayName: displayName))
+        clients = Set(clients.filter { $0.clientID != key })
+        clients.insert(TrustedOAuthClient(clientID: key, displayName: displayName))
         trustedClients = clients
     }
 
@@ -294,6 +296,19 @@ final class ServerController: ObservableObject {
             if $0.displayName == $1.displayName { return $0.clientID < $1.clientID }
             return $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
         }
+    }
+
+    /// The shared token's trust entry, when it has one.
+    ///
+    /// Surfaced on its own because it is not a registered OAuth client and so
+    /// never appears in that list. Trust you cannot see is trust you cannot
+    /// withdraw, and this grant covers anything holding the token.
+    func sharedTokenTrust() -> TrustedOAuthClient? {
+        trustedClients.first { $0.clientID.hasPrefix("shared-token:") }
+    }
+
+    func revokeSharedTokenTrust() {
+        trustedClients = Set(trustedClients.filter { !$0.clientID.hasPrefix("shared-token:") })
     }
 
     func resetTrustedClients() {
@@ -422,6 +437,8 @@ final class ServerController: ObservableObject {
             clientName: next.displayName,
             authenticationDetail: next.authenticationDetail,
             canAlwaysTrust: next.principal.canBeTrusted,
+            alwaysTrustTitle: next.principal.alwaysTrustTitle,
+            alwaysTrustDetail: next.principal.alwaysTrustDetail,
             onApprove: { [weak self] alwaysTrust in
                 guard let self else { return }
                 if alwaysTrust {
@@ -588,10 +605,16 @@ final class ServerController: ObservableObject {
         let authenticationDetail: String
         switch principal {
         case .sharedBearer:
-            subjectID = "connection:\(connectionID.uuidString.lowercased())"
+            // Was `connection:<fresh UUID>`, which made every single
+            // connection its own subject: never matching a trusted entry,
+            // never coalescing with a concurrent one, and so prompting
+            // forever. The token fingerprint is stable across reconnects and
+            // changes when the token is rotated.
+            subjectID = principal.trustKey
             displayName = reportedClientName
             authenticationDetail =
-                "Authenticated with the shared Apple Core token. This name is supplied by the client."
+                "Authenticated with the shared Apple Core token. This name is supplied by the client, "
+                + "so trusting it trusts anything that presents the same token."
         case let .oauth(clientID, registeredName):
             subjectID = "oauth:\(clientID)"
             displayName = registeredName

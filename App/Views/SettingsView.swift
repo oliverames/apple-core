@@ -378,6 +378,11 @@ private struct ClientsPane: View {
                 }
             }
 
+            SharedTokenTrustSection(
+                isTrusted: serverController.sharedTokenTrust() != nil,
+                onRevoke: { serverController.revokeSharedTokenTrust() }
+            )
+
             OAuthClientsSection(
                 clients: model.registeredOAuthClients,
                 trustedClientIDs: Set(serverController.getTrustedClients().map(\.clientID)),
@@ -459,6 +464,39 @@ private struct ClientRow: View {
             SettingsCopyButton(title: "Copy Command", systemImage: "terminal") { command }
         case .paste:
             SettingsCopyButton(title: "Copy Address", systemImage: "link") { address }
+        }
+    }
+}
+
+private struct SharedTokenTrustSection: View {
+    let isTrusted: Bool
+    let onRevoke: () -> Void
+
+    var body: some View {
+        Section {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(isTrusted ? "Connects without approval" : "Approval required")
+                    Text(
+                        isTrusted
+                            ? "Anything presenting the shared token connects without asking. Rotating the token also undoes this."
+                            : "Every new connection using the shared token asks for approval first."
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 12)
+                if isTrusted {
+                    Button("Require Approval", role: .destructive, action: onRevoke)
+                }
+            }
+            .padding(.vertical, 2)
+        } header: {
+            SectionHeader(
+                title: "Shared Token",
+                subtitle: "The token identifies no particular client, so trusting it covers every client that has it."
+            )
         }
     }
 }

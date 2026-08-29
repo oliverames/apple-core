@@ -23,12 +23,35 @@ public struct OAuthRegisteredClient: Codable, Sendable {
 /// `clientInfo` is display metadata supplied by the client and must never be
 /// used as an authorization or durable-trust key.
 public enum AuthenticatedPrincipal: Sendable, Hashable {
-    case sharedBearer
+    /// Carries a fingerprint of the token that authenticated the request, not
+    /// the token itself. It exists so the shared token can be trusted durably
+    /// while rotating the token revokes that trust on its own.
+    case sharedBearer(tokenFingerprint: String)
     case oauth(clientID: String, registeredName: String)
 
+    /// The OAuth client ID and nothing else. `oauthClientGate` keys session
+    /// generations on this value, so the shared token must not borrow it:
+    /// the gate has never heard of a token fingerprint and would refuse every
+    /// session it was handed one for.
     public var trustedClientID: String? {
         guard case let .oauth(clientID, _) = self else { return nil }
         return clientID
+    }
+
+    /// The key durable trust is stored under.
+    ///
+    /// OAuth keeps its bare client ID so entries persisted before the shared
+    /// token could be trusted still decode and still match. The shared token
+    /// is keyed by a fingerprint of the token, which ties the grant to the
+    /// secret that earned it: rotate the token and the old trust no longer
+    /// matches anything.
+    public var trustKey: String {
+        switch self {
+        case let .sharedBearer(tokenFingerprint):
+            return "shared-token:\(tokenFingerprint)"
+        case let .oauth(clientID, _):
+            return clientID
+        }
     }
 
     public var registeredName: String? {
@@ -36,8 +59,52 @@ public enum AuthenticatedPrincipal: Sendable, Hashable {
         return registeredName
     }
 
+    /// What the trusted-clients list should call this principal. The shared
+    /// token names no particular client, and saying so is the honest label:
+    /// anything holding the token authenticates as this same principal.
+    public var trustDisplayName: String {
+        switch self {
+        case .sharedBearer:
+            return "Any client with the shared token"
+        case let .oauth(_, registeredName):
+            return registeredName
+        }
+    }
+
     public var canBeTrusted: Bool {
-        trustedClientID != nil
+        true
+    }
+
+    public var alwaysTrustTitle: String {
+        switch self {
+        case .sharedBearer:
+            return "Always allow clients using the shared token"
+        case .oauth:
+            return "Always trust this OAuth client"
+        }
+    }
+
+    public var alwaysTrustDetail: String {
+        switch self {
+        case .sharedBearer:
+            return
+                "Any client presenting this token connects without asking again, and rotating the "
+                + "token undoes it. Manage this in Settings › Clients."
+        case .oauth:
+            return
+                "Trusted clients connect without asking again. Manage them in Settings › Clients."
+        }
+    }
+}
+
+extension OAuthSupport {
+    /// A stable, non-reversible label for a bearer token. Truncated because
+    /// this is an identity key held in preferences, not a verifier: it never
+    /// authenticates anything on its own, and the full digest of a live
+    /// secret does not belong in a plist.
+    public static func tokenFingerprint(_ token: String) -> String {
+        let digest = SHA256.hash(data: Data(token.utf8))
+        return digest.map { String(format: "%02x", $0) }.joined().prefix(16).lowercased()
     }
 }
 

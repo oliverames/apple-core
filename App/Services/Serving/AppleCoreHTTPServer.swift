@@ -1210,7 +1210,7 @@ public actor AppleCoreHTTPServer {
 
         if let authHeader = request.headers[.authorization] {
             if Self.constantTimeEquals(authHeader, "Bearer \(token)") {
-                return .sharedBearer
+                return .sharedBearer(tokenFingerprint: OAuthSupport.tokenFingerprint(token))
             }
 
             if authHeader.lowercased().hasPrefix("bearer ") {
