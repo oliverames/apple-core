@@ -7,6 +7,80 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <description>Updates for Apple Core - a native macOS MCP server for Apple services</description>
     <language>en</language>
     <item>
+      <title>Version 1.4.0</title>
+      <link>https://github.com/oliverames/apple-core/releases/tag/v1.4.0</link>
+      <sparkle:version>18</sparkle:version>
+      <sparkle:shortVersionString>1.4.0</sparkle:shortVersionString>
+      <description><![CDATA[
+<style>
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Helvetica, Arial, sans-serif;
+    font-size: 13px;
+    line-height: 1.55;
+    color: #1d1d1f;
+    margin: 0;
+    padding: 0;
+}
+h1, h2, h3 { color: #000; font-weight: 600; }
+h1 { font-size: 18px; margin: 0 0 10px 0; }
+h2 {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    color: #6e6e73;
+    margin: 18px 0 6px 0;
+}
+h3 { font-size: 13px; margin: 14px 0 6px 0; }
+p { margin: 0 0 10px 0; }
+ul, ol { padding-left: 20px; margin: 0 0 10px 0; }
+li { margin-bottom: 5px; }
+li > strong:first-child { color: #000; }
+code {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    background: #f2f2f7;
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-size: 12px;
+}
+a { color: #0071e3; text-decoration: none; }
+a:hover { text-decoration: underline; }
+hr { border: 0; border-top: 1px solid #e5e5ea; margin: 16px 0; }
+@media (prefers-color-scheme: dark) {
+    body { color: #f5f5f7; }
+    h1, h2, h3, li > strong:first-child { color: #fff; }
+    h2 { color: #98989d; }
+    code { background: #2c2c2e; }
+    hr { border-top-color: #38383a; }
+}
+</style>
+<h1>Apple Core 1.4.0</h1>
+<p>Apple Core 1.4.0 is about being asked to approve things. Connecting with the shared token used to mean answering a dialog on every single connection, with no way to stop it. Now one approval is enough. Alongside that, Cloudflare Access can be put in front of the one page where the token gets typed.</p>
+<h2>Approving a client once</h2>
+<p>Connecting with the shared Apple Core token prompted for approval every time, and ticking a box to remember the answer was never offered. That was not a small oversight: the approval subject was a fresh identifier per connection, so nothing could ever match what had been approved before. Reconnect, restart the client, restart the Mac, and you were asked again.</p>
+<ul>
+<li>The approval dialog now offers to remember the shared token, and remembering it works. Approve once and clients using that token connect without asking again.</li>
+<li>The grant is tied to the token itself, so <strong>rotating the token revokes it</strong>. A new token starts from an unapproved state, which is what you would want if you rotated it because the old one leaked.</li>
+<li>The dialog says what it is actually asking. Trusting the shared token trusts anything that presents it, rather than one particular client, and the wording no longer implies otherwise.</li>
+<li>Settings › Clients has a Shared Token section showing whether that grant is in place, with a control to require approval again. Trust you cannot see is trust you cannot withdraw.</li>
+</ul>
+<p>OAuth clients are unchanged and keep their existing approvals. Nothing needs to be re-approved after updating.</p>
+<h2>A login in front of the authorization page</h2>
+<p>The OAuth authorization page is where the Apple Core token gets typed into a browser, and it is the only page on the server a person visits. Cloudflare Access can now be placed in front of it, from Settings › Access, so reaching that page requires a Cloudflare login first.</p>
+<p>It protects that page and nothing else, deliberately. The MCP endpoint and the client registration and token endpoints are called by client software with no browser and no one to satisfy a login, so putting Access over the whole host would stop every client connecting. Apple Core will not do that: the protection is scoped to the single path, and the code refuses to create a rule covering the machine endpoints even if asked.</p>
+<p>Setting it up needs a Cloudflare API token with Access permissions. The credential from <code class="notranslate">cloudflared</code> sign-in is not enough, because it is scoped to tunnel and DNS work. The API token is kept in the Keychain rather than in the config file, since it can change Zero Trust policy for the whole account.</p>
+<p>This is off by default and changes nothing until you turn it on.</p>
+<h2>Upgrading</h2>
+<p>1.0.3 and later update automatically. Installs on 1.0.0 through 1.0.2 still need the one-time manual reinstall described in the <a href="https://github.com/oliverames/apple-core/releases/tag/v1.0.3">1.0.3 notes</a>, because their update signing key does not match the feed.</p>
+<p>No new permissions. If you have already approved clients, they stay approved.</p>
+      ]]></description>
+      <pubDate>Sat, 29 Aug 2026 20:55:59 +0000</pubDate>
+      <enclosure url="https://github.com/oliverames/apple-core/releases/download/v1.4.0/Apple.Core-1.4.0.zip"
+                 length="9480536"
+                 type="application/octet-stream"
+                 sparkle:edSignature="miHGm74EE36FCfzZFgmo4nB6TC5bpdE8NPW2N9ptT85U2gd4sXmyK4kBsc8cbhSZAqXGUh9v5QyCcRHEVUY8Bw==" />
+      <sparkle:minimumSystemVersion>15.1</sparkle:minimumSystemVersion>
+    </item>
+    <item>
       <title>Version 1.3.0</title>
       <link>https://github.com/oliverames/apple-core/releases/tag/v1.3.0</link>
       <sparkle:version>17</sparkle:version>
@@ -935,6 +1009,6 @@ hr { border: 0; border-top: 1px solid #e5e5ea; margin: 16px 0; }
     <!-- `Scripts/release.sh appcast` prepends signed release entries here. -->
   </channel>
 </rss><!-- sparkle-signatures:
-edSignature: +eJXoGxBWCiPtJCmzHZGr9yhcpsktsEafPoYzN3VJwwjtZz6Xm72Mg547naxOy2mfMaziejQLnwRR2+Xo5r9CQ==
-length: 57532
+edSignature: trWb71KKR44+oRJFBB5uefdBHfRQpwLPRyLLO0vF8KMRbRhxkpZXQH4QSeQrXjLcQaSYfnezKSJwaqu/HETVBA==
+length: 62660
 -->
