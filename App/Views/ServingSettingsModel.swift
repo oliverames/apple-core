@@ -75,6 +75,9 @@ final class ServingSettingsModel: ObservableObject {
     // Keychain rather than the config file, and the email list is edited as
     // free text before it becomes an array.
     @Published var accessAPIToken: String = AccessTokenStore.read() ?? ""
+    /// Hydrated from the stored settings on load. Left empty it would show a
+    /// blank field to someone who already has people configured, and Apply
+    /// would then be an attempt to clear the list rather than to keep it.
     @Published var accessEmailsText: String = ""
     @Published var accessStatusMessage: String?
     @Published var accessErrorMessage: String?
@@ -135,6 +138,7 @@ final class ServingSettingsModel: ObservableObject {
         self.portText = String(loaded.port ?? 8756)
         self.bindHost = loaded.bindHost ?? "127.0.0.1"
         self.allowedOriginsText = (loaded.allowedOrigins ?? []).joined(separator: "\n")
+        self.accessEmailsText = (loaded.cloudflare?.accessAllowedEmails ?? []).joined(separator: ", ")
         refreshAppLaunchAgentStatus()
         refreshOpenAtLoginStatus()
     }
@@ -183,6 +187,7 @@ final class ServingSettingsModel: ObservableObject {
         portText = String(loaded.port ?? 8756)
         bindHost = loaded.bindHost ?? "127.0.0.1"
         allowedOriginsText = (loaded.allowedOrigins ?? []).joined(separator: "\n")
+        accessEmailsText = (loaded.cloudflare?.accessAllowedEmails ?? []).joined(separator: ", ")
         dirtyFields.removeAll()
     }
 

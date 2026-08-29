@@ -407,6 +407,13 @@ final class ServerController: ObservableObject {
                 "Connection for pending approval of \(request.subjectID) dropped; resolving as denied"
             )
             request.deny()
+            // Anything that arrived while this one held the subject was
+            // coalesced onto it and is waiting for its answer. Denying only
+            // the dropped request would leave those continuations parked for
+            // the life of the process. This became reachable for the shared
+            // token once its approval subject stopped being unique per
+            // connection, which is exactly when connections coalesce.
+            handlePendingApprovals(for: request.subjectID, approved: false)
         }
 
         if let current = visibleApprovalRequest, current.connectionID == connectionID {

@@ -25,6 +25,14 @@ public enum AccessProtectionCoordinator {
         apiToken: String? = AccessTokenStore.read(),
         session: URLSession = .shared
     ) async throws -> Outcome {
+        let action = AccessProtectionAction.decide(
+            isProtectionRequested: settings.accessProtectAuthorizePage,
+            existingApplicationID: settings.accessApplicationID
+        )
+
+        guard action.requiresCredentials else {
+            return Outcome(applicationID: "", message: "The authorization page is not protected.")
+        }
         guard !settings.accountId.isEmpty else { throw CloudflareAccessError.missingAccountID }
         guard let apiToken, !apiToken.isEmpty else { throw CloudflareAccessError.missingAPIToken }
 
@@ -34,11 +42,8 @@ public enum AccessProtectionCoordinator {
             session: session
         )
 
-        guard settings.accessProtectAuthorizePage else {
-            guard !settings.accessApplicationID.isEmpty else {
-                return Outcome(applicationID: "", message: "The authorization page is not protected.")
-            }
-            try await client.deleteApplication(id: settings.accessApplicationID)
+        if case let .removeProtection(applicationID) = action {
+            try await client.deleteApplication(id: applicationID)
             return Outcome(
                 applicationID: "",
                 message: "Cloudflare Access removed from the authorization page."

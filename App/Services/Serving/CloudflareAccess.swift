@@ -118,6 +118,32 @@ public struct AccessProtectionSpec: Sendable, Equatable {
     }
 }
 
+/// What applying the settings should actually do.
+///
+/// Pulled out as a decision of its own because "protection is off and there is
+/// nothing recorded" must not need credentials. Requiring an API token to turn
+/// something off that was never on is a dead end for anyone who enabled the
+/// toggle, changed their mind, and never had a token in the first place.
+public enum AccessProtectionAction: Sendable, Equatable {
+    case nothingToDo
+    case protectPage
+    case removeProtection(applicationID: String)
+
+    public static func decide(
+        isProtectionRequested: Bool,
+        existingApplicationID: String
+    ) -> AccessProtectionAction {
+        if isProtectionRequested { return .protectPage }
+        let trimmed = existingApplicationID.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? .nothingToDo : .removeProtection(applicationID: trimmed)
+    }
+
+    /// Only the two that talk to Cloudflare need an account and a token.
+    public var requiresCredentials: Bool {
+        self != .nothingToDo
+    }
+}
+
 public enum CloudflareAccessError: LocalizedError, Equatable {
     case missingAPIToken
     case missingAccountID

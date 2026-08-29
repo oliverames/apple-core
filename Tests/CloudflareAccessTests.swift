@@ -109,4 +109,44 @@ struct CloudflareAccessTests {
         #expect(include?.count == 2)
         #expect(include?.first?["email"]?["email"] == "a@example.com")
     }
+
+    @Test("Turning protection off with nothing recorded needs no credentials")
+    func disablingWithNothingRecordedIsANoOp() {
+        // The dead end this closes: someone enables the toggle, changes their
+        // mind, and can never turn it off because they never had an API token.
+        let action = AccessProtectionAction.decide(
+            isProtectionRequested: false,
+            existingApplicationID: ""
+        )
+        #expect(action == .nothingToDo)
+        #expect(!action.requiresCredentials)
+    }
+
+    @Test("Whitespace in a stored application ID still counts as nothing recorded")
+    func blankApplicationIDIsNothingToDo() {
+        #expect(
+            AccessProtectionAction.decide(isProtectionRequested: false, existingApplicationID: "   ")
+                == .nothingToDo
+        )
+    }
+
+    @Test("Turning protection off with an application recorded removes it")
+    func disablingRemovesTheApplication() {
+        let action = AccessProtectionAction.decide(
+            isProtectionRequested: false,
+            existingApplicationID: "app_123"
+        )
+        #expect(action == .removeProtection(applicationID: "app_123"))
+        #expect(action.requiresCredentials)
+    }
+
+    @Test("Turning protection on always needs credentials")
+    func enablingNeedsCredentials() {
+        let action = AccessProtectionAction.decide(
+            isProtectionRequested: true,
+            existingApplicationID: ""
+        )
+        #expect(action == .protectPage)
+        #expect(action.requiresCredentials)
+    }
 }
