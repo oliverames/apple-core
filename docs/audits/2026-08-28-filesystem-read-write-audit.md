@@ -1,7 +1,7 @@
 # Apple Core filesystem read/write audit
 
 Date: 2026-08-28
-Scope: the 14 filesystem tools, audited against the deployment on home-server
+Scope: the 16 filesystem tools, audited against the deployment on home-server
 and against the 1.3.0 source. Findings are marked by how they were established,
 because the live half of this audit could not be completed.
 
@@ -27,7 +27,7 @@ unattended. That is the one piece of the requested work not delivered.
 | Public route to the server | Live | Was misrouting; fixed and verified |
 | Apple Core on home-server | Live, indirectly | Was serving throughout |
 | OAuth discovery and unauthenticated refusal | Live | Correct |
-| Authenticated read/write tool calls | Not run | Blocked, see below |
+| Authenticated read/write tool calls | Live | Mostly run; see below |
 | Path containment and access control | Source + tests | Sound |
 | Read surface behaviour | Source | Sound, with one flag bug |
 | Write surface behaviour | Source | Sound, with one design inconsistency |
@@ -117,9 +117,69 @@ tunnel. The deployed build is not doing that.
 An unauthenticated `tools/list` is refused, so the tool surface is not
 enumerable without a token.
 
-## What could not be verified, and why
+## Update: the live run happened
 
-Calling the tools with credentials was not possible in this session:
+The blockers cleared later in the session. SSH came back, the server's own
+token was used from home-server so it never left that machine, and the tools
+were exercised against the running 1.3.0 server.
+
+**The deployment is 1.3.0**, serving 128 tools of which 16 are filesystem
+tools, carrying the 1.3.0 schemas: `offset` on `filesystem_read`, `limit` and
+`offset` on `filesystem_list` and `filesystem_search`, and
+`filesystem_search_content` present. The stale schemas seen earlier were this
+client's cache, not the server. That closes the open question above.
+
+Shared roots are `/Users/oliverames` **writable**, plus Desktop, Documents and
+two iCloud folders that are all inside it and therefore redundant. Sharing the
+whole home directory writable through a publicly reachable endpoint is a
+larger blast radius than the four narrower entries suggest, and worth a look
+independently of anything in this audit.
+
+Confirmed live:
+
+- **Containment holds.** Traversal out of a root, an absolute path to
+  `/etc/passwd`, a write outside the roots, a read through a symlink pointing
+  out of a root, a write through a dangling symlink, and trashing a path
+  outside the roots were each refused with an accurate message. Nothing
+  escaped, and `/tmp/applecore-escape.txt` was never created.
+- **The overwrite finding reproduces.** Writing twice to one path returned
+  `replaced: true` with no warning, while `filesystem_copy` and
+  `filesystem_move` each refused their overwrite with the
+  `destinationExists` error. The surface guards the recoverable case and not
+  the unrecoverable one.
+- Tags round-trip, `filesystem_trash` moves a file out of reach of a
+  subsequent read, `filesystem_read_binary` refuses a 6436KB file against its
+  256KB cap with a message naming both numbers, and `filesystem_create_folder`
+  is idempotent.
+
+Still not verified live, and so still source-only: the paging behaviour, the
+hidden-file inconsistency (finding 3), the `truncated` flag in
+`filesystem_search_content` (finding 2), and the hash and recent tools. A bug
+in the harness swallowed those results, and the re-run needed another approval
+dialog that could not be answered in time. Findings 2 and 3 therefore rest on
+reading the code, not on observed behaviour.
+
+## Two things the live attempts exposed
+
+Neither is about reading or writing, and both cost more of the session than
+the audit did.
+
+**A first connection through the public endpoint can time out before it can be
+approved.** Cloudflare gives up at 120 seconds with error 524 while Apple Core
+is still holding the request for the approval dialog. On a Mac whose screen is
+not readily reachable, the client simply fails.
+
+**A client using the shared token could never be remembered.** `canBeTrusted`
+was false for `.sharedBearer`, so the dialog offered no "always allow", and the
+approval subject was `connection:<fresh UUID>`, a new identity per connection
+that could never match a stored grant. Every reconnect asked again. This is
+fixed in 1.4.0: trust is now keyed on a fingerprint of the token, so one
+approval holds and rotating the token revokes it.
+
+## What was blocked at the time, and why
+
+Calling the tools with credentials was not possible in the first half of the
+session:
 
 1. **The MCP client session was dead.** It was established while the endpoint
    was 502 and does not reconnect mid-session.
