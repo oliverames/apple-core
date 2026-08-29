@@ -132,7 +132,8 @@ struct DiagnosticsView: View {
             )
         } footer: {
             TipFooter(
-                text: "Changing a switch in System Settings quits Apple Core's access immediately; use Recheck to see the new state."
+                text:
+                    "Changing a switch in System Settings quits Apple Core's access immediately; use Recheck to see the new state."
             )
         }
     }

@@ -88,7 +88,8 @@ enum ServicePermissionStatus {
         by configs: [ServiceConfig]
     ) -> [(requirement: ServicePermissionRequirement, services: [String])] {
         ServicePermissionRequirement.allCases.compactMap { requirement in
-            let services = configs
+            let services =
+                configs
                 .filter { $0.permissionRequirements.contains(requirement) }
                 .map(\.name)
             return services.isEmpty ? nil : (requirement, services)
@@ -182,9 +183,10 @@ enum ServicePermissionStatus {
         if FileManager.default.isReadableFile(atPath: path) {
             return .granted
         }
-        let hasBookmark = UserDefaults.standard.data(
-            forKey: "me.mattt.iMCP.messagesDatabaseBookmark"
-        ) != nil
+        let hasBookmark =
+            UserDefaults.standard.data(
+                forKey: "me.mattt.iMCP.messagesDatabaseBookmark"
+            ) != nil
         return hasBookmark ? .limited("Granted by file") : .denied("Needs Full Disk Access")
     }
 }
