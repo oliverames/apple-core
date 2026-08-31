@@ -7,6 +7,75 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <description>Updates for Apple Core - a native macOS MCP server for Apple services</description>
     <language>en</language>
     <item>
+      <title>Version 1.5.0</title>
+      <link>https://github.com/oliverames/apple-core/releases/tag/v1.5.0</link>
+      <sparkle:version>20</sparkle:version>
+      <sparkle:shortVersionString>1.5.0</sparkle:shortVersionString>
+      <description><![CDATA[
+<style>
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Helvetica, Arial, sans-serif;
+    font-size: 13px;
+    line-height: 1.55;
+    color: #1d1d1f;
+    margin: 0;
+    padding: 0;
+}
+h1, h2, h3 { color: #000; font-weight: 600; }
+h1 { font-size: 18px; margin: 0 0 10px 0; }
+h2 {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    color: #6e6e73;
+    margin: 18px 0 6px 0;
+}
+h3 { font-size: 13px; margin: 14px 0 6px 0; }
+p { margin: 0 0 10px 0; }
+ul, ol { padding-left: 20px; margin: 0 0 10px 0; }
+li { margin-bottom: 5px; }
+li > strong:first-child { color: #000; }
+code {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    background: #f2f2f7;
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-size: 12px;
+}
+a { color: #0071e3; text-decoration: none; }
+a:hover { text-decoration: underline; }
+hr { border: 0; border-top: 1px solid #e5e5ea; margin: 16px 0; }
+@media (prefers-color-scheme: dark) {
+    body { color: #f5f5f7; }
+    h1, h2, h3, li > strong:first-child { color: #fff; }
+    h2 { color: #98989d; }
+    code { background: #2c2c2e; }
+    hr { border-top-color: #38383a; }
+}
+</style>
+<h1>Apple Core 1.5.0</h1>
+<p>Three corrections to the Filesystem surface, found by auditing it against the running server. One of them changes how <code class="notranslate">filesystem_write</code> behaves, so it is worth reading before updating.</p>
+<h2>Writing no longer replaces a file by accident</h2>
+<p><code class="notranslate">filesystem_move</code> and <code class="notranslate">filesystem_copy</code> have always refused to overwrite, for a stated reason: a replaced file does not go to the Trash, so it is the one destructive act on this surface with no undo. <code class="notranslate">filesystem_write</code> was the exception. It replaced whatever was at the path and reported the fact afterwards, and it is the tool a client reaches for when it believes a file is new.</p>
+<p><strong><code class="notranslate">filesystem_write</code> now refuses to replace an existing file unless you pass <code class="notranslate">overwrite: true</code>.</strong> The error says so and names the alternatives, so a client that meant to update a file can retry deliberately, or use <code class="notranslate">filesystem_append</code> instead.</p>
+<p>This is a behaviour change. Anything that relied on write silently replacing a file needs <code class="notranslate">overwrite: true</code> from now on. Creating a new file is unaffected.</p>
+<h2>Searching contents no longer claims to be truncated when it isn't</h2>
+<p><code class="notranslate">filesystem_search_content</code> re-checks every Spotlight hit against the shared folders, because <code class="notranslate">mdfind</code> is a separate process and must not be the access control. It then measured truncation against the raw hit count, so any hit dropped for sitting outside a shared folder made a complete answer report <code class="notranslate">truncated: true</code>. Callers were told to narrow a search that had already returned everything they were allowed to see.</p>
+<p>Truncation is now measured against the matches you can actually be shown.</p>
+<h2>Hidden files behave the same in both tools</h2>
+<p><code class="notranslate">filesystem_list</code> showed dotfiles and <code class="notranslate">filesystem_search</code> skipped them, so a file you could see when listing a folder could never be found by name. Both now include hidden files, and both take <code class="notranslate">includeHidden</code> if you would rather leave them out. Hidden is decided by the filesystem's own flag, so a file hidden without a leading dot is treated correctly too.</p>
+<h2>Upgrading</h2>
+<p>1.0.3 and later update automatically. Installs on 1.0.0 through 1.0.2 still need the one-time manual reinstall described in the <a href="https://github.com/oliverames/apple-core/releases/tag/v1.0.3">1.0.3 notes</a>, because their update signing key does not match the feed.</p>
+<p>No new permissions, and shared folders are unchanged. The only thing to check is whether anything you have automated calls <code class="notranslate">filesystem_write</code> expecting it to replace a file.</p>
+      ]]></description>
+      <pubDate>Mon, 31 Aug 2026 12:40:19 +0000</pubDate>
+      <enclosure url="https://github.com/oliverames/apple-core/releases/download/v1.5.0/Apple.Core-1.5.0.zip"
+                 length="9485327"
+                 type="application/octet-stream"
+                 sparkle:edSignature="jhkBqclJ5Y9BGlkHGc3culBgfXuLNSELlk6g1LPhH4ZLserfz4aXQcjaVXuk69Kme0J2PSNexiM1faE5AfNHCA==" />
+      <sparkle:minimumSystemVersion>15.1</sparkle:minimumSystemVersion>
+    </item>
+    <item>
       <title>Version 1.4.1</title>
       <link>https://github.com/oliverames/apple-core/releases/tag/v1.4.1</link>
       <sparkle:version>19</sparkle:version>
@@ -1078,6 +1147,6 @@ hr { border: 0; border-top: 1px solid #e5e5ea; margin: 16px 0; }
     <!-- `Scripts/release.sh appcast` prepends signed release entries here. -->
   </channel>
 </rss><!-- sparkle-signatures:
-edSignature: gROMcZkpKZr+ocsXRuitDu2gJptm/o5+EiAUdusRKnRzUQx7orVI6/BaHFGHovIBbQnZKx6BSrVudWsKLjlWCw==
-length: 66492
+edSignature: NRSy5OVg1t+8c3W9SKrJXqQ6iFsi4QKY7UYs/Q/FoqzsiLuUtqIV17ZnpVatwumh1AlRB56h5e3GHCwLUmGjAw==
+length: 71454
 -->
