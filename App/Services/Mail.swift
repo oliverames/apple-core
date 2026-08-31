@@ -4,6 +4,9 @@ import Foundation
 import JSONSchema
 import OSLog
 
+/// The app this service drives. Opened on demand before any script runs.
+private let scriptedMailApp = ScriptedApp("com.apple.mail")
+
 private let log = Logger.service("mail")
 
 private let mailPermissionProbeScript = """
@@ -836,7 +839,7 @@ final class MailService: Service {
     static let shared = MailService()
 
     func activate() async throws {
-        _ = try await AppleScriptRunner.shared.run(
+        _ = try await scriptedMailApp.run(
             .jxa,
             script: mailPermissionProbeScript
         )
@@ -856,7 +859,7 @@ final class MailService: Service {
                 openWorldHint: false
             )
         ) { _ in
-            try await AppleScriptRunner.shared.runJSON(
+            try await scriptedMailApp.runJSON(
                 .jxa,
                 script: listAccountsScript,
                 as: [MailAccount].self
@@ -881,7 +884,7 @@ final class MailService: Service {
             )
         ) { arguments in
             let account = arguments["account"]?.stringValue ?? ""
-            return try await AppleScriptRunner.shared.runJSON(
+            return try await scriptedMailApp.runJSON(
                 .jxa,
                 script: listMailboxesScript,
                 arguments: [account],
@@ -923,7 +926,7 @@ final class MailService: Service {
             let mailbox = try Self.requiredString("mailbox", from: arguments)
             let limit = Self.clampedLimit(arguments["limit"]?.intValue)
             let unreadOnly = arguments["unread_only"]?.boolValue ?? false
-            return try await AppleScriptRunner.shared.runJSON(
+            return try await scriptedMailApp.runJSON(
                 .jxa,
                 script: listMessagesScript,
                 arguments: [account, mailbox, String(limit), unreadOnly ? "true" : "false"],
@@ -966,7 +969,7 @@ final class MailService: Service {
                     userInfo: [NSLocalizedDescriptionKey: "id is required"]
                 )
             }
-            return try await AppleScriptRunner.shared.runJSON(
+            return try await scriptedMailApp.runJSON(
                 .jxa,
                 script: getMessageScript,
                 arguments: [account, mailbox, String(id)],
@@ -1013,7 +1016,7 @@ final class MailService: Service {
             let query = try Self.requiredString("query", from: arguments)
             let scope = arguments["scope"]?.stringValue ?? "subject"
             let limit = Self.clampedLimit(arguments["limit"]?.intValue)
-            return try await AppleScriptRunner.shared.runJSON(
+            return try await scriptedMailApp.runJSON(
                 .jxa,
                 script: searchMessagesScript,
                 arguments: [account, mailbox, scope, query, String(limit)],
@@ -1206,7 +1209,7 @@ final class MailService: Service {
                 openWorldHint: false
             )
         ) { _ in
-            try await AppleScriptRunner.shared.runJSON(
+            try await scriptedMailApp.runJSON(
                 .jxa,
                 script: selectedMessagesScript,
                 arguments: [],
@@ -1227,7 +1230,7 @@ final class MailService: Service {
                 openWorldHint: true
             )
         ) { _ in
-            try await AppleScriptRunner.shared.runJSON(
+            try await scriptedMailApp.runJSON(
                 .jxa,
                 script: checkMailScript,
                 arguments: [],
@@ -1306,7 +1309,7 @@ final class MailService: Service {
             let id = try Self.requiredID(from: arguments)
             let body = try Self.requiredString("body", from: arguments)
             let replyAll = arguments["reply_all"]?.boolValue ?? false
-            return try await AppleScriptRunner.shared.runJSON(
+            return try await scriptedMailApp.runJSON(
                 .jxa,
                 script: replyScript,
                 arguments: [account, mailbox, String(id), body, replyAll ? "true" : "false"],
@@ -1354,7 +1357,7 @@ final class MailService: Service {
             let id = try Self.requiredID(from: arguments)
             let to = try Self.requiredAddresses("to", from: arguments)
             let body = arguments["body"]?.stringValue ?? ""
-            return try await AppleScriptRunner.shared.runJSON(
+            return try await scriptedMailApp.runJSON(
                 .jxa,
                 script: forwardScript,
                 arguments: [account, mailbox, String(id), try Self.encodeJSON(to), body],
@@ -1396,7 +1399,7 @@ final class MailService: Service {
             let mailbox = try Self.requiredString("mailbox", from: arguments)
             let id = try Self.requiredID(from: arguments)
             let limit = Self.clampedLimit(arguments["limit"]?.intValue)
-            return try await AppleScriptRunner.shared.runJSON(
+            return try await scriptedMailApp.runJSON(
                 .jxa,
                 script: getThreadScript,
                 arguments: [account, mailbox, String(id), String(limit)],
@@ -1428,7 +1431,7 @@ final class MailService: Service {
         ) { arguments in
             let account = arguments["account"]?.stringValue ?? ""
             let mailbox = arguments["mailbox"]?.stringValue ?? ""
-            return try await AppleScriptRunner.shared.runJSON(
+            return try await scriptedMailApp.runJSON(
                 .jxa,
                 script: unreadCountScript,
                 arguments: [account, mailbox],
@@ -1456,7 +1459,7 @@ final class MailService: Service {
             )
         ) { arguments in
             let account = arguments["account"]?.stringValue ?? ""
-            return try await AppleScriptRunner.shared.runJSON(
+            return try await scriptedMailApp.runJSON(
                 .jxa,
                 script: statsScript,
                 arguments: [account],
@@ -1493,7 +1496,7 @@ final class MailService: Service {
             let account = try Self.requiredString("account", from: arguments)
             let mailbox = try Self.requiredString("mailbox", from: arguments)
             let id = try Self.requiredID(from: arguments)
-            return try await AppleScriptRunner.shared.runJSON(
+            return try await scriptedMailApp.runJSON(
                 .jxa,
                 script: listAttachmentsScript,
                 arguments: [account, mailbox, String(id)],
@@ -1576,7 +1579,7 @@ final class MailService: Service {
         ) { arguments in
             let account = try Self.requiredString("account", from: arguments)
             let name = try Self.requiredString("name", from: arguments)
-            return try await AppleScriptRunner.shared.runJSON(
+            return try await scriptedMailApp.runJSON(
                 .jxa,
                 script: createMailboxScript,
                 arguments: [account, name],
@@ -1614,7 +1617,7 @@ final class MailService: Service {
             let account = try Self.requiredString("account", from: arguments)
             let name = try Self.requiredString("name", from: arguments)
             let newName = try Self.requiredString("new_name", from: arguments)
-            return try await AppleScriptRunner.shared.runJSON(
+            return try await scriptedMailApp.runJSON(
                 .jxa,
                 script: renameMailboxScript,
                 arguments: [account, name, newName],
@@ -1649,7 +1652,7 @@ final class MailService: Service {
         ) { arguments in
             let account = try Self.requiredString("account", from: arguments)
             let name = try Self.requiredString("name", from: arguments)
-            return try await AppleScriptRunner.shared.runJSON(
+            return try await scriptedMailApp.runJSON(
                 .jxa,
                 script: deleteMailboxScript,
                 arguments: [account, name],
@@ -1898,7 +1901,7 @@ final class MailService: Service {
         arguments: [String],
         timeout: TimeInterval = 120
     ) async throws -> MailBatchResult {
-        let results = try await AppleScriptRunner.shared.runJSON(
+        let results = try await scriptedMailApp.runJSON(
             .jxa,
             script: script,
             arguments: arguments,
@@ -1970,7 +1973,7 @@ final class MailService: Service {
             body: body,
             account: account
         )
-        return try await AppleScriptRunner.shared.runJSON(
+        return try await scriptedMailApp.runJSON(
             .jxa,
             script: composeScript,
             arguments: [try Self.encodeJSON(payload), action],
@@ -1991,7 +1994,7 @@ final class MailService: Service {
         selector: String,
         saveDir: String?
     ) async throws -> MailSaveAttachmentResult {
-        let attachments = try await AppleScriptRunner.shared.runJSON(
+        let attachments = try await scriptedMailApp.runJSON(
             .jxa,
             script: listAttachmentsScript,
             arguments: [account, mailbox, String(id)],
@@ -2021,7 +2024,7 @@ final class MailService: Service {
             fileName: Self.sanitizedFileName(attachment.name)
         )
 
-        _ = try await AppleScriptRunner.shared.runJSON(
+        _ = try await scriptedMailApp.runJSON(
             .jxa,
             script: saveAttachmentScript,
             arguments: [account, mailbox, String(id), String(attachment.index), destination.path],
@@ -2167,7 +2170,7 @@ final class MailService: Service {
             body: body,
             account: arguments["account"]?.stringValue
         )
-        return try await AppleScriptRunner.shared.runJSON(
+        return try await scriptedMailApp.runJSON(
             .jxa,
             script: composeScript,
             arguments: [try Self.encodeJSON(payload), action == "send" ? "send" : "draft"],

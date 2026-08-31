@@ -5,6 +5,9 @@ import Foundation
 import JSONSchema
 import OSLog
 
+/// The app this service drives. Opened on demand before any script runs.
+private let scriptedNotesApp = ScriptedApp("com.apple.Notes")
+
 private let log = Logger.service("notes")
 
 private let notesPermissionProbeScript = """
@@ -883,7 +886,7 @@ final class NotesService: Service {
     static let shared = NotesService()
 
     func activate() async throws {
-        _ = try await AppleScriptRunner.shared.run(
+        _ = try await scriptedNotesApp.run(
             .jxa,
             script: notesPermissionProbeScript
         )
@@ -903,7 +906,7 @@ final class NotesService: Service {
                 openWorldHint: false
             )
         ) { _ in
-            try await AppleScriptRunner.shared.runJSON(
+            try await scriptedNotesApp.runJSON(
                 .jxa,
                 script: listFoldersScript,
                 as: [NoteFolder].self
@@ -934,7 +937,7 @@ final class NotesService: Service {
         ) { arguments in
             let folder = arguments["folder"]?.stringValue ?? ""
             let limit = Self.clampedLimit(arguments["limit"]?.intValue, default: defaultListLimit)
-            return try await AppleScriptRunner.shared.runJSON(
+            return try await scriptedNotesApp.runJSON(
                 .jxa,
                 script: listNotesScript,
                 arguments: [folder, String(limit)],
@@ -983,7 +986,7 @@ final class NotesService: Service {
             let folder = arguments["folder"]?.stringValue ?? ""
             let scope = arguments["scope"]?.stringValue ?? "all"
             let limit = Self.clampedLimit(arguments["limit"]?.intValue, default: defaultSearchLimit)
-            return try await AppleScriptRunner.shared.runJSON(
+            return try await scriptedNotesApp.runJSON(
                 .jxa,
                 script: searchNotesScript,
                 arguments: [query, folder, scope, String(limit)],
@@ -1012,7 +1015,7 @@ final class NotesService: Service {
             )
         ) { arguments in
             let id = try Self.requiredString("id", from: arguments)
-            let content = try await AppleScriptRunner.shared.runJSON(
+            let content = try await scriptedNotesApp.runJSON(
                 .jxa,
                 script: getNoteScript,
                 arguments: [id],
@@ -1066,7 +1069,7 @@ final class NotesService: Service {
                 bodyText: arguments["body"]?.stringValue,
                 bodyHTML: arguments["bodyHTML"]?.stringValue
             )
-            let output = try await AppleScriptRunner.shared.run(
+            let output = try await scriptedNotesApp.run(
                 .appleScript,
                 script: createNoteScript,
                 arguments: [html, folder]
@@ -1111,7 +1114,7 @@ final class NotesService: Service {
                     userInfo: [NSLocalizedDescriptionKey: "Either text or html is required"]
                 )
             }
-            let output = try await AppleScriptRunner.shared.run(
+            let output = try await scriptedNotesApp.run(
                 .appleScript,
                 script: appendNoteScript,
                 arguments: [id, appended]
@@ -1160,7 +1163,7 @@ final class NotesService: Service {
                 bodyText: arguments["body"]?.stringValue,
                 bodyHTML: arguments["bodyHTML"]?.stringValue
             )
-            let output = try await AppleScriptRunner.shared.run(
+            let output = try await scriptedNotesApp.run(
                 .appleScript,
                 script: updateNoteScript,
                 arguments: [id, html]
@@ -1187,7 +1190,7 @@ final class NotesService: Service {
             )
         ) { arguments in
             let id = try Self.requiredString("id", from: arguments)
-            _ = try await AppleScriptRunner.shared.run(
+            _ = try await scriptedNotesApp.run(
                 .appleScript,
                 script: deleteNoteScript,
                 arguments: [id]
@@ -1212,7 +1215,7 @@ final class NotesService: Service {
             // answers "no notes are selected", which reads as a real answer
             // and is indistinguishable from the user having selected nothing.
             try Self.requireGUISession(for: "Reading the current selection")
-            let selected = try await AppleScriptRunner.shared.runJSON(
+            let selected = try await scriptedNotesApp.runJSON(
                 .jxa,
                 script: selectedNotesScript,
                 arguments: [],
@@ -1254,7 +1257,7 @@ final class NotesService: Service {
         ) { arguments in
             try Self.requireGUISession(for: "Showing a note")
             let id = try Self.requiredString("id", from: arguments)
-            let shown = try await AppleScriptRunner.shared.runJSON(
+            let shown = try await scriptedNotesApp.runJSON(
                 .jxa,
                 script: showNoteScript,
                 arguments: [id],
@@ -1292,7 +1295,7 @@ final class NotesService: Service {
             try Self.requireGUISession(for: "Showing a folder")
             let folder = try Self.requiredString("folder", from: arguments)
             let account = arguments["account"]?.stringValue ?? ""
-            let shown = try await AppleScriptRunner.shared.runJSON(
+            let shown = try await scriptedNotesApp.runJSON(
                 .jxa,
                 script: showFolderScript,
                 arguments: [folder, account],
@@ -1325,7 +1328,7 @@ final class NotesService: Service {
         ) { arguments in
             try Self.requireGUISession(for: "Showing an account")
             let account = try Self.requiredString("account", from: arguments)
-            let shown = try await AppleScriptRunner.shared.runJSON(
+            let shown = try await scriptedNotesApp.runJSON(
                 .jxa,
                 script: showAccountScript,
                 arguments: [account],
@@ -1363,7 +1366,7 @@ final class NotesService: Service {
             try Self.requireGUISession(for: "Showing an attachment")
             let id = try Self.requiredString("id", from: arguments)
             let selector = try Self.requiredString("attachment", from: arguments)
-            let attachments = try await AppleScriptRunner.shared.runJSON(
+            let attachments = try await scriptedNotesApp.runJSON(
                 .jxa,
                 script: listAttachmentsScript,
                 arguments: [id],
@@ -1379,7 +1382,7 @@ final class NotesService: Service {
                     ]
                 )
             }
-            let shown = try await AppleScriptRunner.shared.runJSON(
+            let shown = try await scriptedNotesApp.runJSON(
                 .jxa,
                 script: showAttachmentScript,
                 arguments: [id, attachment.id],
@@ -1412,7 +1415,7 @@ final class NotesService: Service {
             )
         ) { arguments in
             let limit = Self.clampedLimit(arguments["limit"]?.intValue, default: defaultListLimit)
-            return try await AppleScriptRunner.shared.runJSON(
+            return try await scriptedNotesApp.runJSON(
                 .jxa,
                 script: listSharedNotesScript,
                 arguments: [String(limit)],
@@ -1557,7 +1560,7 @@ final class NotesService: Service {
             )
         ) { arguments in
             let id = try Self.requiredString("id", from: arguments)
-            let content = try await AppleScriptRunner.shared.runJSON(
+            let content = try await scriptedNotesApp.runJSON(
                 .jxa,
                 script: getNoteScript,
                 arguments: [id],
@@ -1600,7 +1603,7 @@ final class NotesService: Service {
             let id = try Self.requiredString("id", from: arguments)
             let folder = try Self.requiredString("folder", from: arguments)
             let account = arguments["account"]?.stringValue ?? ""
-            let output = try await AppleScriptRunner.shared.run(
+            let output = try await scriptedNotesApp.run(
                 .appleScript,
                 script: moveNoteScript,
                 arguments: [id, folder, account]
@@ -1633,7 +1636,7 @@ final class NotesService: Service {
         ) { arguments in
             let name = try Self.requiredString("name", from: arguments)
             let account = arguments["account"]?.stringValue ?? ""
-            let output = try await AppleScriptRunner.shared.run(
+            let output = try await scriptedNotesApp.run(
                 .appleScript,
                 script: createFolderScript,
                 arguments: [name, account]
@@ -1674,7 +1677,7 @@ final class NotesService: Service {
         ) { arguments in
             let name = try Self.requiredString("name", from: arguments)
             let account = arguments["account"]?.stringValue ?? ""
-            let accountName = try await AppleScriptRunner.shared.run(
+            let accountName = try await scriptedNotesApp.run(
                 .appleScript,
                 script: deleteFolderScript,
                 arguments: [name, account]
@@ -1697,7 +1700,7 @@ final class NotesService: Service {
                 openWorldHint: false
             )
         ) { _ in
-            try await AppleScriptRunner.shared.runJSON(
+            try await scriptedNotesApp.runJSON(
                 .jxa,
                 script: listAccountsScript,
                 as: [NoteAccount].self
@@ -1718,7 +1721,7 @@ final class NotesService: Service {
                 openWorldHint: false
             )
         ) { _ in
-            try await AppleScriptRunner.shared.runJSON(
+            try await scriptedNotesApp.runJSON(
                 .jxa,
                 script: statsScript,
                 as: NotesStats.self,
@@ -1750,7 +1753,7 @@ final class NotesService: Service {
         ) { arguments in
             let folder = arguments["folder"]?.stringValue ?? ""
             let limit = Self.clampedLimit(arguments["limit"]?.intValue, default: defaultSearchLimit)
-            return try await AppleScriptRunner.shared.runJSON(
+            return try await scriptedNotesApp.runJSON(
                 .jxa,
                 script: exportNotesScript,
                 arguments: [folder, String(limit)],
@@ -1779,7 +1782,7 @@ final class NotesService: Service {
             )
         ) { arguments in
             let id = try Self.requiredString("id", from: arguments)
-            return try await AppleScriptRunner.shared.runJSON(
+            return try await scriptedNotesApp.runJSON(
                 .jxa,
                 script: listAttachmentsScript,
                 arguments: [id],
@@ -1816,7 +1819,7 @@ final class NotesService: Service {
         ) { arguments in
             let id = try Self.requiredString("id", from: arguments)
             let selector = try Self.requiredString("attachment", from: arguments)
-            let attachments = try await AppleScriptRunner.shared.runJSON(
+            let attachments = try await scriptedNotesApp.runJSON(
                 .jxa,
                 script: listAttachmentsScript,
                 arguments: [id],
@@ -1837,7 +1840,7 @@ final class NotesService: Service {
                 in: directory,
                 filename: Self.sanitizedFilename(attachment.name)
             )
-            _ = try await AppleScriptRunner.shared.run(
+            _ = try await scriptedNotesApp.run(
                 .appleScript,
                 script: saveAttachmentScript,
                 arguments: [id, attachment.id, path.path],
@@ -1876,7 +1879,7 @@ final class NotesService: Service {
         ) { arguments in
             let id = try Self.requiredString("id", from: arguments)
             let selector = try Self.requiredString("attachment", from: arguments)
-            let attachments = try await AppleScriptRunner.shared.runJSON(
+            let attachments = try await scriptedNotesApp.runJSON(
                 .jxa,
                 script: listAttachmentsScript,
                 arguments: [id],
@@ -1908,7 +1911,7 @@ final class NotesService: Service {
             let staged = staging.appendingPathComponent(
                 Self.sanitizedFilename(attachment.name)
             )
-            _ = try await AppleScriptRunner.shared.run(
+            _ = try await scriptedNotesApp.run(
                 .appleScript,
                 script: saveAttachmentScript,
                 arguments: [id, attachment.id, staged.path],
@@ -1970,7 +1973,7 @@ final class NotesService: Service {
             let folder = try Self.requiredString("folder", from: arguments)
             let account = arguments["account"]?.stringValue ?? ""
             return await Self.runBatch(ids: ids) { id in
-                _ = try await AppleScriptRunner.shared.run(
+                _ = try await scriptedNotesApp.run(
                     .appleScript,
                     script: moveNoteScript,
                     arguments: [id, folder, account]
@@ -2000,7 +2003,7 @@ final class NotesService: Service {
         ) { arguments in
             let ids = try Self.requiredIds(from: arguments)
             let result = await Self.runBatch(ids: ids) { id in
-                _ = try await AppleScriptRunner.shared.run(
+                _ = try await scriptedNotesApp.run(
                     .appleScript,
                     script: deleteNoteScript,
                     arguments: [id]
@@ -2057,7 +2060,7 @@ final class NotesService: Service {
         // Everything else depends on Apple Events reaching Notes, so a failure
         // here would make the rest of the report noise. Stop instead.
         do {
-            _ = try await AppleScriptRunner.shared.run(
+            _ = try await scriptedNotesApp.run(
                 .jxa,
                 script: notesPermissionProbeScript
             )
@@ -2084,7 +2087,7 @@ final class NotesService: Service {
 
         if deep {
             do {
-                let accounts = try await AppleScriptRunner.shared.runJSON(
+                let accounts = try await scriptedNotesApp.runJSON(
                     .jxa,
                     script: listAccountsScript,
                     as: [NoteAccount].self

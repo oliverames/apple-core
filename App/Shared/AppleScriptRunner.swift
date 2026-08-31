@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+import AppKit
 import Foundation
 import OSLog
 
@@ -64,6 +65,45 @@ actor AppleScriptRunner {
     ///     `argv` (`on run argv` / `function run(argv)`), never via
     ///     string interpolation.
     ///   - arguments: User-supplied values, passed as argv.
+    /// Opens the app a script is about to drive, if it is not already open.
+    ///
+    /// Scripting a closed app either fails or silently launches it with a
+    /// window in the user's face. Neither is what someone wants from a server
+    /// answering a request about their mail: the app is a dependency of the
+    /// request, so it is opened deliberately, without being activated, and
+    /// the request waits for it rather than failing.
+    ///
+    /// Best effort on purpose. If the app cannot be found or is slow to come
+    /// up, the script still runs and reports its own error, which is a better
+    /// message than anything invented here.
+    func ensureRunning(_ bundleIdentifier: String, timeout: TimeInterval = 10) async {
+        if isRunning(bundleIdentifier) { return }
+        guard
+            let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleIdentifier)
+        else { return }
+
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = false
+        configuration.addsToRecentItems = false
+        _ = try? await NSWorkspace.shared.openApplication(at: url, configuration: configuration)
+
+        // Launched is not the same as ready to answer Apple Events, so wait
+        // for it to finish launching rather than racing the first command.
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if NSRunningApplication.runningApplications(withBundleIdentifier: bundleIdentifier)
+                .contains(where: { $0.isFinishedLaunching })
+            {
+                return
+            }
+            try? await Task.sleep(nanoseconds: 150_000_000)
+        }
+    }
+
+    private nonisolated func isRunning(_ bundleIdentifier: String) -> Bool {
+        !NSRunningApplication.runningApplications(withBundleIdentifier: bundleIdentifier).isEmpty
+    }
+
     func run(
         _ language: Language,
         script: String,
@@ -201,5 +241,51 @@ extension Process {
                 continuation.resume()
             }
         }
+    }
+}
+
+/// One app that Apple Core drives with scripts.
+///
+/// Exists so each service names its target once instead of at every call
+/// site, and so opening the app before scripting it cannot be forgotten at
+/// one of the fifty-odd places a script is run.
+struct ScriptedApp: Sendable {
+    let bundleIdentifier: String
+
+    init(_ bundleIdentifier: String) {
+        self.bundleIdentifier = bundleIdentifier
+    }
+
+    @discardableResult
+    func run(
+        _ language: AppleScriptRunner.Language,
+        script: String,
+        arguments: [String] = [],
+        timeout: TimeInterval = 30
+    ) async throws -> String {
+        await AppleScriptRunner.shared.ensureRunning(bundleIdentifier)
+        return try await AppleScriptRunner.shared.run(
+            language,
+            script: script,
+            arguments: arguments,
+            timeout: timeout
+        )
+    }
+
+    func runJSON<T: Decodable & Sendable>(
+        _ language: AppleScriptRunner.Language,
+        script: String,
+        arguments: [String] = [],
+        as type: T.Type,
+        timeout: TimeInterval = 30
+    ) async throws -> T {
+        await AppleScriptRunner.shared.ensureRunning(bundleIdentifier)
+        return try await AppleScriptRunner.shared.runJSON(
+            language,
+            script: script,
+            arguments: arguments,
+            as: type,
+            timeout: timeout
+        )
     }
 }

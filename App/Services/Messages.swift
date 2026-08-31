@@ -1,5 +1,8 @@
 import AppKit
 import OSLog
+
+/// The app this service drives. Opened on demand before any script runs.
+private let scriptedMessagesApp = ScriptedApp("com.apple.MobileSMS")
 import SQLite3
 import UniformTypeIdentifiers
 import iMessage
@@ -59,7 +62,7 @@ final class MessageService: NSObject, Service, NSOpenSavePanelDelegate {
     func activate() async throws {
         log.debug("Starting message service activation")
 
-        _ = try await AppleScriptRunner.shared.run(
+        _ = try await scriptedMessagesApp.run(
             .appleScript,
             script: messagesPermissionProbeScript
         )
@@ -523,7 +526,7 @@ final class MessageService: NSObject, Service, NSOpenSavePanelDelegate {
 
             if let chatId, !chatId.isEmpty {
                 log.debug("Sending message to chat \(chatId)")
-                _ = try await AppleScriptRunner.shared.run(
+                _ = try await scriptedMessagesApp.run(
                     .appleScript,
                     script: sendToChatScript,
                     arguments: [chatId, body]
@@ -545,7 +548,7 @@ final class MessageService: NSObject, Service, NSOpenSavePanelDelegate {
             let address = self.resolveRecipientAddress(for: recipient)
 
             log.debug("Sending \(service) message to \(address)")
-            _ = try await AppleScriptRunner.shared.run(
+            _ = try await scriptedMessagesApp.run(
                 .appleScript,
                 script: sendToBuddyScript,
                 arguments: [address, body, service]
