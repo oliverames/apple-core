@@ -24,6 +24,9 @@ struct DiagnosticsView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var isShowingToken = false
     @State private var permissionStates: [ServicePermissionRequirement: ServicePermissionState] = [:]
+    /// The requirement whose consent prompt is on screen, so its row can show
+    /// progress and its button cannot be pressed twice.
+    @State private var requestingPermission: ServicePermissionRequirement?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -107,12 +110,32 @@ struct DiagnosticsView: View {
                     Spacer(minLength: 12)
 
                     if let state {
-                        if !state.isGranted, let url = row.requirement.privacySettingsURL {
+                        // An automation grant that has never been asked for
+                        // does not appear under Automation in System Settings
+                        // at all, so sending someone there was a dead end.
+                        // Ask for it instead, and keep Settings for the case
+                        // that genuinely needs it: a refusal, which macOS will
+                        // not prompt about again.
+                        if !state.isGranted, !state.isDenied,
+                            row.requirement.automationTarget != nil
+                        {
+                            Button("Request Access") {
+                                Task { await requestAccess(for: row.requirement) }
+                            }
+                            .buttonStyle(.borderless)
+                            .controlSize(.small)
+                            .disabled(requestingPermission == row.requirement)
+                        } else if !state.isGranted, let url = row.requirement.privacySettingsURL {
                             Button("Open Settings") { NSWorkspace.shared.open(url) }
                                 .buttonStyle(.borderless)
                                 .controlSize(.small)
                         }
-                        StatusBadge(title: state.label, tone: state.tone)
+
+                        if requestingPermission == row.requirement {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            StatusBadge(title: state.label, tone: state.tone)
+                        }
                     } else {
                         ProgressView().controlSize(.small)
                     }
@@ -136,6 +159,17 @@ struct DiagnosticsView: View {
                     "Changing a switch in System Settings quits Apple Core's access immediately; use Recheck to see the new state."
             )
         }
+    }
+
+    /// Asks macOS for one automation grant, then re-reads it.
+    ///
+    /// User-initiated only. `state(of:)` stays read-only so that merely
+    /// opening this pane never puts a consent prompt on screen.
+    private func requestAccess(for requirement: ServicePermissionRequirement) async {
+        requestingPermission = requirement
+        defer { requestingPermission = nil }
+        let updated = await ServicePermissionStatus.requestAutomationAccess(for: requirement)
+        permissionStates[requirement] = updated
     }
 
     private var permissionRows: [(requirement: ServicePermissionRequirement, services: [String])] {

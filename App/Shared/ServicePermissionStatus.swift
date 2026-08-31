@@ -48,6 +48,13 @@ enum ServicePermissionState: Equatable, Sendable {
     }
 
     var isGranted: Bool { self == .granted }
+
+    /// Refused outright. macOS will not prompt again for these, so the only
+    /// way back is System Settings; asking again would do nothing.
+    var isDenied: Bool {
+        if case .denied = self { return true }
+        return false
+    }
 }
 
 /// Read-only probes for the permission inventory. Nothing here prompts.
@@ -70,12 +77,12 @@ enum ServicePermissionStatus {
             return CGPreflightScreenCaptureAccess() ? .granted : .denied("Not granted")
         case .location:
             return await locationState()
-        case .mailAutomation:
-            return await automationState(bundleIdentifier: "com.apple.mail", appName: "Mail")
-        case .messagesAutomation:
-            return await automationState(bundleIdentifier: "com.apple.MobileSMS", appName: "Messages")
-        case .notesAutomation:
-            return await automationState(bundleIdentifier: "com.apple.Notes", appName: "Notes")
+        case .mailAutomation, .messagesAutomation, .notesAutomation:
+            guard let target = requirement.automationTarget else { return .unknown("No target") }
+            return await automationState(
+                bundleIdentifier: target.bundleIdentifier,
+                appName: target.appName
+            )
         case .messagesDatabase:
             return messagesDatabaseState()
         }
@@ -167,10 +174,65 @@ enum ServicePermissionStatus {
             case noErr: return .granted
             case OSStatus(errAEEventNotPermitted): return .denied("Denied")
             case OSStatus(errAEEventWouldRequireUserConsent): return .notDetermined
-            case OSStatus(procNotFound): return .unknown("\(appName) not running")
+            // procNotFound means the API could not ask, not that consent was
+            // refused. Reporting "Mail not running" read as a fault and hid
+            // the common case: the grant already exists and cannot be seen
+            // from here while the app is closed.
+            case OSStatus(procNotFound):
+                return .unknown("Can't check while \(appName) is closed")
             default: return .unknown("Status \(status)")
             }
         }.value
+    }
+
+    /// Asks macOS for Apple Events consent, showing the system prompt.
+    ///
+    /// Deliberately separate from `state(of:)`, which stays read-only so that
+    /// opening Diagnostics never prompts. Sending the target a launch first is
+    /// what makes this work at all: `AEDeterminePermissionToAutomateTarget`
+    /// answers `procNotFound` for an app that is not running, and until the
+    /// prompt has been answered once the app never appears under Automation in
+    /// System Settings, so there is nothing there to switch on. That is why
+    /// "Open Settings" was a dead end for a service that had never been asked
+    /// for.
+    static func requestAutomationAccess(
+        for requirement: ServicePermissionRequirement
+    ) async -> ServicePermissionState {
+        guard let target = requirement.automationTarget else {
+            return await state(of: requirement)
+        }
+        if NSRunningApplication.runningApplications(
+            withBundleIdentifier: target.bundleIdentifier
+        ).isEmpty {
+            await launchQuietly(bundleIdentifier: target.bundleIdentifier)
+        }
+        return await Task.detached(priority: .userInitiated) {
+            let descriptor = NSAppleEventDescriptor(bundleIdentifier: target.bundleIdentifier)
+            guard let aeDesc = descriptor.aeDesc else {
+                return ServicePermissionState.unknown("Could not address \(target.appName)")
+            }
+            let status = AEDeterminePermissionToAutomateTarget(aeDesc, typeWildCard, typeWildCard, true)
+            switch status {
+            case noErr: return .granted
+            case OSStatus(errAEEventNotPermitted): return .denied("Denied")
+            case OSStatus(errAEEventWouldRequireUserConsent): return .notDetermined
+            case OSStatus(procNotFound):
+                return .unknown("Open \(target.appName), then try again")
+            default: return .unknown("Status \(status)")
+            }
+        }.value
+    }
+
+    /// Opens the target without bringing it forward. Consent is about this
+    /// app driving that one; stealing focus is not part of the bargain.
+    private static func launchQuietly(bundleIdentifier: String) async {
+        guard
+            let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleIdentifier)
+        else { return }
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = false
+        configuration.addsToRecentItems = false
+        _ = try? await NSWorkspace.shared.openApplication(at: url, configuration: configuration)
     }
 
     /// Full Disk Access, phrased as the thing it gates. MessageService also

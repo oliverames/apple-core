@@ -13,6 +13,20 @@ enum ServicePermissionRequirement: String, CaseIterable, Hashable, Sendable {
     case notesAutomation
     case reminders
 
+    /// The app this requirement is consent to drive, when it is one.
+    ///
+    /// Kept here so the bundle identifiers are stated once. Checking consent
+    /// and asking for it both need them, and they had been written out
+    /// separately at each call site.
+    var automationTarget: (bundleIdentifier: String, appName: String)? {
+        switch self {
+        case .mailAutomation: ("com.apple.mail", "Mail")
+        case .messagesAutomation: ("com.apple.MobileSMS", "Messages")
+        case .notesAutomation: ("com.apple.Notes", "Notes")
+        default: nil
+        }
+    }
+
     /// What macOS will ask for, in the words its own prompt uses. Onboarding
     /// shows these before enabling anything, so a run of system prompts is
     /// expected rather than a surprise.
