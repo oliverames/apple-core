@@ -110,6 +110,37 @@ public enum FilesystemContent {
 /// Spotlight does the content searching. Walking the tree and reading every
 /// file would be far slower and would still miss what Spotlight already knows
 /// about PDFs, Pages documents and mail.
+extension FilesystemContent {
+    /// Prefers the filesystem's own hidden flag, which catches files hidden
+    /// without a leading dot, and falls back to the dot convention when the
+    /// attribute cannot be read.
+    public static func isHidden(_ url: URL) -> Bool {
+        if let hidden = (try? url.resourceValues(forKeys: [.isHiddenKey]))?.isHidden {
+            return hidden
+        }
+        return url.lastPathComponent.hasPrefix(".")
+    }
+
+    /// Whether a write must be refused rather than replacing what is there.
+    ///
+    /// Move and copy have always refused; write did not, and a replaced file
+    /// never reaches the Trash. Stated here so the rule is one testable thing
+    /// rather than a condition buried in a tool closure.
+    public static func refusesOverwrite(exists: Bool, overwriteRequested: Bool) -> Bool {
+        exists && !overwriteRequested
+    }
+
+    /// Whether a page of results left something behind.
+    ///
+    /// Counted against what the caller is permitted to see, never against raw
+    /// search hits: entries dropped for sitting outside the shared roots are
+    /// not truncation, and reporting them as such told callers to narrow a
+    /// search that had already returned everything they could be shown.
+    public static func isTruncated(permittedCount: Int, limit: Int) -> Bool {
+        permittedCount > max(0, limit)
+    }
+}
+
 public enum Spotlight {
     /// Quotes a user string for the metadata query language. Arguments reach
     /// mdfind through argv rather than a shell, so this is about the query

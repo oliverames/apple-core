@@ -108,6 +108,10 @@ final class FilesystemService: Service {
                         description: "Entries to skip; pass a previous call's nextOffset",
                         default: .int(0)
                     ),
+                    "includeHidden": .boolean(
+                        description: "Include hidden files and folders, such as dotfiles",
+                        default: .bool(true)
+                    ),
                 ],
                 required: ["path"],
                 additionalProperties: false
@@ -126,13 +130,15 @@ final class FilesystemService: Service {
                 roots: FilesystemService.shared.roots,
                 requiringWrite: false
             )
+            let includeHidden = arguments["includeHidden"]?.boolValue ?? true
             let entries = sortedByName(
                 try FileManager.default.contentsOfDirectory(
                     at: url,
                     includingPropertiesForKeys: [
-                        .isDirectoryKey, .fileSizeKey, .contentModificationDateKey,
+                        .isDirectoryKey, .fileSizeKey, .contentModificationDateKey, .isHiddenKey,
                     ]
                 )
+                .filter { includeHidden || !FilesystemContent.isHidden($0) }
             )
             let offset = max(0, arguments["offset"]?.intValue ?? 0)
             let limit = clampedPageSize(arguments["limit"]?.intValue)
@@ -242,11 +248,18 @@ final class FilesystemService: Service {
         Tool(
             name: "filesystem_write",
             description:
-                "Create or replace a text file inside a shared folder that allows writing.",
+                "Create a text file inside a shared folder that allows writing. "
+                + "Refuses to replace a file that already exists unless overwrite is true, "
+                + "because a replaced file does not go to the Trash and cannot be recovered.",
             inputSchema: .object(
                 properties: [
                     "path": .string(description: "File to write"),
                     "content": .string(description: "Text to write"),
+                    "overwrite": .boolean(
+                        description:
+                            "Replace the file if it already exists. Its previous contents are lost.",
+                        default: .bool(false)
+                    ),
                 ],
                 required: ["path", "content"],
                 additionalProperties: false
@@ -271,6 +284,19 @@ final class FilesystemService: Service {
                 requiringWrite: true
             )
             let existed = FileManager.default.fileExists(atPath: url.path)
+            // Move and copy have always refused to overwrite, for the reason
+            // spelled out on `destinationExists`: a replaced file never
+            // reaches the Trash, so this is the one destructive act on this
+            // surface with no undo. Write was the exception, and it is the
+            // one a caller reaches for when it believes a file is new.
+            guard
+                !FilesystemContent.refusesOverwrite(
+                    exists: existed,
+                    overwriteRequested: arguments["overwrite"]?.boolValue ?? false
+                )
+            else {
+                throw FilesystemServiceError.refusingToOverwrite(url.path)
+            }
             try content.write(to: url, atomically: true, encoding: .utf8)
             log.info("Wrote \(url.lastPathComponent, privacy: .public)")
             return Value.object([
@@ -294,6 +320,10 @@ final class FilesystemService: Service {
                     "offset": .integer(
                         description: "Matches to skip; pass a previous call's nextOffset",
                         default: .int(0)
+                    ),
+                    "includeHidden": .boolean(
+                        description: "Include hidden files and folders, such as dotfiles",
+                        default: .bool(true)
                     ),
                 ],
                 required: ["path", "query"],
@@ -325,12 +355,17 @@ final class FilesystemService: Service {
             // continuation rather than a count that would be a lie.
             var found: [URL] = []
             let ceiling = offset + limit
+            // Was unconditionally `.skipsHiddenFiles`, while filesystem_list
+            // had no such option. A dotfile was therefore listable but could
+            // never be found by name. The two now agree, and both default to
+            // showing what is there.
+            let includeHidden = arguments["includeHidden"]?.boolValue ?? true
             let enumerator = FileManager.default.enumerator(
                 at: url,
                 includingPropertiesForKeys: [
                     .isDirectoryKey, .fileSizeKey, .contentModificationDateKey,
                 ],
-                options: [.skipsHiddenFiles]
+                options: includeHidden ? [] : [.skipsHiddenFiles]
             )
             while let entry = enumerator?.nextObject() as? URL, found.count <= ceiling {
                 if entry.lastPathComponent.localizedCaseInsensitiveContains(query) {
@@ -699,8 +734,13 @@ final class FilesystemService: Service {
             // mdfind is told where to look, but it is a separate process with
             // its own view of the disk. Re-check every hit against the
             // allowlist rather than trusting -onlyin to be the access control.
-            var matches: [Value] = []
-            for hit in hits where matches.count < limit {
+            // Resolve every hit before taking the page. Comparing raw hits
+            // against returned matches made `truncated` true whenever
+            // Spotlight saw anything outside the shared roots, so a search
+            // that had in fact returned everything the caller was allowed to
+            // see told them to narrow it.
+            var permitted: [Value] = []
+            for hit in hits {
                 guard
                     let resolved = try? FilesystemAccess.resolve(
                         requested: hit,
@@ -708,13 +748,16 @@ final class FilesystemService: Service {
                         requiringWrite: false
                     )
                 else { continue }
-                matches.append(FilesystemService.describe(resolved))
+                permitted.append(FilesystemService.describe(resolved))
             }
+            let matches = Array(permitted.prefix(limit))
             return Value.object([
                 "path": .string(url.path),
                 "query": .string(query),
                 "matches": .array(matches),
-                "truncated": .bool(hits.count > matches.count),
+                "truncated": .bool(
+                    FilesystemContent.isTruncated(permittedCount: permitted.count, limit: limit)
+                ),
             ])
         }
 
@@ -902,6 +945,10 @@ enum FilesystemServiceError: LocalizedError {
     /// the caller did not know was there is the one mistake in this surface
     /// with no undo, since the overwritten copy never reaches the Trash.
     case destinationExists(String)
+    /// Write's version of `destinationExists`. Separate so the message can
+    /// name the argument that unblocks it, rather than sending the caller to
+    /// move or trash a file it probably meant to update.
+    case refusingToOverwrite(String)
     case tooLargeToInline(path: String, sizeBytes: Int, limitBytes: Int)
 
     var errorDescription: String? {
@@ -912,6 +959,11 @@ enum FilesystemServiceError: LocalizedError {
             return
                 "Something already exists at \(path). Move or trash it first, or choose "
                 + "another name; this will not overwrite it."
+        case let .refusingToOverwrite(path):
+            return
+                "\(path) already exists, and replacing it would discard its contents without "
+                + "sending anything to the Trash. Pass overwrite: true to replace it on purpose, "
+                + "use filesystem_append to add to it, or choose another name."
         case let .tooLargeToInline(path, sizeBytes, limitBytes):
             return
                 "\(path) is \(sizeBytes / 1024)KB, over the \(limitBytes / 1024)KB limit for "

@@ -134,4 +134,85 @@ struct FilesystemServiceTests {
                 == "\\' || kMDItemFSName == \\'*"
         )
     }
+
+    // MARK: - Overwrite
+
+    @Test("Writing a new file is allowed")
+    func writeToNewPathAllowed() {
+        #expect(!FilesystemContent.refusesOverwrite(exists: false, overwriteRequested: false))
+    }
+
+    @Test("Writing over an existing file is refused unless asked for")
+    func writeOverExistingRefused() {
+        // The gap this closes: move and copy refused to overwrite, write did
+        // not, and a replaced file never reaches the Trash.
+        #expect(FilesystemContent.refusesOverwrite(exists: true, overwriteRequested: false))
+    }
+
+    @Test("An explicit overwrite is honoured")
+    func explicitOverwriteAllowed() {
+        #expect(!FilesystemContent.refusesOverwrite(exists: true, overwriteRequested: true))
+    }
+
+    // MARK: - Truncation
+
+    @Test("A page that holds every permitted match is not truncated")
+    func completePageIsNotTruncated() {
+        // The bug: truncation was measured against raw search hits, so any
+        // hit dropped for sitting outside the shared roots made a complete
+        // answer claim it had been cut short.
+        #expect(!FilesystemContent.isTruncated(permittedCount: 7, limit: 100))
+    }
+
+    @Test("A page exactly at the limit is not truncated")
+    func exactlyFullPageIsNotTruncated() {
+        #expect(!FilesystemContent.isTruncated(permittedCount: 100, limit: 100))
+    }
+
+    @Test("More permitted matches than the limit is truncated")
+    func overflowingPageIsTruncated() {
+        #expect(FilesystemContent.isTruncated(permittedCount: 101, limit: 100))
+    }
+
+    @Test("No matches at all is not truncated")
+    func emptyResultIsNotTruncated() {
+        #expect(!FilesystemContent.isTruncated(permittedCount: 0, limit: 100))
+    }
+
+    // MARK: - Hidden files
+
+    @Test("A dotfile is hidden and an ordinary file is not")
+    func hiddenDetection() throws {
+        // filesystem_list showed dotfiles while filesystem_search skipped
+        // them, so a file you could see could never be found by name.
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("apple-core-hidden-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let dotfile = root.appendingPathComponent(".hidden.txt")
+        let plain = root.appendingPathComponent("visible.txt")
+        try Data("x".utf8).write(to: dotfile)
+        try Data("x".utf8).write(to: plain)
+
+        #expect(FilesystemContent.isHidden(dotfile))
+        #expect(!FilesystemContent.isHidden(plain))
+    }
+
+    @Test("A file hidden without a leading dot is still hidden")
+    func hiddenFlagWithoutDot() throws {
+        // The dot convention alone would miss this one.
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("apple-core-hidden-flag-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        var flagged = root.appendingPathComponent("flagged.txt")
+        try Data("x".utf8).write(to: flagged)
+        var values = URLResourceValues()
+        values.isHidden = true
+        try flagged.setResourceValues(values)
+
+        #expect(FilesystemContent.isHidden(flagged))
+    }
 }
