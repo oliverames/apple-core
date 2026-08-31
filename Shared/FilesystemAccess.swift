@@ -152,3 +152,110 @@ public enum FilesystemAccess {
         throw FilesystemAccessError.outsideAllowedRoots(canonical)
     }
 }
+
+/// How wide a shared folder actually is, in terms a person can act on.
+///
+/// The Settings list showed a name, a path and a writing switch, and nothing
+/// about consequence. Someone could share their whole Home folder read-write
+/// and see the same row as someone sharing one project directory, then add
+/// four more folders already inside it without being told they were
+/// redundant. This is the missing signal, kept out of the view so it can be
+/// tested and so the wording lives in one place.
+public enum FilesystemRootScope: Sendable, Equatable {
+    /// An ordinary folder. Nothing to say about it.
+    case ordinary
+    /// Already inside another shared folder, so it grants nothing extra.
+    case alreadyCovered(by: String)
+    /// The user's entire home folder.
+    case entireHomeFolder
+    /// A volume root, or anything above the home folder.
+    case entireDisk
+}
+
+public struct FilesystemRootAdvice: Sendable, Equatable {
+    public let scope: FilesystemRootScope
+    public let writable: Bool
+
+    public init(scope: FilesystemRootScope, writable: Bool) {
+        self.scope = scope
+        self.writable = writable
+    }
+
+    /// True when this is worth interrupting someone over, rather than a note.
+    public var isSerious: Bool {
+        switch scope {
+        case .entireDisk:
+            return true
+        case .entireHomeFolder:
+            return true
+        case .alreadyCovered, .ordinary:
+            return false
+        }
+    }
+
+    /// One sentence, in plain language, or nil when there is nothing to say.
+    ///
+    /// Deliberately says what a connected app could do, not what the setting
+    /// is called. "Read-write access to $HOME" means nothing to most people;
+    /// "could read and change anything in it" does.
+    public var message: String? {
+        switch scope {
+        case .ordinary:
+            return nil
+        case let .alreadyCovered(parent):
+            return
+                "Already inside \(parent), which is shared, so this adds nothing. You can remove it."
+        case .entireHomeFolder:
+            return writable
+                ? "This is your whole Home folder. Connected apps could read and change anything in it, including your app data and saved passwords. Sharing just Documents is usually enough."
+                : "This is your whole Home folder, so connected apps can read anything in it, including your app data. Sharing just Documents is usually enough."
+        case .entireDisk:
+            return writable
+                ? "This covers your whole disk. Connected apps could read and change any file on this Mac. Share a specific folder instead."
+                : "This covers your whole disk, so connected apps can read any file on this Mac. Share a specific folder instead."
+        }
+    }
+}
+
+extension FilesystemAccess {
+    /// Describes one root in the context of the others.
+    ///
+    /// `others` is the rest of the list; a folder is only reported as covered
+    /// when something else on the list actually contains it.
+    public static func advice(
+        for root: FilesystemRoot,
+        among others: [FilesystemRoot],
+        homeDirectory: String = NSHomeDirectory()
+    ) -> FilesystemRootAdvice {
+        let path = canonicalize(root.path)
+        let home = canonicalize(homeDirectory)
+
+        if path == "/" || isContained(home, in: path) && path != home {
+            return FilesystemRootAdvice(scope: .entireDisk, writable: root.writable)
+        }
+        if path == home {
+            return FilesystemRootAdvice(scope: .entireHomeFolder, writable: root.writable)
+        }
+        // Compare against the others by canonical path so two spellings of the
+        // same folder do not read as one containing the other.
+        for other in others {
+            let otherPath = canonicalize(other.path)
+            if otherPath != path, isContained(path, in: otherPath) {
+                return FilesystemRootAdvice(
+                    scope: .alreadyCovered(by: displayName(for: otherPath, homeDirectory: home)),
+                    writable: root.writable
+                )
+            }
+        }
+        return FilesystemRootAdvice(scope: .ordinary, writable: root.writable)
+    }
+
+    /// A short name for a folder, for use inside a sentence.
+    public static func displayName(for path: String, homeDirectory: String = NSHomeDirectory())
+        -> String
+    {
+        if canonicalize(path) == canonicalize(homeDirectory) { return "your Home folder" }
+        let name = URL(fileURLWithPath: path).lastPathComponent
+        return name.isEmpty ? path : name
+    }
+}
