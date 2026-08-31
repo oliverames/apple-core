@@ -7,6 +7,73 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <description>Updates for Apple Core - a native macOS MCP server for Apple services</description>
     <language>en</language>
     <item>
+      <title>Version 1.6.1</title>
+      <link>https://github.com/oliverames/apple-core/releases/tag/v1.6.1</link>
+      <sparkle:version>23</sparkle:version>
+      <sparkle:shortVersionString>1.6.1</sparkle:shortVersionString>
+      <description><![CDATA[
+<style>
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Helvetica, Arial, sans-serif;
+    font-size: 13px;
+    line-height: 1.55;
+    color: #1d1d1f;
+    margin: 0;
+    padding: 0;
+}
+h1, h2, h3 { color: #000; font-weight: 600; }
+h1 { font-size: 18px; margin: 0 0 10px 0; }
+h2 {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    color: #6e6e73;
+    margin: 18px 0 6px 0;
+}
+h3 { font-size: 13px; margin: 14px 0 6px 0; }
+p { margin: 0 0 10px 0; }
+ul, ol { padding-left: 20px; margin: 0 0 10px 0; }
+li { margin-bottom: 5px; }
+li > strong:first-child { color: #000; }
+code {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    background: #f2f2f7;
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-size: 12px;
+}
+a { color: #0071e3; text-decoration: none; }
+a:hover { text-decoration: underline; }
+hr { border: 0; border-top: 1px solid #e5e5ea; margin: 16px 0; }
+@media (prefers-color-scheme: dark) {
+    body { color: #f5f5f7; }
+    h1, h2, h3, li > strong:first-child { color: #fff; }
+    h2 { color: #98989d; }
+    code { background: #2c2c2e; }
+    hr { border-top-color: #38383a; }
+}
+</style>
+<h1>Apple Core 1.6.1</h1>
+<p>Two corrections to 1.6.0, both found by exercising it against a running server.</p>
+<h2>A rejected client identifier said the wrong thing</h2>
+<p>A client identifier that Apple Core refuses — a host resolving to a private address, a document claiming a different identifier, a document carrying a secret — came back as <strong>500, "Apple Core could not save the OAuth client registration"</strong>. Nothing had failed to save, and nothing was wrong on the server: the client's own identifier or document was at fault.</p>
+<p>Before 1.6.0 that catch-all was close enough to true, because the only thing that could fail there was writing a registration to disk. Client ID Metadata Documents added a second way to fail and inherited the wrong explanation.</p>
+<p>These now return <strong>400</strong> with the actual reason, naming what was rejected and why, so a client that publishes a bad document can see what to fix.</p>
+<h2>A way out of a blocked permission prompt</h2>
+<p>Where macOS refuses to show a consent prompt, Apple Core says so, but it only offered "restore the default security settings" — which on a Mac configured that way for a reason reads as a permanent trade-off.</p>
+<p>It isn't one. The permission is stored separately from the setting that blocks the prompt, so it only has to be granted once: clear the boot-args, restart, ask again and allow it, then put the boot-args back. The permission stays. The explanation now says that.</p>
+<h2>Upgrading</h2>
+<p>1.0.3 and later update automatically. Installs on 1.0.0 through 1.0.2 still need the one-time manual reinstall described in the <a href="https://github.com/oliverames/apple-core/releases/tag/v1.0.3">1.0.3 notes</a>, because their update signing key does not match the feed.</p>
+<p>Nothing to redo, and no new permissions.</p>
+      ]]></description>
+      <pubDate>Mon, 31 Aug 2026 14:00:06 +0000</pubDate>
+      <enclosure url="https://github.com/oliverames/apple-core/releases/download/v1.6.1/Apple.Core-1.6.1.zip"
+                 length="9554688"
+                 type="application/octet-stream"
+                 sparkle:edSignature="wE6/jD/DgCA12XI/0b1hbrA5zFsSLweR3l/XZrIXevzIFZCIvBdLZ5QabGh2jGa6aJv6JpQDSviXwhhf5JlZCQ==" />
+      <sparkle:minimumSystemVersion>15.1</sparkle:minimumSystemVersion>
+    </item>
+    <item>
       <title>Version 1.6.0</title>
       <link>https://github.com/oliverames/apple-core/releases/tag/v1.6.0</link>
       <sparkle:version>22</sparkle:version>
@@ -1316,6 +1383,6 @@ hr { border: 0; border-top: 1px solid #e5e5ea; margin: 16px 0; }
     <!-- `Scripts/release.sh appcast` prepends signed release entries here. -->
   </channel>
 </rss><!-- sparkle-signatures:
-edSignature: vUBXyE/OQRE9Wqp3a8BES5Vzsl80pP4luHNhh9xm9cfNc1TKJi5v94FfuFBv8OwDPr0TK/nokj3EPm9/F87PAQ==
-length: 84283
+edSignature: 3THMJhVCsxixJfz0z+l2zbjhB6xVCuUivpesZFX62mqR1tzcaeC26B66RWATEM16YVrEPfzQeTdS+M+N8z9BBg==
+length: 88051
 -->
