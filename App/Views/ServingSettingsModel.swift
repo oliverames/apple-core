@@ -44,6 +44,9 @@ final class ServingSettingsModel: ObservableObject {
     }
     @Published var cloudflareStatus: CloudflareTunnelStatus?
     @Published var registeredOAuthClients: [OAuthRegisteredClient] = []
+    /// Which of those have actually completed a sign-in. Registration alone
+    /// leaves a row that looks identical to a working client.
+    @Published var signedInOAuthClientIDs: Set<String> = []
     @Published var isShowingToken = false
     @Published var isAppLaunchAgentLoaded = false
     @Published var isOpenAtLoginEnabled = false
@@ -618,9 +621,11 @@ final class ServingSettingsModel: ObservableObject {
     func reloadOAuthClients() async {
         guard let serverController else {
             registeredOAuthClients = []
+            signedInOAuthClientIDs = []
             return
         }
         registeredOAuthClients = await serverController.registeredOAuthClients()
+        signedInOAuthClientIDs = await serverController.signedInOAuthClientIDs()
     }
 
     func disconnectOAuthClient(_ clientID: String) async {

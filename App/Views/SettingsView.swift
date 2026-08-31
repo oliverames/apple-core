@@ -479,6 +479,7 @@ private struct ClientsPane: View {
             OAuthClientsSection(
                 clients: model.registeredOAuthClients,
                 trustedClientIDs: Set(serverController.getTrustedClients().map(\.clientID)),
+                signedInClientIDs: model.signedInOAuthClientIDs,
                 isBusy: model.isManagingOAuthClients,
                 onDisconnect: { client in
                     Task { await model.disconnectOAuthClient(client.clientID) }
@@ -604,6 +605,8 @@ private struct SharedTokenTrustSection: View {
 private struct OAuthClientsSection: View {
     let clients: [OAuthRegisteredClient]
     let trustedClientIDs: Set<String>
+    /// Clients that finished signing in. The rest registered and stopped.
+    let signedInClientIDs: Set<String>
     let isBusy: Bool
     let onDisconnect: (OAuthRegisteredClient) -> Void
     let onRemoveAll: () -> Void
@@ -623,6 +626,21 @@ private struct OAuthClientsSection: View {
                             Text("OAuth client \(client.clientID.prefix(12))…")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
+                            // Two rows with the same name and the same
+                            // timestamp are what dynamic registration
+                            // produces when a cloud client registers twice in
+                            // one attempt. Whether a sign-in was ever
+                            // completed is what tells them apart, and which
+                            // one is safe to disconnect.
+                            Text(
+                                signedInClientIDs.contains(client.clientID)
+                                    ? "Signed in" : "Never signed in, so it can be disconnected"
+                            )
+                            .font(.caption)
+                            .foregroundStyle(
+                                signedInClientIDs.contains(client.clientID)
+                                    ? Color.secondary : Color.orange
+                            )
                             Text(
                                 trustedClientIDs.contains(client.clientID)
                                     ? "Connects without approval" : "Approval required"

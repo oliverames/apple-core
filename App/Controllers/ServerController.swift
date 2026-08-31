@@ -324,6 +324,10 @@ final class ServerController: ObservableObject {
         await networkManager.registeredOAuthClients()
     }
 
+    func signedInOAuthClientIDs() async -> Set<String> {
+        await networkManager.signedInOAuthClientIDs()
+    }
+
     func disconnectAllOAuthClients() async throws {
         let clients = await networkManager.registeredOAuthClients()
         var failures: [String] = []
@@ -899,6 +903,10 @@ actor ServerNetworkManager {
 
     func registeredOAuthClients() async -> [OAuthRegisteredClient] {
         await oauthStore.registeredClients()
+    }
+
+    func signedInOAuthClientIDs() async -> Set<String> {
+        await oauthStore.signedInClientIDs()
     }
 
     @discardableResult

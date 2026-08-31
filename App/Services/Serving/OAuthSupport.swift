@@ -320,6 +320,24 @@ public actor OAuthTokenStore {
         clients.values.sorted { $0.issuedAt > $1.issuedAt }
     }
 
+    /// The clients that currently hold usable credentials.
+    ///
+    /// Registration happens before the sign-in, so a client that registered
+    /// and never finished leaves a row identical to a working one. A cloud
+    /// client that registers twice in one connection attempt, which is what
+    /// dynamic registration does, therefore shows two entries with the same
+    /// name and the same timestamp, only one of which is real.
+    public func signedInClientIDs(now: Date = Date()) -> Set<String> {
+        var ids = Set<String>()
+        for token in accessTokens.values where token.expiresAt > now {
+            ids.insert(token.clientID)
+        }
+        for token in refreshTokens.values where token.expiresAt > now {
+            ids.insert(token.clientID)
+        }
+        return ids
+    }
+
     public func adoptClientIfNeeded(
         clientID: String,
         clientName: String,
