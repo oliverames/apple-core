@@ -7,6 +7,87 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <description>Updates for Apple Core - a native macOS MCP server for Apple services</description>
     <language>en</language>
     <item>
+      <title>Version 1.6.0</title>
+      <link>https://github.com/oliverames/apple-core/releases/tag/v1.6.0</link>
+      <sparkle:version>22</sparkle:version>
+      <sparkle:shortVersionString>1.6.0</sparkle:shortVersionString>
+      <description><![CDATA[
+<style>
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Helvetica, Arial, sans-serif;
+    font-size: 13px;
+    line-height: 1.55;
+    color: #1d1d1f;
+    margin: 0;
+    padding: 0;
+}
+h1, h2, h3 { color: #000; font-weight: 600; }
+h1 { font-size: 18px; margin: 0 0 10px 0; }
+h2 {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    color: #6e6e73;
+    margin: 18px 0 6px 0;
+}
+h3 { font-size: 13px; margin: 14px 0 6px 0; }
+p { margin: 0 0 10px 0; }
+ul, ol { padding-left: 20px; margin: 0 0 10px 0; }
+li { margin-bottom: 5px; }
+li > strong:first-child { color: #000; }
+code {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    background: #f2f2f7;
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-size: 12px;
+}
+a { color: #0071e3; text-decoration: none; }
+a:hover { text-decoration: underline; }
+hr { border: 0; border-top: 1px solid #e5e5ea; margin: 16px 0; }
+@media (prefers-color-scheme: dark) {
+    body { color: #f5f5f7; }
+    h1, h2, h3, li > strong:first-child { color: #fff; }
+    h2 { color: #98989d; }
+    code { background: #2c2c2e; }
+    hr { border-top-color: #38383a; }
+}
+</style>
+<h1>Apple Core 1.6.0</h1>
+<p>Cloud clients can now identify themselves without registering, apps are opened when a request needs them, and a path outside your shared folders no longer tells the caller anything about itself.</p>
+<h2>Clients identify themselves by URL</h2>
+<p>Until now a cloud client had to register before it could connect, and it registered again every time it reconnected. The result was a Clients list with several entries of the same name, issued in the same second, only one of which was live.</p>
+<p>Apple Core now supports <strong>Client ID Metadata Documents</strong>, the mechanism Anthropic recommends and which Claude products use. The client's identifier is an https URL serving its own metadata, so it keeps one identity for as long as it keeps that URL, and reconnecting updates the existing entry instead of adding another.</p>
+<p>Because the identifier is a URL this server fetches, it is treated as hostile:</p>
+<ul>
+<li><strong>https only</strong>, with no credentials, no fragment, and no dot segments in the path. Identifiers are compared literally, so a port makes a different client.</li>
+<li><strong>The host must not resolve to a special-use address.</strong> This app runs on a home network, and an unguarded fetch of a client-supplied URL would reach the router and everything else on it. Every address a name resolves to is checked, not just the first.</li>
+<li><strong>Redirects are never followed</strong>, at most 5KB is read, and only a 200 counts.</li>
+<li><strong>The document must claim the identifier it was fetched from.</strong> Without that check anyone could point a request at somebody else's document and borrow their name on the consent screen.</li>
+<li><strong>A document carrying a client secret is refused</strong>, since it is a public document.</li>
+</ul>
+<p>The consent page now shows the hostname the identifier comes from. A client supplies its own display name, so the name is exactly what an impersonator would get right; the hostname is the part it cannot.</p>
+<p>Existing registered clients keep working and are unaffected.</p>
+<h2>Apps open when a request needs them</h2>
+<p>Asking about mail while Mail was closed used to fail, or launch the app into your face. Apple Core now opens the app a request depends on, without bringing it to the front, and waits for it to finish launching before running anything. This covers Mail, Notes and Messages, at every point a script runs.</p>
+<h2>A path outside your shared folders reveals nothing</h2>
+<p>Asking for a file outside the shared folders could answer "that is a broken symbolic link" or "that does not exist". Both are facts about a file the caller was never allowed to see, which made the filesystem surface usable as a probe for what exists elsewhere on the Mac.</p>
+<p>Containment is now decided before anything else, so every path outside your shared folders gets the same answer. The check that refuses a broken symbolic link inside a shared folder is unchanged, and its message no longer talks about writing when you were reading.</p>
+<h2>When macOS will not show a permission prompt</h2>
+<p>Some Macs are configured so that macOS refuses to display consent prompts for apps Apple did not sign, which custom boot-args such as <code class="notranslate">amfi_get_out_of_my_way</code> cause. Asking for automation access there came back as "Denied", which looked like a decision somebody had made and sent you to System Settings, where no entry exists because nothing was recorded.</p>
+<p>That case is now told apart from a real refusal and explained where it appears, including what causes it. Neither button is offered, because neither would help.</p>
+<h2>Upgrading</h2>
+<p>1.0.3 and later update automatically. Installs on 1.0.0 through 1.0.2 still need the one-time manual reinstall described in the <a href="https://github.com/oliverames/apple-core/releases/tag/v1.0.3">1.0.3 notes</a>, because their update signing key does not match the feed.</p>
+<p>No new permissions, and no shared folder or client approval changes. Every Apple Core install uses its own Cloudflare account and its own tunnel; nothing about anyone else's deployment ships in the app.</p>
+      ]]></description>
+      <pubDate>Mon, 31 Aug 2026 13:37:39 +0000</pubDate>
+      <enclosure url="https://github.com/oliverames/apple-core/releases/download/v1.6.0/Apple.Core-1.6.0.zip"
+                 length="9551302"
+                 type="application/octet-stream"
+                 sparkle:edSignature="INk8lwZ5ZV0i7pAuq80oQeMgksdsd+q9enwFxzfs0DOOH+E2ld4LdkbWHyHXuXa+9crqpLXY3aMuVNgasGH2Dw==" />
+      <sparkle:minimumSystemVersion>15.1</sparkle:minimumSystemVersion>
+    </item>
+    <item>
       <title>Version 1.5.1</title>
       <link>https://github.com/oliverames/apple-core/releases/tag/v1.5.1</link>
       <sparkle:version>21</sparkle:version>
@@ -1235,6 +1316,6 @@ hr { border: 0; border-top: 1px solid #e5e5ea; margin: 16px 0; }
     <!-- `Scripts/release.sh appcast` prepends signed release entries here. -->
   </channel>
 </rss><!-- sparkle-signatures:
-edSignature: H8G1zlErj/Z79RzMLeG/Qzo+NXKIUK/cRg6HFNlAAEehvdK8XeCzxrfHmqjHbbVej9+PPNpr9W7MDimVwNUuBw==
-length: 78165
+edSignature: vUBXyE/OQRE9Wqp3a8BES5Vzsl80pP4luHNhh9xm9cfNc1TKJi5v94FfuFBv8OwDPr0TK/nokj3EPm9/F87PAQ==
+length: 84283
 -->
