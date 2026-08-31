@@ -206,6 +206,25 @@ cache, but it is also what a home-server still running an older build would
 look like. **It is worth confirming that home-server actually serves 1.3.0**,
 since the 502 meant this session never saw a live `tools/list`.
 
+## Resolution
+
+All three findings below were fixed in 1.5.0 and verified against the live
+server on 2026-08-31, once home-server was running that build.
+
+- **Overwrite**: `filesystem_write` refuses an existing path unless
+  `overwrite: true`. Confirmed live: the second write was refused, the file
+  still read `ORIGINAL`, and the explicit overwrite then replaced it.
+- **Truncation**: measured against permitted matches. Confirmed live: four
+  matches under a generous limit reported `truncated: false`, and the same
+  search at `limit: 1` reported `truncated: true`.
+- **Hidden files**: both tools include them and both accept `includeHidden`.
+  Confirmed live: a dotfile is now found by `filesystem_search`, which was
+  previously impossible, and `includeHidden: false` excludes it from both
+  tools while leaving ordinary files alone.
+
+Findings 2 and 3 had rested on reading the code; they now rest on observed
+behaviour.
+
 ## Source findings
 
 All three are from reading 1.3.0 and are untested by the current suite.
