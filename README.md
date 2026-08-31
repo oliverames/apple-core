@@ -59,6 +59,46 @@ Enabling a service from the menu bar or Settings requests the access that servic
 
 If you deny a request, Apple Core turns that service back off. You can change the decision later in System Settings > Privacy & Security and try again.
 
+### When macOS will not show the prompt
+
+Some Macs are configured so that macOS refuses to display consent prompts at all for apps Apple did not sign. Diagnostics reports this as **Prompt blocked** rather than as a denial, because it is not one: nothing is recorded, so System Settings has no entry to switch on either.
+
+The usual cause is a custom `boot-args` value with System Integrity Protection disabled, for example the `amfi_get_out_of_my_way=1` setting used to enable private-API features in other apps. With AMFI out of the way every third-party process is flagged as a platform binary, and macOS denies consent prompts for platform-flagged binaries that Apple did not sign. Check with `csrutil status` and `nvram boot-args`.
+
+The permission is stored separately from the setting that blocks the prompt, so it only has to be granted once:
+
+1. Clear the boot-args and restart: `sudo nvram boot-args=` then reboot.
+2. Enable the service, or use **Request Access** in Diagnostics, and allow the prompt.
+3. Restore the previous boot-args and reboot back if you need them.
+
+The grant survives, because it lives in the TCC database rather than in the boot configuration.
+
+On a Mac that is already running with SIP disabled, the grant can also be written directly. This is unsupported, depends on a schema Apple can change, and is only possible at all because the protection that would normally prevent it has already been turned off on that machine. Back the database up first, and restart `tccd` afterwards so it re-reads:
+
+```bash
+DB="$HOME/Library/Application Support/com.apple.TCC/TCC.db"
+cp "$DB" "/tmp/TCC.db.bak-$(date +%s)"
+
+# The requirement blob for Apple Core, and for the app it will drive.
+CREQ=$(codesign -d -r- "/Applications/Apple Core.app" 2>&1 | sed -n 's/^designated => //p')
+printf '%s' "$CREQ" | csreq -r- -b /tmp/client.csreq
+CHEX=$(xxd -p /tmp/client.csreq | tr -d '\n')
+
+TREQ=$(codesign -d -r- /System/Applications/Messages.app 2>&1 | sed -n 's/^designated => //p')
+printf '%s' "$TREQ" | csreq -r- -b /tmp/target.csreq
+THEX=$(xxd -p /tmp/target.csreq | tr -d '\n')
+
+sqlite3 "$DB" "INSERT OR REPLACE INTO access \
+(service,client,client_type,auth_value,auth_reason,auth_version,csreq,\
+indirect_object_identifier_type,indirect_object_identifier,indirect_object_code_identity,flags,last_modified) \
+VALUES('kTCCServiceAppleEvents','com.oliverames.applecore',0,2,2,1,X'$CHEX',\
+0,'com.apple.MobileSMS',X'$THEX',0,strftime('%s','now'));"
+
+killall tccd
+```
+
+Change the target app path and its bundle identifier for Mail (`com.apple.mail`) or Notes (`com.apple.Notes`). Apple Core never writes these entries itself: an app that grants itself permissions is doing something a signed, notarized build has no business doing.
+
 ## Build
 
 ```bash
