@@ -370,6 +370,10 @@ public actor AppleCoreHTTPServer {
                 "token_endpoint": "\(oauthIssuer)/oauth/token",
                 "revocation_endpoint": "\(oauthIssuer)/oauth/revoke",
                 "registration_endpoint": "\(oauthIssuer)/oauth/register",
+                // Section 6. Without this a client has no way to know it can
+                // use its own metadata URL and falls back to registering,
+                // which is what fills the client list with duplicates.
+                "client_id_metadata_document_supported": true,
                 "response_types_supported": ["code"],
                 "grant_types_supported": ["authorization_code", "refresh_token"],
                 "code_challenge_methods_supported": ["S256"],
@@ -1098,6 +1102,31 @@ public actor AppleCoreHTTPServer {
             return nil
         }
 
+        // A client identifier that is an https URL is a Client ID Metadata
+        // Document: the client describes itself at that address instead of
+        // registering first, so there is nothing stored to look up yet.
+        if ClientIDMetadataURL.looksLikeClientIDMetadataURL(clientID) {
+            let identifier = try ClientIDMetadataURL(validating: clientID)
+            let metadata = try await ClientIDMetadataFetcher.shared.metadata(for: identifier)
+            guard
+                ClientIDMetadataRedirect.matches(
+                    requested: redirectURI,
+                    registered: metadata.redirectURIs
+                )
+            else {
+                return nil
+            }
+            try await oauthStore.registerClientIDMetadataClient(metadata)
+            return OAuthAuthorizationValidation(
+                clientID: clientID,
+                clientName: metadata.clientName,
+                redirectURI: redirectURI,
+                codeChallenge: codeChallenge,
+                state: values["state"],
+                resource: resource
+            )
+        }
+
         var client = await oauthStore.client(id: clientID)
         if client == nil {
             client = try await oauthStore.adoptClientIfNeeded(
@@ -1136,6 +1165,20 @@ public actor AppleCoreHTTPServer {
         let escapedResource = OAuthSupport.htmlEscaped(validation.resource)
         let errorHTML = error.map { "<p class=\"error\">\(OAuthSupport.htmlEscaped($0))</p>" } ?? ""
 
+        // Section 8.6: show where the client identifier actually comes from.
+        // The client supplies its own display name, so the name alone is
+        // exactly what a page impersonating another client would get right.
+        // The hostname is the part it cannot forge.
+        let identityHTML: String
+        if ClientIDMetadataURL.looksLikeClientIDMetadataURL(validation.clientID),
+            let host = URLComponents(string: validation.clientID)?.host
+        {
+            identityHTML =
+                "<p class=\"meta\">Identified by <strong>\(OAuthSupport.htmlEscaped(host))</strong></p>"
+        } else {
+            identityHTML = ""
+        }
+
         return """
             <!doctype html>
             <html lang="en">
@@ -1160,6 +1203,7 @@ public actor AppleCoreHTTPServer {
               <main>
                 <h1>Authorize Apple Core</h1>
                 <p>Allow <strong>\(escapedClientName)</strong> to use Apple Core's MCP tools from this Mac.</p>
+                \(identityHTML)
                 <p class="meta">Redirect URI: \(escapedRedirectURI)</p>
                 \(errorHTML)
                 <form method="post" action="/oauth/authorize">

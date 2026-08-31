@@ -12,7 +12,7 @@ import CryptoKit
 import Foundation
 import Security
 
-public struct OAuthRegisteredClient: Codable, Sendable {
+public struct OAuthRegisteredClient: Codable, Sendable, Equatable {
     public let clientID: String
     public let clientName: String
     public let redirectURIs: [String]
@@ -336,6 +336,38 @@ public actor OAuthTokenStore {
             ids.insert(token.clientID)
         }
         return ids
+    }
+
+    /// Records a CIMD client so tokens issued to it can be resolved later.
+    ///
+    /// Keyed by the identifier URL, which is the point of the whole mechanism:
+    /// a client that reconnects presents the same identifier and updates this
+    /// entry instead of creating another one. That is what stops the list
+    /// filling with identically named registrations.
+    @discardableResult
+    public func registerClientIDMetadataClient(
+        _ metadata: ClientIDMetadata,
+        now: Date = Date()
+    ) throws -> OAuthRegisteredClient {
+        let existing = clients[metadata.clientID]
+        let client = OAuthRegisteredClient(
+            clientID: metadata.clientID,
+            clientName: metadata.clientName,
+            redirectURIs: metadata.redirectURIs,
+            // Keep the first sighting, so the row does not appear to be new
+            // every time the document is re-fetched.
+            issuedAt: existing?.issuedAt ?? Int(now.timeIntervalSince1970)
+        )
+        guard client != existing else { return client }
+        let previous = clients
+        clients[metadata.clientID] = client
+        do {
+            try persistClients()
+        } catch {
+            clients = previous
+            throw error
+        }
+        return client
     }
 
     public func adoptClientIfNeeded(

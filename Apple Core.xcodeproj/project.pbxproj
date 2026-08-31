@@ -8,6 +8,8 @@
 
 /* Begin PBXBuildFile section */
 		AC0000010000000000000031 /* FilesystemAccess.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC0000010000000000000030 /* FilesystemAccess.swift */; };
+		AC00000100000000000000E0 /* ClientIDMetadataDocument.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC00000100000000000000E2 /* ClientIDMetadataDocument.swift */; };
+		AC00000100000000000000E1 /* ClientIDMetadataDocument.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC00000100000000000000E2 /* ClientIDMetadataDocument.swift */; };
 		AC0000010000000000000032 /* FilesystemAccess.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC0000010000000000000030 /* FilesystemAccess.swift */; };
 		AC0000010000000000000034 /* MessagesDatabaseReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC0000010000000000000033 /* MessagesDatabaseReader.swift */; };
 		AC00000100000000000000A2 /* GUISession.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC00000100000000000000A1 /* GUISession.swift */; };
@@ -85,6 +87,7 @@
 
 /* Begin PBXFileReference section */
 		AC0000010000000000000030 /* FilesystemAccess.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilesystemAccess.swift; sourceTree = "<group>"; };
+		AC00000100000000000000E2 /* ClientIDMetadataDocument.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ClientIDMetadataDocument.swift; path = Shared/ClientIDMetadataDocument.swift; sourceTree = SOURCE_ROOT; };
 		AC0000010000000000000033 /* MessagesDatabaseReader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessagesDatabaseReader.swift; sourceTree = "<group>"; };
 		AC00000100000000000000A1 /* GUISession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GUISession.swift; sourceTree = "<group>"; };
 		AC00000100000000000000B1 /* NotesDatabaseReader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotesDatabaseReader.swift; sourceTree = "<group>"; };
@@ -208,6 +211,7 @@
 			children = (
 				AC0000010000000000000012 /* AttachmentSaveDirectory.swift */,
 				AC0000010000000000000030 /* FilesystemAccess.swift */,
+				AC00000100000000000000E2 /* ClientIDMetadataDocument.swift */,
 				AC0000010000000000000033 /* MessagesDatabaseReader.swift */,
 				AC00000100000000000000A1 /* GUISession.swift */,
 				AC00000100000000000000B1 /* NotesDatabaseReader.swift */,
@@ -398,6 +402,7 @@
 				AC0000010000000000000016 /* OAuthSupport.swift in Sources */,
 				AC00000100000000000000D0 /* CloudflareAccess.swift in Sources */,
 				AC0000010000000000000031 /* FilesystemAccess.swift in Sources */,
+				AC00000100000000000000E0 /* ClientIDMetadataDocument.swift in Sources */,
 				AC0000010000000000000034 /* MessagesDatabaseReader.swift in Sources */,
 				AC00000100000000000000A2 /* GUISession.swift in Sources */,
 				AC00000100000000000000B2 /* NotesDatabaseReader.swift in Sources */,
@@ -423,6 +428,7 @@
 			files = (
 				AC0000010000000000000011 /* AttachmentSaveDirectory.swift in Sources */,
 				AC0000010000000000000032 /* FilesystemAccess.swift in Sources */,
+				AC00000100000000000000E1 /* ClientIDMetadataDocument.swift in Sources */,
 				AC0000010000000000000035 /* MessagesDatabaseReader.swift in Sources */,
 				AC00000100000000000000A3 /* GUISession.swift in Sources */,
 				AC00000100000000000000B3 /* NotesDatabaseReader.swift in Sources */,
