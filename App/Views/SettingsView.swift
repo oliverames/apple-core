@@ -427,14 +427,18 @@ private struct ClientsPane: View {
                         .foregroundStyle(.secondary)
                         .textSelection(.enabled)
                 }
-                SettingsCopyButton(title: "Copy Address and Token", systemImage: "doc.on.doc") {
-                    "\(address)\n\(model.token)"
+                // Separate, because they are wanted separately: a client
+                // asks for the address in one field and the token in another,
+                // and pasting both at once means editing the blob apart again.
+                HStack(spacing: 8) {
+                    SettingsCopyButton(title: "Copy Address", systemImage: "link") { address }
+                    SettingsCopyButton(title: "Copy Token", systemImage: "key") { model.token }
                 }
             } header: {
                 SectionHeader(
                     title: "How Clients Connect",
-                    subtitle: "Every client uses the same address and token. Some Apple Core can set up for you; "
-                        + "for the rest you paste the details in."
+                    subtitle: "Apps on this Mac use the address and your token. Apps on the web sign in "
+                        + "instead and get their own credentials, so they never need the token."
                 )
             } footer: {
                 TipFooter(text: "The first time any client connects, Apple Core asks you to approve it.")
@@ -445,7 +449,10 @@ private struct ClientsPane: View {
                     ClientRow(client: client, address: address, isAvailable: true)
                 }
             } header: {
-                SectionHeader(title: "On This Mac")
+                SectionHeader(
+                    title: "On This Mac",
+                    subtitle: "These connect with the address and token. The token is the same for all of them."
+                )
             }
 
             Section {
@@ -453,7 +460,11 @@ private struct ClientsPane: View {
                     ClientRow(client: client, address: address, isAvailable: isRemoteOn)
                 }
             } header: {
-                SectionHeader(title: "Over the Internet")
+                SectionHeader(
+                    title: "Over the Internet",
+                    subtitle: "These sign in through a web page and get their own credentials, which you can "
+                        + "withdraw one at a time below."
+                )
             } footer: {
                 if !isRemoteOn {
                     TipFooter(text: "Set Access to Anywhere before these can connect.")
@@ -558,11 +569,18 @@ private struct SharedTokenTrustSection: View {
         Section {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
+                    // Name first, status beneath, matching the OAuth rows.
+                    // Leading with the status read as a heading and left the
+                    // thing being described unnamed.
+                    Text("Any client with the shared token")
+                        .fontWeight(.medium)
                     Text(isTrusted ? "Connects without approval" : "Approval required")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                     Text(
                         isTrusted
-                            ? "Anything presenting the shared token connects without asking. Rotating the token also undoes this."
-                            : "Every new connection using the shared token asks for approval first."
+                            ? "Rotating the token undoes this."
+                            : "Every new connection asks for approval first."
                     )
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -649,6 +667,10 @@ private struct SharedFoldersSection: View {
                 ForEach(model.filesystemRoots) { root in
                     SharedFolderRow(
                         root: root,
+                        advice: FilesystemAccess.advice(
+                            for: root,
+                            among: model.filesystemRoots.filter { $0.path != root.path }
+                        ),
                         onSetWritable: { model.setFilesystemRoot(root, writable: $0) },
                         onRemove: { model.removeFilesystemRoot(root) }
                     )
@@ -687,6 +709,10 @@ private struct SharedFoldersSection: View {
 
 private struct SharedFolderRow: View {
     let root: FilesystemRoot
+    /// What this folder actually exposes, in plain words. Nil-messaged for an
+    /// ordinary folder, so the row stays quiet unless there is something to
+    /// say.
+    let advice: FilesystemRootAdvice
     let onSetWritable: (Bool) -> Void
     let onRemove: () -> Void
 
@@ -705,6 +731,21 @@ private struct SharedFolderRow: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.head)
+
+                if let message = advice.message {
+                    Label {
+                        Text(message)
+                            .fixedSize(horizontal: false, vertical: true)
+                    } icon: {
+                        Image(
+                            systemName: advice.isSerious
+                                ? "exclamationmark.triangle.fill" : "info.circle"
+                        )
+                    }
+                    .font(.caption)
+                    .foregroundStyle(advice.isSerious ? Color.orange : Color.secondary)
+                    .padding(.top, 2)
+                }
             }
 
             Spacer(minLength: 12)
