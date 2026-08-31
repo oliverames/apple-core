@@ -215,4 +215,61 @@ struct FilesystemAccessTests {
             ).path == outerFile.path
         )
     }
+
+    @Test("A path outside the roots never reveals anything about itself")
+    func outsidePathsRevealNothing() throws {
+        // These checks used to run before containment, so asking for any path
+        // on the disk answered "broken symbolic link" or "does not exist".
+        // Both are facts about a file the caller may not see, which made the
+        // resolver a probe. Every outside path must now give one answer.
+        let sandbox = try Self.makeSandbox()
+        defer { try? FileManager.default.removeItem(at: sandbox) }
+
+        let shared = sandbox.appendingPathComponent("shared")
+        let outside = sandbox.appendingPathComponent("outside")
+        try FileManager.default.createDirectory(at: shared, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+
+        let dangling = outside.appendingPathComponent("dangling")
+        try FileManager.default.createSymbolicLink(
+            atPath: dangling.path,
+            withDestinationPath: sandbox.appendingPathComponent("gone").path
+        )
+        let roots = [FilesystemRoot(path: shared.path, writable: true)]
+
+        #expect(throws: FilesystemAccessError.outsideAllowedRoots(dangling.path)) {
+            try FilesystemAccess.resolve(
+                requested: dangling.path,
+                roots: roots,
+                requiringWrite: false
+            )
+        }
+
+        // A missing file under a missing parent must answer the same way.
+        let deep = outside.appendingPathComponent("nope/alsonope.txt")
+        #expect(throws: FilesystemAccessError.outsideAllowedRoots(deep.path)) {
+            try FilesystemAccess.resolve(requested: deep.path, roots: roots, requiringWrite: false)
+        }
+    }
+
+    @Test("A broken symlink inside a shared folder is still refused")
+    func danglingInsideRootStillRefused() throws {
+        // Reordering must not weaken the check it reordered: inside a shared
+        // folder, a broken link is still where a write could land anywhere.
+        let sandbox = try Self.makeSandbox()
+        defer { try? FileManager.default.removeItem(at: sandbox) }
+
+        let dangling = sandbox.appendingPathComponent("dangling")
+        try FileManager.default.createSymbolicLink(
+            atPath: dangling.path,
+            withDestinationPath: "/nonexistent/elsewhere"
+        )
+        #expect(throws: FilesystemAccessError.danglingSymlink(dangling.path)) {
+            try FilesystemAccess.resolve(
+                requested: dangling.path,
+                roots: [FilesystemRoot(path: sandbox.path, writable: true)],
+                requiringWrite: true
+            )
+        }
+    }
 }

@@ -51,7 +51,7 @@ public enum FilesystemAccessError: LocalizedError, Equatable {
             return "\(path) does not exist."
         case let .danglingSymlink(path):
             return
-                "\(path) is a broken symbolic link. Apple Core refuses to create files through one, because it cannot tell where the write would land."
+                "\(path) is a broken symbolic link, so Apple Core cannot tell where it points. It refuses to read or write through one."
         case let .retargetedRoot(path):
             return
                 "The shared folder at \(path) is now a symbolic link. Remove it from Settings and share the intended folder again."
@@ -119,10 +119,35 @@ public enum FilesystemAccess {
         // A file being created does not exist yet, so canonicalize its parent
         // and re-attach the final component. Without this, every write would
         // be rejected as "outside allowed roots".
+        let exists = fileManager.fileExists(atPath: expanded.path)
+        let parent = expanded.deletingLastPathComponent().path
+        let parentExists = fileManager.fileExists(atPath: parent)
         let canonical: String
-        if fileManager.fileExists(atPath: expanded.path) {
+        if exists {
             canonical = canonicalize(expanded.path)
+        } else if parentExists {
+            canonical = canonicalize(parent) + "/" + expanded.lastPathComponent
         } else {
+            // Nothing to resolve against. Judge containment on the literal
+            // path so a caller still cannot learn anything about it.
+            canonical = expanded.path
+        }
+
+        // Containment is decided before anything is said about the file.
+        //
+        // These checks used to run the other way around, which turned the
+        // resolver into a probe: asking for any path on the disk answered
+        // "that is a broken symbolic link" or "that does not exist", and both
+        // are facts about a file the caller was never allowed to see. Now a
+        // path outside the shared folders gets one answer, whatever it is.
+        let isInsideSomeRoot = stableRoots.contains {
+            isContained(canonical, in: canonicalize($0.path))
+        }
+        guard isInsideSomeRoot else {
+            throw FilesystemAccessError.outsideAllowedRoots(canonical)
+        }
+
+        if !exists {
             // fileExists follows symlinks, so a dangling symlink at the final
             // component reads as "nonexistent" here. Parent-only resolution
             // would then bless the raw name, and whatever runs afterward —
@@ -131,11 +156,9 @@ public enum FilesystemAccess {
             if (try? fileManager.destinationOfSymbolicLink(atPath: expanded.path)) != nil {
                 throw FilesystemAccessError.danglingSymlink(expanded.path)
             }
-            let parent = expanded.deletingLastPathComponent().path
-            guard fileManager.fileExists(atPath: parent) else {
+            guard parentExists else {
                 throw FilesystemAccessError.notFound(expanded.path)
             }
-            canonical = canonicalize(parent) + "/" + expanded.lastPathComponent
         }
 
         for root in usableRoots where isContained(canonical, in: canonicalize(root.path)) {
