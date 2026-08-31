@@ -478,6 +478,18 @@ public actor AppleCoreHTTPServer {
                 )
             }
             return Self.htmlResponse(.ok, authorizationFormHTML(validation: validation, error: nil))
+        } catch let error as ClientIDMetadataError {
+            // The client's own identifier or document is at fault, so this is
+            // a 400 with the actual reason. It used to fall into the catch
+            // below and be reported as the server failing to save something,
+            // which named the wrong party and the wrong problem.
+            logMessage("AppleCoreHTTPServer: client metadata rejected: \(error.localizedDescription)")
+            return Self.oauthErrorResponse(
+                .badRequest,
+                "invalid_client",
+                error.localizedDescription,
+                request: request
+            )
         } catch {
             logMessage("AppleCoreHTTPServer: OAuth client adoption persistence failed: \(error.localizedDescription)")
             return Self.oauthErrorResponse(
@@ -553,6 +565,14 @@ public actor AppleCoreHTTPServer {
             var headers = HTTPHeaders()
             headers[HTTPHeader("Location")] = components.url?.absoluteString ?? validation.redirectURI
             return HTTPResponse(statusCode: .seeOther, headers: headers)
+        } catch let error as ClientIDMetadataError {
+            logMessage("AppleCoreHTTPServer: client metadata rejected: \(error.localizedDescription)")
+            return Self.oauthErrorResponse(
+                .badRequest,
+                "invalid_client",
+                error.localizedDescription,
+                request: request
+            )
         } catch let error as OAuthTokenStoreError {
             logMessage("AppleCoreHTTPServer: OAuth approval persistence failed: \(error.localizedDescription)")
             return Self.oauthErrorResponse(

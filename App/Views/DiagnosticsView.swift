@@ -150,10 +150,12 @@ struct DiagnosticsView: View {
                 if permissionStates[row.requirement] == .promptBlocked {
                     Text(
                         "macOS would not show the request, so nothing was recorded and there is no "
-                            + "switch for it in System Settings. This Mac is set up to block consent "
-                            + "prompts for apps Apple did not sign, which custom boot-args such as "
-                            + "amfi_get_out_of_my_way cause. Restoring the default security settings "
-                            + "and restarting lets the request through."
+                            + "switch for it in System Settings either. This Mac is set up to block "
+                            + "consent prompts for apps Apple did not sign, which custom boot-args "
+                            + "such as amfi_get_out_of_my_way cause.\n\n"
+                            + "The permission itself is stored separately from that setting, so it "
+                            + "only has to be granted once: clear the boot-args, restart, ask again "
+                            + "here and allow it, then put the boot-args back. The permission stays."
                     )
                     .font(.caption)
                     .foregroundStyle(.secondary)
