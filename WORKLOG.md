@@ -1,5 +1,72 @@
 # Apple Core worklog
 
+## 2026-08-31 - Filesystem audit fallout, shared-token trust, CIMD, and 1.4.0 through 1.6.1
+
+**What changed**: Began as an audit of the Filesystem surface against the live
+server and turned into six releases. The audit itself was interrupted by the
+public endpoint serving 502: a debug run had re-created the cloudflared
+LaunchAgent on the MacBook, giving the tunnel two connectors with one dead
+origin. home-server was serving correctly throughout; only the route was
+broken.
+
+Auth was the largest thread. A client using the shared token could never be
+remembered, because `trustedClientID` was nil for `.sharedBearer` and the
+approval subject was a fresh UUID per connection, so nothing could match a
+stored grant. Trust now keys on a `trustKey`: a SHA-256 fingerprint of the
+token for the shared token, and the bare client ID for OAuth so existing
+entries still decode. 1.4.1 then fixed the regression that created: a stable
+subject made connections coalesce, and a dropped leader stranded everything
+queued behind it.
+
+1.5.0 closed the three audit findings. `filesystem_write` refuses to replace an
+existing file without `overwrite: true`, `filesystem_search_content` measures
+truncation against permitted matches rather than raw Spotlight hits, and
+hidden files behave the same in `list` and `search`. All three verified
+against the running server afterwards.
+
+1.6.0 added Client ID Metadata Documents, the mechanism Anthropic recommends
+and the fix for duplicate registrations. Also: apps are opened on demand
+before a script runs, containment is decided before the resolver says anything
+about a path, and a blocked consent prompt is told apart from a refusal.
+1.6.1 corrected a rejected client identifier reporting as a 500 server error.
+
+**Decisions made**: Scoped Cloudflare Access to `/oauth/authorize` only and
+refused to build it over the whole host, because `/mcp`, `/oauth/register` and
+`/oauth/token` are called without a browser and Access would stop every MCP
+client. The scoping is enforced in code rather than documented.
+
+Declined to ship TCC-writing code even though it works on a SIP-disabled Mac:
+an app granting itself permissions is a bypass regardless of intent. Documented
+the manual procedure in the README instead, framed as unsupported and possible
+only where the protection is already off.
+
+Kept `trustedClientID` OAuth-only rather than overloading it, because
+`oauthClientGate` keys session generations on it and would have refused every
+shared-token session.
+
+**Left off at**: 1.6.1 published and installed on home-server. CIMD verified
+end to end against the live server: Claude Code's real document fetches and
+validates, the RFC 8252 loopback port rule works, and a host resolving to `::1`
+is refused with a 400 naming the reason. Messages automation granted by Oliver
+via a direct TCC insert and confirmed working. Shared folders narrowed from the
+whole home directory to four specific folders, verified behaviourally.
+
+**Open questions**:
+- NEW: DNS rebinding is not closed in the CIMD fetcher. The host is resolved
+  for the SSRF check and again by URLSession to connect. Closing it needs
+  connection pinning URLSession does not expose. Stated in the source.
+- NEW: Sparkle checks roughly daily (`SUScheduledCheckInterval` unset) and the
+  app rarely restarts, so home-server drifted three versions behind. An earlier
+  claim that Sparkle cannot replace a running app was a guess and is unproven.
+- Still open: Messages automation depends on the manual TCC row while the
+  `amfi_get_out_of_my_way` boot-args stand. Consent prompts remain blocked for
+  everything else on that Mac.
+- Resolved this session: the home directory being shared read-write; the
+  filesystem resolver disclosing facts about paths outside the shared folders;
+  the duplicate cloudflared connector.
+
+---
+
 ## 2026-08-28 - Expanded the Notes and Filesystem surfaces, shipped 1.2.0 and 1.3.0
 
 **What changed**: Started as a connectivity test of every tool and turned into

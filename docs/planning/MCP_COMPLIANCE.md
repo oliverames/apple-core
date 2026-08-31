@@ -64,7 +64,7 @@ Successful tool calls populate `structuredContent.result` with the native encode
 
 Remote classification fails closed. A request is remote when its host is not loopback or when `X-Forwarded-For` or `CF-Connecting-IP` is present, even if a reverse proxy rewrites `Host` to `127.0.0.1`. A session records its access surface at creation and rejects later requests that attempt to change it.
 
-Local visibility requires the service toggle. Remote visibility requires both the local service toggle and that service's explicit **Remote** toggle. Bearer or OAuth authentication remains mandatory in either case.
+Visibility requires the service toggle, and nothing else. The per-service **Remote** toggle described here previously no longer exists: `ServiceAccessPolicy.isAccessible` discards the access surface and returns the local enablement, because deciding remote reachability once (by whether remote access is set up at all) replaced eleven per-service switches that mostly produced correctly configured tunnels reaching nothing. Bearer or OAuth authentication remains mandatory on either surface, so the removed axis was precision rather than protection.
 
 ## Remaining external gates
 
