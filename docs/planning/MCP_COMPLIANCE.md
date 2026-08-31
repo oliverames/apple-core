@@ -33,7 +33,7 @@ The live installed app at `/Applications/Apple Core.app` was exercised over `htt
 2. Capture `Mcp-Session-Id` and send `notifications/initialized`.
 3. Send `tools/list` and verify count, uniqueness, and `outputSchema` presence.
 4. Call read-only service tools and require a successful `structuredContent.result` alongside legacy `content`.
-5. Repeat the authenticated handshake through `https://applecore.amesvt.com/mcp`.
+5. Repeat the authenticated handshake through `https://<your-hostname>/mcp`.
 
 Results:
 

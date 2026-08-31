@@ -25,7 +25,7 @@ struct RequestAccessClassifierTests {
 
     @Test(
         "Non-loopback and invalid hosts fail closed as remote",
-        arguments: [nil, "", "applecore.amesvt.com", "192.168.1.25:8756", "not a host"] as [String?]
+        arguments: [nil, "", "mcp.example.com", "192.168.1.25:8756", "not a host"] as [String?]
     )
     func otherHostsAreRemote(host: String?) {
         #expect(RequestAccessClassifier.surface(hostHeader: host) == .remote)

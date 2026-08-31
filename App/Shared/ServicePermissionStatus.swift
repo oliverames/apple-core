@@ -28,6 +28,10 @@ enum ServicePermissionState: Equatable, Sendable {
     case notDetermined
     /// The state cannot be read right now, with the reason.
     case unknown(String)
+    /// macOS refused to display the consent prompt, so nothing was recorded
+    /// and there is no entry to switch on in System Settings either. Distinct
+    /// from a refusal, which is a decision somebody actually made.
+    case promptBlocked
 
     var label: String {
         switch self {
@@ -36,13 +40,14 @@ enum ServicePermissionState: Equatable, Sendable {
         case .denied(let detail): detail
         case .notDetermined: "Not requested"
         case .unknown(let detail): detail
+        case .promptBlocked: "Prompt blocked"
         }
     }
 
     var tone: StatusBadge.Tone {
         switch self {
         case .granted: .positive
-        case .limited, .denied: .warning
+        case .limited, .denied, .promptBlocked: .warning
         case .notDetermined, .unknown: .neutral
         }
     }
@@ -214,7 +219,25 @@ enum ServicePermissionStatus {
             let status = AEDeterminePermissionToAutomateTarget(aeDesc, typeWildCard, typeWildCard, true)
             switch status {
             case noErr: return .granted
-            case OSStatus(errAEEventNotPermitted): return .denied("Denied")
+            case OSStatus(errAEEventNotPermitted):
+                // "Denied" here can mean two different things. A person can
+                // refuse the prompt, or tccd can refuse to show it at all,
+                // which is what happens when custom boot-args mark every
+                // third-party process as a platform binary. The second case
+                // records nothing, so asking again read-only still reports
+                // "would require consent". That is how they are told apart,
+                // and it matters: a refusal is fixed in System Settings,
+                // while a blocked prompt writes no row for Settings to show.
+                let recheck = AEDeterminePermissionToAutomateTarget(
+                    aeDesc,
+                    typeWildCard,
+                    typeWildCard,
+                    false
+                )
+                if recheck == OSStatus(errAEEventWouldRequireUserConsent) {
+                    return .promptBlocked
+                }
+                return .denied("Denied")
             case OSStatus(errAEEventWouldRequireUserConsent): return .notDetermined
             case OSStatus(procNotFound):
                 return .unknown("Open \(target.appName), then try again")

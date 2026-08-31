@@ -116,7 +116,12 @@ struct DiagnosticsView: View {
                         // Ask for it instead, and keep Settings for the case
                         // that genuinely needs it: a refusal, which macOS will
                         // not prompt about again.
-                        if !state.isGranted, !state.isDenied,
+                        if state == .promptBlocked {
+                            // Neither button helps here. macOS recorded
+                            // nothing, so Settings has no row to show, and
+                            // asking again returns the same refusal.
+                            EmptyView()
+                        } else if !state.isGranted, !state.isDenied,
                             row.requirement.automationTarget != nil
                         {
                             Button("Request Access") {
@@ -141,6 +146,20 @@ struct DiagnosticsView: View {
                     }
                 }
                 .padding(.vertical, 2)
+
+                if permissionStates[row.requirement] == .promptBlocked {
+                    Text(
+                        "macOS would not show the request, so nothing was recorded and there is no "
+                            + "switch for it in System Settings. This Mac is set up to block consent "
+                            + "prompts for apps Apple did not sign, which custom boot-args such as "
+                            + "amfi_get_out_of_my_way cause. Restoring the default security settings "
+                            + "and restarting lets the request through."
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.bottom, 4)
+                }
             }
 
             Button {
