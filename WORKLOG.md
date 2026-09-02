@@ -1,5 +1,48 @@
 # Apple Core worklog
 
+## 2026-09-02 - Repo hygiene: consolidated script/ into Scripts/, filed the stray root review
+
+**What changed**: A low-hanging-fruit sweep of the repo root. The one-script
+`script/` directory (`build_and_run.sh`) moved into `Scripts/` beside the other
+four scripts, and the Codex environment's Run action (`.codex/environments/
+environment.toml`) now points at `./Scripts/build_and_run.sh`; that was the only
+live reference in the tree. The hidden dotfile `.review-2026-08-25.md` at the
+repo root, a 12-finding code review distinct from the filed adversarial ledger
+(it carries finding 12's dead-declaration list), moved to
+`docs/planning/reviews/2026-08-25-code-review.md` with content unchanged.
+`default.profraw` (452K of ignored coverage output) went to the Trash, as did
+`.build/` (6.6G of DerivedData from the static-analysis rounds) and `dist/`
+(309M of release zips) at Oliver's direction; both are recreatable —
+`build_and_run.sh` and `release.sh` rebuild them on demand.
+
+**Decisions made**: The `script/` vs `Scripts/` split was proven harmless
+before consolidating: a fresh clone onto a case-insensitive APFS disk image
+shows both directories coexist, because the names differ by the trailing
+`s`, not by case. So the move was naming hygiene, not a corruption fix. The
+2026-08-25 review was filed rather than trashed because it is not a duplicate
+of `docs/planning/reviews/2026-08-25-adversarial-review.md`. The rename's
+deletion side was staged by `git mv` but the pathspec commit captured only
+the additions, exactly the known `git add`/pathspec trap, so the deletions
+landed as a second commit (`34b3255`) after `git status --porcelain` caught
+it.
+
+**Verification**: `bash -n Scripts/build_and_run.sh` clean; strict
+`swift format lint --recursive` clean; a stale-reference sweep
+(`rg --hidden 'script/build_and_run|\bscript/'`) finds only the donor-provenance
+comment in `Scripts/generate_app_icon.swift:10`, which points at bridgeport's
+layout and stays. The clone test ran against `origin/main` before the move.
+
+**Left off at**: Both commits (`5452c9d`, `34b3255`) pushed; working tree
+clean; `main` matches `origin/main`.
+
+**Open questions**: The `.claude/worktrees/elastic-brattain-bdff12` worktree
+stays for now — clean tree, commit reachable from `main` and contained in
+tags `v1.0.7`+, so it costs nothing and may still be wanted. The one TODO in
+the tree (Notes.swift:1153, BUILD_PLAN v2.0 optimistic concurrency) is
+planned work, not a finding.
+
+---
+
 ## 2026-08-31 - Filesystem audit fallout, shared-token trust, CIMD, and 1.4.0 through 1.6.1
 
 **What changed**: Began as an audit of the Filesystem surface against the live
