@@ -1,7 +1,7 @@
 # Apple Core — Build Plan (Swift fork of iMCP)
 
 **Date:** 2026-04-30
-**Decision recorded:** Fork `mattt/iMCP` as the base. Port the best patterns from the other six repos into Swift. v1 ships as a single GPL-3.0-or-later binary (`apple-core`) for personal use. See §0 for locked decisions.
+**Decision recorded:** Fork `mattt/iMCP` as the base. Port the best patterns from the other six repos into Swift. v1 ships as a single GPL-3.0-or-later-source binary (`apple-core`) for personal use. The official signed binary is sold separately (see §4.4). See §0 for locked decisions.
 
 This plan supersedes `SYNTHESIS.md §5` (which recommended a TS frontend + Swift sidecars). The pivot to Swift-shaped product is motivated by: (1) iMCP already proves the architecture works for the macOS-system-level surfaces; (2) the maintenance burden of a single-language project beats two-language plumbing once Swift is the destination anyway.
 
@@ -16,7 +16,7 @@ These are immutable inputs to the build, decided 2026-04-30. Future contributors
 | 1 | Project name | **Apple Core** | Reflects the breadth — multi-surface Apple integration; short, unique, easy to say. |
 | 2 | Bundle ID | **`com.oliverames.applecore`** | Drives the .app's code-signing identity, the Mach service name (`com.oliverames.applecore.xpc`), the Sparkle appcast URL (if ever wired), the Homebrew cask name (if ever published), and the GitHub repo path (`oliverames/apple-core`). |
 | 3 | Sandboxing | **Unsandboxed for v1** | Mac App Store path is off the table. Mail / iCloud Drive / Safari history read FDA-protected paths directly. No sandbox temp-exception entitlement gymnastics; no security-scoped bookmarks needed. |
-| 4 | License | **GPL-3.0-or-later** | Same as apple-mail-mcp, dissolving the clean-room discipline. We lift apple-mail-mcp's disk-first `.emlx` + FTS5 + state-reconciliation directly. The other six donors are MIT — one-way compatible into GPL. We keep their LICENSE files in `THIRD_PARTY_LICENSES/` and credit them in `NOTICE`. |
+| 4 | License | **GPL-3.0-or-later (source); see §4.4 for binary** | Source GPL-3.0-or-later;官方 signed binary ships under `EULA.md` with an Ed25519 license key (Gumroad). MIT donors one-way compatible. `apple-mail-mcp` (GPL-3.0) is therefore clean-room reference only; see §4.4. |
 | 5 | Distribution (v1) | **Personal use; GitHub publish optional** | Build with `xcodebuild` (we have an .app target). Drag `Apple Core.app` to `/Applications`. Register the bundled CLI (`Apple Core.app/Contents/MacOS/apple-core`) with MCP clients via stdio. No Mac App Store, no Sparkle, no Homebrew cask in v1. Notarization optional. |
 | 6 | Architecture | **.app + CLI proxy via NSXPCConnection (hard-fork iMCP)** | The .app is a long-lived menu bar host that holds TCC permissions under its own signed bundle identity, exposes the Settings UI (surface toggles, account management, doctor), and runs the surface services. The CLI (`apple-core`) is a stdio shim that MCP clients launch; it bridges stdin/stdout to the app over `NSXPCConnection`. Without the .app, TCC prompts attribute to whichever client spawned the CLI (Claude Desktop, Claude Code, etc.) — the original iMCP problem. |
 
@@ -44,7 +44,7 @@ These are immutable inputs to the build, decided 2026-04-30. Future contributors
 - **Per-connector `exposePublicly` (Bridgeport's model, designed for spawned external processes) becomes per-*service*** — keyed by the same service identifiers `ServiceRegistry`/`ServiceConfig` already use, since apple-core has no external processes to toggle, only in-process `Service` implementations.
 - **§5.1's tracer bullet still picks Calendar** for the same reasons (EventKit is already ported from iMCP, exercises TCC, proves the tool-dispatch wiring end to end) — just pointed at the new transport instead of validating the Bonjour→XPC swap. "If Calendar round-trips, every other surface plugs into the same wire unchanged" still holds.
 
-Everything else in §0 (project name, bundle ID, unsandboxed v1, GPL-3.0-or-later license, personal-use distribution) is unchanged. §4's licensing mechanics apply unchanged — ported `bridgeport` files are Oliver's own unpublished code (no LICENSE file, all rights his), so they fold in as newly-authored GPL-3.0-or-later files with SPDX headers, no third-party attribution needed.
+Everything else in §0 (project name, bundle ID, unsandboxed v1, GPL-3.0-or-later-source license) is unchanged.
 
 ---
 
@@ -2594,13 +2594,13 @@ We do not expose delete tools in v2.1. The blast-radius on accidental deletion i
 
 ## 4. License posture
 
-Per §0 decision 4: **Apple Core is licensed GPL-3.0-or-later**, matching `apple-mail-mcp`. This dissolves the clean-room discipline we'd previously planned around Mail.
+Per §0 decision 4 (amended 2026-09-02 — see §4.4): **Apple Core's source is GPL-3.0-or-later; the official signed binary is sold under `EULA.md` with an Ed25519 license key (Gumroad). `apple-mail-mcp` (GPL-3.0) is therefore clean-room reference only. See `docs/licensing.md` for the full dual-license runbook.**
 
 ### 4.1 What this means in practice
 
 - **Apple Core's own source code is GPL-3.0-or-later.** Ship a `LICENSE` file at the repo root with the GPL-3.0 text. Every new file we author carries an SPDX header `// SPDX-License-Identifier: GPL-3.0-or-later`.
-- **We can lift `apple-mail-mcp` source directly.** Translate the Python to Swift function-by-function. Disk-first `.emlx` parser, FTS5 schema, state-reconciliation diff, MailCore JXA facade — all fair game. Attribute properly (see §4.2).
-- **We can lift the six MIT donors directly too.** MIT-into-GPL is one-way compatible: you can incorporate MIT code into a GPL work as long as the MIT license terms (preserve copyright + permission notice) are honored on the relevant files. We do not relicense their files; their MIT headers stay intact on the files we lift, and our combined project is GPL because of the GPL parts.
+- **We do not lift `apple-mail-mcp` source directly.** The 2026-09-02 decision (see §4.4) reinstates the clean-room discipline that §4 had previously dissolved. Mail v2.0 must be implemented from `apple-mail-mcp`'s documented behavior rather than by translating its Python line by line, because GPL-3.0 code may not enter a binary shipped under the EULA.
+- **We can lift the six MIT donors directly.** MIT-into-GPL is one-way compatible: you can incorporate MIT code into a GPL work as long as the MIT license terms (preserve copyright + permission notice) are honored on the relevant files. We do not relicense their files; their MIT headers stay intact on the files we lift, and our combined project is GPL because of the GPL parts.
 
 ### 4.2 Attribution discipline
 
@@ -2615,9 +2615,19 @@ Per §0 decision 4: **Apple Core is licensed GPL-3.0-or-later**, matching `apple
 - **Per-file SPDX headers.** Files lifted from a donor keep their original copyright line and SPDX-License-Identifier. New files we author carry our copyright + GPL-3.0-or-later. Mixed files (we extended a lifted file substantially) get both copyright lines + SPDX `GPL-3.0-or-later AND <donor-license>` if the donor was MIT, or just GPL-3.0-or-later if from `apple-mail-mcp`.
 - **Commit log discipline.** When porting `apple-mail-mcp` code, commit messages reference the source: "Translate Python `index/sync.py:reconcile()` to Swift `MailIndex.reconcile()`." This makes attribution traceable.
 
-### 4.3 Dependencies (no GPL contamination concerns the other way)
+### 4.4 Dual-license decision (2026-09-02)
+
+Apple Core now ships as a dual-licensed product.
+
+**Source.** The repository at `github.com/oliverames/apple-core` remains GPL-3.0-or-later. Anyone may build and redistribute their own binary from that source under the GPL. Nothing in `EULA.md` limits any right the recipient holds under the GPL for that source code.
+
+**Official binary.** The signed, notarized `.app` Oliver distributes (the next binary whose `MARKETING_VERSION` is tagged after this file appears) is conveyed under `EULA.md`, not the GPL, with Ed25519 license-key activation. An unlicensed copy does not allow setting up any MCP (`docs/licensing.md` records the Gumroad product, the Signing Keys, and the offline activation flow; `CONTRIBUTING.md` extends the inbound grant so Oliver retains the right to convey the binary under the EULA). The binary contains no GPL-licensed third-party code, so the binary conveys no GPL offer.
+
+**Consequence.** §0 decision 4's prior reading — that GPL-3.0-or-later matched `apple-mail-mcp` and dissolved the clean-room discipline — is cancelled. The discipline's cost stays (SYNTHESIS.md already priced a clean-room Mail v2.0 at two to three weeks), and `apple-mail-mcp`'s disk-first design, FTS5 schema, and state-reconciliation are architecture reference only: new code must be written from the documented behavior.
 
 Every SPM dependency we pull in is permissive (MIT or Apache-2.0 — see §2.1). GPL-3.0-or-later is *compatible* with linking permissive deps; the combined work is GPL. The risk we *would* have had — needing GPL-compatible deps — vanishes because GPL is the ceiling, not the floor.
+
+### 4.5 Dependencies (no GPL contamination concerns the other way)
 
 If we ever consider an LGPL or Apache-2.0-with-patent-grant dep, both are GPL-3-compatible. Apache-2.0 has known compatibility with GPL-3 specifically (patent termination clauses align). LGPL fine if dynamically linked. AGPL would be a problem (only AGPL-compatible) but we don't need any AGPL libraries.
 
@@ -2670,9 +2680,9 @@ We deliberately don't pick Mail as the tracer. Mail is the highest-effort surfac
 - Lazy loading + safe-mode fallback.
 
 **v2.0 — "Mail"**
-- Disk-first `.emlx` parser, translated function-by-function from `apple-mail-mcp` (Python → Swift). Attribute per §4.2.
+- Clean-room disk-first `.emlx` parser, built from `apple-mail-mcp`'s documented behavior (see §4.4; the 2026-09-02 dual license cancels any direct lift of GPL-3.0 code).
 - FTS5 cache via GRDB.swift.
-- State-reconciliation sync (lifted from apple-mail-mcp).
+- State-reconciliation sync (clean-room, from documented `apple-mail-mcp` behavior; see §4.4).
 - Strategy cascade for single-email reads.
 - IMAP send/draft/bulk via swift-nio-imap.
 - Three-phase safe move wired up against Mail.

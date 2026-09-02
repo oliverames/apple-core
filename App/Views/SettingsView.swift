@@ -23,6 +23,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
     case services = "Services"
     case access = "Access"
     case clients = "Clients"
+    case license = "License"
 
     var id: String { rawValue }
 
@@ -31,6 +32,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .services: "square.grid.2x2"
         case .access: "globe"
         case .clients: "desktopcomputer"
+        case .license: "key"
         }
     }
 }
@@ -123,6 +125,8 @@ struct SettingsView: View {
             AccessPane(model: model)
         case .clients:
             ClientsPane(serverController: serverController, model: model)
+        case .license:
+            LicensePane(model: model)
         }
     }
 }
@@ -662,6 +666,120 @@ private struct OAuthClientsSection: View {
                 title: "OAuth Clients",
                 subtitle: "Disconnecting a client revokes its credentials and closes its active sessions."
             )
+        }
+    }
+}
+
+// MARK: - License
+
+/// Activation for the signed binary (EULA.md). The source stays GPL-3.0-or-later;
+/// the keyed build requires a verified license before it serves any MCP session.
+/// Verification is offline Ed25519 — the envelope is pasted in, never fetched.
+private struct LicensePane: View {
+    @ObservedObject var model: ServingSettingsModel
+
+    var body: some View {
+        Form {
+            Section {
+                switch model.licenseState {
+                case .active(let document):
+                    LabeledContent("Status") {
+                        StatusBadge(title: "Activated", tone: .positive)
+                    }
+                    LabeledContent("Licensed to") {
+                        Text(document.licensedTo ?? "—")
+                            .textSelection(.enabled)
+                    }
+                    if let expiresAt = document.expiresAt {
+                        LabeledContent("Expires") {
+                            Text(expiresAt, style: .date)
+                        }
+                    } else {
+                        LabeledContent("Expires") {
+                            Text("Never")
+                        }
+                    }
+                    LabeledContent("License ID") {
+                        Text(document.licenseID)
+                            .font(.system(.callout, design: .monospaced))
+                            .textSelection(.enabled)
+                    }
+                case .notActivated:
+                    LabeledContent("Status") {
+                        StatusBadge(title: "Not activated", tone: .warning)
+                    }
+                case .rejected(let reason):
+                    LabeledContent("Status") {
+                        StatusBadge(title: "Rejected", tone: .warning)
+                    }
+                    Text(reason)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                if !model.licenseState.isActive {
+                    TextEditor(text: $model.licensePasteText)
+                        .font(.system(.callout, design: .monospaced))
+                        .frame(minHeight: 90)
+                        .overlay(alignment: .topLeading) {
+                            if model.licensePasteText.isEmpty {
+                                Text("Paste your license file here")
+                                    .font(.system(.callout, design: .monospaced))
+                                    .foregroundStyle(.tertiary)
+                                    .padding(.top, 8)
+                                    .padding(.leading, 5)
+                                    .allowsHitTesting(false)
+                            }
+                        }
+
+                    HStack {
+                        Button("Activate") {
+                            model.activateLicense()
+                        }
+                        .disabled(
+                            model.licensePasteText
+                                .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                || model.isActivatingLicense
+                        )
+
+                        if model.isActivatingLicense {
+                            ProgressView()
+                                .controlSize(.small)
+                        }
+
+                        if let error = model.licenseActivationError {
+                            Text(error)
+                                .font(.caption)
+                                .foregroundStyle(.red)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                } else {
+                    Button("Deactivate…", role: .destructive) {
+                        model.deactivateLicense()
+                    }
+                    .disabled(model.isActivatingLicense)
+                }
+            } header: {
+                SectionHeader(
+                    title: "Apple Core License",
+                    subtitle: "The signed app requires a license to serve MCP. Paste the license file "
+                        + "from your purchase or download it from Gumroad and open it here."
+                )
+            } footer: {
+                TipFooter(
+                    text: "Activation is offline: the license is verified against a key built into the "
+                        + "app and nothing is sent anywhere. The source code is GPL-3.0-or-later and "
+                        + "can always be built without a license."
+                )
+            }
+        }
+        .formStyle(.grouped)
+        .groupedPageLayout()
+        .navigationTitle("License")
+        .task {
+            model.refreshLicenseState()
         }
     }
 }

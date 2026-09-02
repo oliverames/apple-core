@@ -43,6 +43,8 @@
 		AC00000100000000000000D0 /* CloudflareAccess.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC00000100000000000000D1 /* CloudflareAccess.swift */; };
 		AC0000010000000000000019 /* ServicePermissionInventory.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC0000010000000000000018 /* ServicePermissionInventory.swift */; };
 		AC000001000000000000001A /* ServicePermissionInventory.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC0000010000000000000018 /* ServicePermissionInventory.swift */; };
+		AC00000100000000000F2 /* LicenseDocument.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC00000100000000000F1 /* LicenseDocument.swift */; };
+		AC00000100000000000F3 /* LicenseDocument.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC00000100000000000F1 /* LicenseDocument.swift */; };
 		F809556E2D7888920055B911 /* TypedStream in Frameworks */ = {isa = PBXBuildFile; productRef = F809556D2D7888920055B911 /* TypedStream */; };
 		F80955702D7888920055B911 /* iMessage in Frameworks */ = {isa = PBXBuildFile; productRef = F809556F2D7888920055B911 /* iMessage */; };
 		F825BDBF2D9AD00E0063ADD7 /* ServiceLifecycle in Frameworks */ = {isa = PBXBuildFile; productRef = F825BDBE2D9AD00E0063ADD7 /* ServiceLifecycle */; };
@@ -107,6 +109,7 @@
 		AC0000010000000000000017 /* OAuthSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = OAuthSupport.swift; path = App/Services/Serving/OAuthSupport.swift; sourceTree = SOURCE_ROOT; };
 		AC00000100000000000000D1 /* CloudflareAccess.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = CloudflareAccess.swift; path = App/Services/Serving/CloudflareAccess.swift; sourceTree = SOURCE_ROOT; };
 		AC0000010000000000000018 /* ServicePermissionInventory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServicePermissionInventory.swift; sourceTree = "<group>"; };
+		AC00000100000000000F1 /* LicenseDocument.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LicenseDocument.swift; sourceTree = "<group>"; };
 		AC0000010000000000000003 /* Apple CoreTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "Apple CoreTests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
 		F8F44E6D2D59038D0075D79C /* iMCP.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = iMCP.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		F8F44EB62D5908D00075D79C /* imcp-server */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = "imcp-server"; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -223,6 +226,7 @@
 				AC0000010000000000000048 /* NumericArgument.swift */,
 				AC000001000000000000000E /* ServiceAccessPolicy.swift */,
 				AC0000010000000000000018 /* ServicePermissionInventory.swift */,
+				AC00000100000000000F1 /* LicenseDocument.swift */,
 			);
 			path = Shared;
 			sourceTree = "<group>";
@@ -419,6 +423,7 @@
 				AC000001000000000000004F /* CloudflaredPublisherVerifier.swift in Sources */,
 				AC000001000000000000000F /* ServiceAccessPolicy.swift in Sources */,
 				AC000001000000000000001A /* ServicePermissionInventory.swift in Sources */,
+				AC00000100000000000F3 /* LicenseDocument.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -440,6 +445,7 @@
 				AC0000010000000000000049 /* NumericArgument.swift in Sources */,
 				AC000001000000000000000D /* ServiceAccessPolicy.swift in Sources */,
 				AC0000010000000000000019 /* ServicePermissionInventory.swift in Sources */,
+				AC00000100000000000F2 /* LicenseDocument.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

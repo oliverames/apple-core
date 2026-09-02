@@ -18,9 +18,14 @@ Scripts/integration_test.py --writes
 
 ## Release Gate
 
-Apple Core is licensed GPL-3.0-or-later (see `LICENSE.md`, `NOTICE`, and `docs/planning/BUILD_PLAN.md` §4 for the full attribution discipline). Before publishing a binary:
+Apple Core's source is licensed GPL-3.0-or-later (see `LICENSE.md`, `NOTICE`, and
+`docs/planning/BUILD_PLAN.md` §4 for the full attribution discipline; the
+signed binary is sold under `EULA.md` — see `docs/licensing.md` for the
+dual-license runbook). Before publishing a binary:
 
 - Confirm every donor whose code or substantially-derived design has actually been lifted into a surface implementation (not just researched) has a corresponding entry in `NOTICE` and a license copy in `THIRD_PARTY_LICENSES/`, per §4.2.
+- Confirm the binary is **not** incorporating any GPL-licensed third-party code (including any translation of `apple-mail-mcp`; see `docs/planning/BUILD_PLAN.md` §4.4 and `CONTRIBUTING.md`). An unlicensed source build must not ship a licensed payload.
+- Confirm the license public key embedded in `App/Services/Serving/LicenseGate.swift` (`AppleCoreLicensePublicKey.base64`) still verifies against the Keychain private key: `swift Scripts/sign_license.swift pubkey` must reproduce the embedded string, and a round-trip test (`sign` with a test payload then `verify` with `--public-key` on that payload) must pass.
 - Confirm the current tree contains no private deployment values (API keys, personal iCloud account identifiers used in test fixtures, etc.).
 - Confirm `security find-identity -v -p codesigning` sees the intended Developer ID Application identity and the Team ID matches the project.
 - Validate the exported app with `codesign`, `spctl`, `stapler`, and a clean-machine installation smoke test.
@@ -59,15 +64,9 @@ VERSION=1.0.0 Scripts/release.sh commit     # commit version bump, tag v1.0.0
 VERSION=1.0.0 Scripts/release.sh push-tags  # push the release commit and tag (prompts for confirmation)
 ```
 
-The command pushes the current `main` or `master` branch with the tag. The tag then triggers `release.yml`, which re-runs CI as a gate and creates the GitHub release (using `docs/release-notes/vX.Y.Z.md` if present, otherwise auto-generated notes).
+The command pushes the current `main` or `master` branch with the tag. The tag then triggers `release.yml`, which re-runs CI as a gate and creates the GitHub release (source + notes only; see below) using `docs/release-notes/vX.Y.Z.md` if present, otherwise auto-generated notes.
 
-If a signed/notarized zip was produced locally, attach it and its SHA-256 file:
-
-```bash
-VERSION=1.0.0 Scripts/release.sh upload
-```
-
-The upload command requires both `dist/Apple.Core-<version>.zip` and its `.sha256` sibling, then publishes both assets together.
+GitHub releases no longer carry the signed DMG — see `docs/licensing.md`. The notarized zip (`dist/Apple.Core-<version>.zip` + `.sha256` from `Scripts/release.sh package`) is distributed through Gumroad under `EULA.md`; do not run `Scripts/release.sh upload` for normal releases (that subcommand now refuses and points at Gumroad).
 
 ## Sparkle Auto-Updates
 
@@ -99,7 +98,7 @@ rm /tmp/sparkle.key
 VERSION=1.0.0 Scripts/release.sh appcast   # signs dist/Apple.Core-1.0.0.zip, prepends an item to appcast.xml
 ```
 
-  The item's release notes come from `docs/release-notes/v<version>.md`, rendered to HTML by `Scripts/render_release_notes.sh`; write that file first. The enclosure URL points at the GitHub release asset, so `upload` must publish the same zip that was signed. `SURequireSignedFeed` also requires a signature over the complete appcast XML. The script adds and verifies that feed signature after every edit.
+  The item's release notes come from `docs/release-notes/v<version>.md`, rendered to HTML by `Scripts/render_release_notes.sh`; write that file first. The enclosure URL in `appcast.xml` has historically pointed at the GitHub release asset; going forward the signed binary is distributed through Gumroad, so keep the GitHub release as source + notes only and publish the zip via the Gumroad product instead. `SURequireSignedFeed` also requires a signature over the complete appcast XML. The script adds and verifies that feed signature after every edit.
 
 - **Publish the appcast** by copying the updated `appcast.xml` to the `gh-pages` branch and pushing (Pages serves that branch, matching ping-warden):
 

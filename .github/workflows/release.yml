@@ -25,7 +25,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Publish GitHub release
+      - name: Publish GitHub release (source + notes only; no DMG — see docs/licensing.md)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           INPUT_VERSION: ${{ inputs.version }}
@@ -58,4 +58,7 @@ jobs:
             ARGS+=(--target "$GITHUB_SHA")
           fi
 
+          # Intentionally no binary asset: the signed DMG is distributed
+          # through Gumroad under EULA.md (docs/licensing.md). Do not add
+          # --repo asset uploads here.
           gh release create "$TAG" "${ARGS[@]}"

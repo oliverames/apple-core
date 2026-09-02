@@ -55,6 +55,48 @@ final class ServingSettingsModel: ObservableObject {
     @Published var clientManagementError: String?
     @Published var isManagingOAuthClients = false
 
+    // MARK: - License activation (EULA.md; see LicenseGate.swift)
+    @Published var licenseState: LicenseGate.ActivationState = .notActivated
+    @Published var licensePasteText: String = ""
+    @Published var isActivatingLicense = false
+    @Published var licenseActivationError: String?
+    private let licenseGate = LicenseGate()
+
+    /// Re-reads the license file and updates the pane. Called on pane
+    /// appearance; activation and deactivation also refresh.
+    func refreshLicenseState() {
+        Task {
+            licenseState = await licenseGate.activationState()
+        }
+    }
+
+    func activateLicense() {
+        let pasted = licensePasteText
+        guard !pasted.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        isActivatingLicense = true
+        licenseActivationError = nil
+        Task {
+            defer { isActivatingLicense = false }
+            let result = await licenseGate.activate(pasted)
+            switch result {
+            case .success:
+                licensePasteText = ""
+                licenseState = await licenseGate.activationState()
+            case .failure(let error):
+                licenseActivationError = error.message
+            }
+        }
+    }
+
+    func deactivateLicense() {
+        isActivatingLicense = true
+        Task {
+            defer { isActivatingLicense = false }
+            await licenseGate.deactivate()
+            licenseState = await licenseGate.activationState()
+        }
+    }
+
     /// Non-nil while cloudflared is being downloaded and installed.
     @Published var cloudflaredInstallProgress: CloudflaredInstallProgress?
     /// The version of the cloudflared currently in use, for display.

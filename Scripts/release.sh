@@ -644,23 +644,21 @@ create_release() {
 }
 
 upload_asset() {
-  require_version
-  local checksum_path release_zip_path tag
-  release_zip_path="$(release_zip)"
-  checksum_path="${release_zip_path}.sha256"
-  tag="$(release_tag)"
-  if [[ ! -f "${release_zip_path}" ]]; then
-    echo "Missing release asset: ${release_zip_path}" >&2
-    exit 1
-  fi
-  if [[ ! -f "${checksum_path}" ]]; then
-    echo "Missing release checksum: ${checksum_path}" >&2
-    exit 1
-  fi
-  echo "Uploading release asset and checksum"
-  gh release upload "${tag}" "${release_zip_path}" "${checksum_path}" \
-    --repo "${GITHUB_REPOSITORY}" --clobber
-  gh release view --web "${tag}" --repo "${GITHUB_REPOSITORY}"
+  cat >&2 <<'EOF'
+GitHub releases no longer carry the signed DMG — see docs/licensing.md.
+
+The official binary is distributed through Gumroad under EULA.md.
+Use the Gumroad product's asset upload (or `gumroad products` CLI)
+to publish the notarized zip; keep the GitHub release as source + notes only.
+
+If you need to publish a legacy free binary (e.g. a security fix for
+the last GPL-conveyed tag), re-enable the GitHub upload explicitly:
+
+  gh release upload <tag> dist/Apple.Core-<version>.zip dist/Apple.Core-<version>.zip.sha256 --repo <owner>/<repo>
+
+For the normal flow, do not run `Scripts/release.sh upload`.
+EOF
+  exit 1
 }
 
 all() {

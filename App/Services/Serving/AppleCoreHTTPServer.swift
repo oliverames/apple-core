@@ -41,6 +41,7 @@ public actor AppleCoreHTTPServer {
 
     private let config: AppleCoreServingConfig
     private let oauthStore: OAuthTokenStore
+    private let licenseGate: LicenseGate
     private var server: HTTPServer?
     private var sessions: [String: MCPSSESession] = [:]
     private var sessionSurfaces: [String: MCPAccessSurface] = [:]
@@ -50,7 +51,11 @@ public actor AppleCoreHTTPServer {
     private var sessionFactory: SessionFactory?
     private var sessionCloseHandler: (@Sendable (String) -> Void)?
 
-    public init(config: AppleCoreServingConfig, oauthStore: OAuthTokenStore? = nil) {
+    public init(
+        config: AppleCoreServingConfig,
+        oauthStore: OAuthTokenStore? = nil,
+        licenseGate: LicenseGate? = nil
+    ) {
         self.config = config
         self.oauthStore =
             oauthStore
@@ -58,6 +63,7 @@ public actor AppleCoreHTTPServer {
                 clientRegistryURL: AppleCoreServingPaths.oauthClientRegistryURL(),
                 accessTokenStoreURL: AppleCoreServingPaths.oauthAccessTokenStoreURL()
             )
+        self.licenseGate = licenseGate ?? LicenseGate()
     }
 
     /// Set once, before `start()`, by ServerNetworkManager.
@@ -241,12 +247,21 @@ public actor AppleCoreHTTPServer {
             return await self.statusResponse()
         }
 
+        // The one activation-aware unauthenticated endpoint: a locked-out
+        // client (or a support conversation) can tell "license missing"
+        // from "server broken" without a bearer token.
+        handler.appendRoute("GET /license-status") { [weak self] _ in
+            guard let self else { return HTTPResponse(statusCode: .internalServerError) }
+            return await self.licenseStatusResponse()
+        }
+
         handler.appendRoute("GET /sse") { [weak self] request in
             guard let self else { return HTTPResponse(statusCode: .internalServerError) }
             guard await self.isRequestAllowed(request) else { return Self.textResponse(.forbidden, "Forbidden\n") }
             guard let principal = await self.authenticate(request) else {
                 return await self.unauthorizedResponse(for: request)
             }
+            guard await self.isLicensed() else { return Self.licenseRequiredResponse() }
             return await self.openLegacySSE(request, principal: principal)
         }
 
@@ -256,6 +271,7 @@ public actor AppleCoreHTTPServer {
             guard let principal = await self.authenticate(request) else {
                 return await self.unauthorizedResponse(for: request)
             }
+            guard await self.isLicensed() else { return Self.licenseRequiredResponse() }
             return await self.postLegacyMessage(request, principal: principal)
         }
 
@@ -265,6 +281,7 @@ public actor AppleCoreHTTPServer {
             guard let principal = await self.authenticate(request) else {
                 return await self.unauthorizedResponse(for: request)
             }
+            guard await self.isLicensed() else { return Self.licenseRequiredResponse() }
             return await self.openStreamableHTTP(request, principal: principal)
         }
 
@@ -274,6 +291,7 @@ public actor AppleCoreHTTPServer {
             guard let principal = await self.authenticate(request) else {
                 return await self.unauthorizedResponse(for: request)
             }
+            guard await self.isLicensed() else { return Self.licenseRequiredResponse() }
             return await self.postStreamableHTTP(request, principal: principal)
         }
 
@@ -283,6 +301,7 @@ public actor AppleCoreHTTPServer {
             guard let principal = await self.authenticate(request) else {
                 return await self.unauthorizedResponse(for: request)
             }
+            guard await self.isLicensed() else { return Self.licenseRequiredResponse() }
             return await self.deleteStreamableHTTPSession(request, principal: principal)
         }
 
@@ -980,6 +999,49 @@ public actor AppleCoreHTTPServer {
         }
     }
 
+    // MARK: - Licensing
+
+    /// The EULA activation gate. Every MCP transport funnels through here
+    /// after authentication. Localhost is deliberately not exempt: the
+    /// keyed binary's activation term covers setting up any MCP session,
+    /// wherever the request originates (see EULA.md and docs/licensing.md).
+    private func isLicensed() async -> Bool {
+        await licenseGate.validatedDocument() != nil
+    }
+
+    private func licenseStatusResponse() async -> HTTPResponse {
+        let state = await licenseGate.activationState()
+        let object: [String: Any]
+        switch state {
+        case .notActivated:
+            object = ["activated": false, "reason": "not_activated"]
+        case .active(let document):
+            object = [
+                "activated": true,
+                "plan": document.plan,
+                "licensed_to": document.licensedTo ?? "",
+            ]
+        case .rejected(let reason):
+            object = ["activated": false, "reason": reason]
+        }
+        return Self.jsonResponse(.ok, object, request: nil)
+    }
+
+    /// HTTP 402 for MCP requests without a valid license. The body names
+    /// the activation step so a person hitting this in a terminal or a
+    /// client log sees the way out rather than a bare status code.
+    private static func licenseRequiredResponse() -> HTTPResponse {
+        var headers = HTTPHeaders()
+        headers[.contentType] = "text/plain"
+        return HTTPResponse(
+            statusCode: .paymentRequired,
+            headers: headers,
+            body: Data(
+                "License required: activate Apple Core in Settings › License to serve MCP.\n".utf8
+            )
+        )
+    }
+
     private static func sessionCapacityResponse() -> HTTPResponse {
         var headers = HTTPHeaders()
         headers[.contentType] = "text/plain"
@@ -1423,11 +1485,11 @@ public actor AppleCoreHTTPServer {
     private static func jsonResponse(
         _ statusCode: HTTPStatusCode,
         _ object: [String: Any],
-        request: HTTPRequest,
+        request: HTTPRequest?,
         noStore: Bool = false
     ) -> HTTPResponse {
         let data = (try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])) ?? Data("{}".utf8)
-        var headers = oauthCORSHeaders(for: request)
+        var headers = request.map(oauthCORSHeaders) ?? HTTPHeaders()
         headers[.contentType] = "application/json"
         if noStore {
             // RFC 6749 requires token responses to be uncacheable.

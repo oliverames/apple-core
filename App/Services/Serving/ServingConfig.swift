@@ -131,6 +131,12 @@ public enum AppleCoreServingPaths {
         configDirectory(environment: environment).appendingPathComponent("oauth_tokens.json")
     }
 
+    /// Where the EULA license envelope lives (see Shared/LicenseDocument.swift).
+    /// Absent or unverified means the binary answers MCP requests with 402.
+    public static func licenseURL(environment: [String: String] = ProcessInfo.processInfo.environment) -> URL {
+        configDirectory(environment: environment).appendingPathComponent("license.txt")
+    }
+
     /// Alternate config homes are independent profiles. Give each profile a
     /// stable launchd identity so a development or test run cannot boot out or
     /// replace the production Cloudflare agent.
