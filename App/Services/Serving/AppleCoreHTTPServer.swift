@@ -51,6 +51,12 @@ public actor AppleCoreHTTPServer {
     private var sessionFactory: SessionFactory?
     private var sessionCloseHandler: (@Sendable (String) -> Void)?
 
+    /// Records durable trust for a principal, the same grant the connection
+    /// dialog's "Always trust" makes. Set by ServerNetworkManager so the
+    /// authorization page can make that grant from wherever the person is.
+    public typealias TrustGrantHandler = @Sendable (AuthenticatedPrincipal) async -> Void
+    private var trustGrantHandler: TrustGrantHandler?
+
     public init(
         config: AppleCoreServingConfig,
         oauthStore: OAuthTokenStore? = nil,
@@ -69,6 +75,10 @@ public actor AppleCoreHTTPServer {
     /// Set once, before `start()`, by ServerNetworkManager.
     public func setSessionFactory(_ factory: @escaping SessionFactory) {
         self.sessionFactory = factory
+    }
+
+    public func setTrustGrantHandler(_ handler: @escaping TrustGrantHandler) {
+        self.trustGrantHandler = handler
     }
 
     /// Notified whenever this layer drops a session (idle reap or explicit
@@ -547,6 +557,20 @@ public actor AppleCoreHTTPServer {
                 return Self.htmlResponse(
                     .forbidden,
                     authorizationFormHTML(validation: validation, error: "Apple Core token did not match.")
+                )
+            }
+
+            // The person typing the master token here is the same person the
+            // connection dialog would ask on the Mac's screen, so the choice
+            // can be made now. A Mac nobody is sitting at has no other way to
+            // answer that dialog, and a first connection from a new client
+            // used to hang there with no error anywhere the person could see.
+            if form["apple_core_trust"] == "on" {
+                await trustGrantHandler?(
+                    .oauth(clientID: validation.clientID, registeredName: validation.clientName)
+                )
+                logMessage(
+                    "AppleCoreHTTPServer: trusted OAuth client from the authorization page: \(validation.clientID)"
                 )
             }
 
@@ -1246,6 +1270,13 @@ public actor AppleCoreHTTPServer {
         let escapedState = OAuthSupport.htmlEscaped(validation.state ?? "")
         let escapedResource = OAuthSupport.htmlEscaped(validation.resource)
         let errorHTML = error.map { "<p class=\"error\">\(OAuthSupport.htmlEscaped($0))</p>" } ?? ""
+        let macName = OAuthSupport.htmlEscaped(MachineIdentity.currentName())
+        // Without trust, the first connection waits on a dialog on this
+        // Mac's screen. Say so, and say when that screen has nobody at it.
+        let trustDetail =
+            GUISession.isActive
+            ? "Otherwise the first connection waits for approval in a dialog on \(macName)."
+            : "Nobody is signed in at \(macName)'s screen right now, so an approval dialog there could not be answered. Leave this on."
 
         // Section 8.6: show where the client identifier actually comes from.
         // The client supplies its own display name, so the name alone is
@@ -1278,6 +1309,8 @@ public actor AppleCoreHTTPServer {
                 input { font: inherit; border-radius: 9px; border: 1px solid color-mix(in srgb, CanvasText 18%, transparent); padding: 10px 12px; background: Canvas; color: CanvasText; }
                 button { font: inherit; font-weight: 700; border: 0; border-radius: 9px; margin-top: 18px; padding: 10px 14px; color: white; background: #0a84ff; }
                 .meta { font-size: 13px; }
+                .check { grid-template-columns: auto 1fr; align-items: start; font-weight: 400; font-size: 14px; }
+                .check input { margin-top: 3px; }
                 .error { color: #b42318; font-weight: 700; }
               </style>
             </head>
@@ -1299,6 +1332,10 @@ public actor AppleCoreHTTPServer {
                   <label>
                     Apple Core token
                     <input name="apple_core_token" type="password" autocomplete="off" required>
+                  </label>
+                  <label class="check">
+                    <input name="apple_core_trust" type="checkbox" checked>
+                    <span>Trust <strong>\(escapedClientName)</strong> on \(macName), so it connects without a prompt. \(trustDetail) You can withdraw this in Settings.</span>
                   </label>
                   <button type="submit">Authorize</button>
                 </form>

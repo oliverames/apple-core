@@ -498,6 +498,16 @@ final class ServerController: ObservableObject {
             // Initialize bindings from AppStorage before the server starts.
             await networkManager.updateServiceBindings(self.currentServiceBindings)
 
+            // The OAuth authorization page can grant the same durable trust
+            // as the dialog's "Always trust", from wherever the person is.
+            await networkManager.setTrustGrantHandler { [weak self] principal in
+                await MainActor.run { [weak self] in
+                    guard let self else { return }
+                    self.addTrustedClient(principal)
+                    log.notice("Trusted \(principal.trustKey) from the authorization page")
+                }
+            }
+
             // Install the approval handler before the listener opens. A
             // client arriving in the gap between listen and handler-install
             // used to be rejected outright by the nil-handler guard.
@@ -840,6 +850,12 @@ actor ServerNetworkManager {
         self.connectionApprovalHandler = handler
     }
 
+    private var trustGrantHandler: AppleCoreHTTPServer.TrustGrantHandler?
+
+    func setTrustGrantHandler(_ handler: @escaping AppleCoreHTTPServer.TrustGrantHandler) {
+        self.trustGrantHandler = handler
+    }
+
     /// Starts the HTTP listener. Returns false when the bind failed; the
     /// reason is in `lastStartError`.
     @discardableResult
@@ -875,6 +891,10 @@ actor ServerNetworkManager {
         await httpServer.setSessionCloseHandler { [weak self] sessionID in
             guard let self, let connectionID = UUID(uuidString: sessionID) else { return }
             Task { await self.removeConnection(connectionID) }
+        }
+
+        if let trustGrantHandler {
+            await httpServer.setTrustGrantHandler(trustGrantHandler)
         }
 
         let failureBox = StartFailureBox()
