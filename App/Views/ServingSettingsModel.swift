@@ -77,7 +77,7 @@ final class ServingSettingsModel: ObservableObject {
         licenseActivationError = nil
         Task {
             defer { isActivatingLicense = false }
-            let result = await licenseGate.activate(pasted)
+            let result = await licenseGate.activate(input: pasted)
             switch result {
             case .success:
                 licensePasteText = ""

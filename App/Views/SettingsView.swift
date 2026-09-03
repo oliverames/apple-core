@@ -724,7 +724,7 @@ private struct LicensePane: View {
                         .frame(minHeight: 90)
                         .overlay(alignment: .topLeading) {
                             if model.licensePasteText.isEmpty {
-                                Text("Paste your license file here")
+                                Text("Paste your Gumroad license key, or a license file")
                                     .font(.system(.callout, design: .monospaced))
                                     .foregroundStyle(.tertiary)
                                     .padding(.top, 8)
@@ -764,14 +764,16 @@ private struct LicensePane: View {
             } header: {
                 SectionHeader(
                     title: "Apple Core License",
-                    subtitle: "The signed app requires a license to serve MCP. Paste the license file "
-                        + "from your purchase or download it from Gumroad and open it here."
+                    subtitle: "The signed app requires a license to serve MCP. Paste the license key "
+                        + "from your Gumroad purchase, or a license file issued to you."
                 )
             } footer: {
                 TipFooter(
-                    text: "Activation is offline: the license is verified against a key built into the "
-                        + "app and nothing is sent anywhere. The source code is GPL-3.0-or-later and "
-                        + "can always be built without a license."
+                    text: "A Gumroad key is checked with Gumroad when you activate it and about once a day "
+                        + "afterwards; only the key and product ID are sent, and a Mac that is offline keeps "
+                        + "its license for 14 days. A license file is verified offline against a key built "
+                        + "into the app. The source code is GPL-3.0-or-later and can always be built "
+                        + "without a license."
                 )
             }
         }

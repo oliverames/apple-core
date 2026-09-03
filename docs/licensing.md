@@ -28,7 +28,7 @@ Gumroad's monetization with teeth — "an unlicensed copy does not allow for set
 
 ## The activation mechanism
 
-**Verification is offline Ed25519.** `Shared/LicenseDocument.swift` parses the three-line envelope (canonical JSON payload + Ed25519 signature over it, base64) with `CryptoKit`. `App/Services/Serving/LicenseGate.swift` loads `license.txt` from the config dir, verifies against the public key embedded in the binary, and `AppleCoreHTTPServer.swift` consults the gate before opening any MCP session. `GET /license-status` (unauthenticated) so a support conversation can distinguish "not activated" from "server broken" without tokens. Sparkle updates, the landing page, and the unauthenticated icon routes stay reachable either way.
+**Two activation paths.** Buyers paste the Gumroad license key from their purchase into **Settings → License**; `App/Services/Serving/GumroadLicense.swift` verifies it against `POST https://api.gumroad.com/v2/licenses/verify` (product `H5iMAgmqjSc9_p61iSwApA==`, uses not counted), writes `~/.config/apple-core/gumroad-license.json` (mode 0600) and re-checks about daily while the app runs, with a 14-day offline grace before the gate closes. A refund, chargeback, or disabled key closes the gate at the next re-check. This mirrors Ping Warden. The second path is the signed envelope Oliver issues directly, verified offline with Ed25519: `Shared/LicenseDocument.swift` parses the three-line envelope (canonical JSON payload + Ed25519 signature over it, base64) with `CryptoKit`. `App/Services/Serving/LicenseGate.swift` loads `license.txt` from the config dir, verifies against the public key embedded in the binary, and `AppleCoreHTTPServer.swift` consults the gate before opening any MCP session. `GET /license-status` (unauthenticated) so a support conversation can distinguish "not activated" from "server broken" without tokens. Sparkle updates, the landing page, and the unauthenticated icon routes stay reachable either way.
 
 An unlicensed installation answers every MCP session-creating request with `402 Payment Required` + a plain-text body pointing at **Settings → License**. Once a valid license file is written, the HTTP server picks the change up on the next request (no restart needed).
 
@@ -36,7 +36,7 @@ An unlicensed installation answers every MCP session-creating request with `402 
 
 *Gumroad's fees are their own page (`https://gumroad.com/pricing`, checked 2026-09-02): they quote flat 10% plus $0.50 on direct sales and 30% on sales that found the product through Discover. Their help center (checked 2026-09-02) documents merchant-of-record handling. Their license-key tooling was not reachable behind sign-in at the time of this edit, so verify that flow before issuing: the docs below deliberately describe a flow that does not depend on it.*
 
-Gumroad's **license-key feature** is the collection mechanism for every sale, even though Gumroad does not enforce the license at runtime — the app does, offline. The license file Oliver signs is the credential.
+Gumroad's **license-key feature** is the credential for every sale: the product's Content page carries the license-key block, so each purchase generates a key the buyer pastes into the app. Gumroad does not enforce anything at runtime; the app asks Gumroad's verify endpoint at activation and about daily thereafter. The signed envelope below is for licenses Oliver issues by hand (his own Macs, comps).
 
 ### Signer keys (one-time setup)
 
@@ -70,7 +70,7 @@ Deliver the resulting `APPLE-CORE-LICENSE-1` file to the buyer via Gumroad's ful
 ### What buyers receive
 
 - The signed, notarized `.app` via Gumroad (the deliverable), governed by `EULA.md` (the purchaser also has the right to convey the Source Code under GPL-3.0-or-later, to IR receivers under it).
-- A plain-text license file whose name/email/order are human-readable and signed under the buyer's key — it is not a secret beyond its signature.
+- A Gumroad license key on the product's Content page and in the receipt, which they paste into **Apple Core → Settings → License**. The key is the credential; treat it like a password.
 
 ## Compliance and release posture
 

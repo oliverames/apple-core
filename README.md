@@ -16,7 +16,7 @@ Download the signed and notarized app from [GitHub Releases](https://github.com/
 
 Apple Core's **source** is licensed **GPL-3.0-or-later** (see [`LICENSE.md`](LICENSE.md) and [`NOTICE`](NOTICE)). It began as a hard-fork of `mattt/iMCP`; iMCP's MIT license is preserved at [`THIRD_PARTY_LICENSES/iMCP.LICENSE`](THIRD_PARTY_LICENSES/iMCP.LICENSE). The license copies and attribution for additional donor designs used by the implementation are in [`THIRD_PARTY_LICENSES`](THIRD_PARTY_LICENSES) and [`NOTICE`](NOTICE). Code ported from Bridgeport and ping-warden is Oliver's own.
 
-The **signed, notarized binary** Oliver distributes via Gumroad is conveyed under [`EULA.md`](EULA.md), not the GPL, with license-key activation (see [`docs/licensing.md`](docs/licensing.md)). An unlicensed copy does not allow setting up any MCP: every MCP session-creating request returns `402 Payment Required` until a license is activated in Settings → License. Anyone may nevertheless build and redistribute their own binary from the GPL source.
+The **signed, notarized binary** Oliver distributes via Gumroad is conveyed under [`EULA.md`](EULA.md), not the GPL, with license-key activation (see [`docs/licensing.md`](docs/licensing.md)). An unlicensed copy does not allow setting up any MCP: every MCP session-creating request returns `402 Payment Required` until a license is activated in Settings → License, either the Gumroad license key from the purchase (checked with Gumroad at activation and about daily, 14-day offline grace) or a license file Oliver signs. Anyone may nevertheless build and redistribute their own binary from the GPL source.
 
 ## Architecture
 
