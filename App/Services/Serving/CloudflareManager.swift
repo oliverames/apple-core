@@ -40,6 +40,15 @@ public struct CloudflareSettings: Codable, Sendable, Equatable {
     /// The Access application Apple Core created, so it can be updated or
     /// removed later instead of accumulating duplicates.
     public var accessApplicationID: String
+    /// The Mac that runs this tunnel's connector. A tunnel is one Cloudflare
+    /// identity, and its credentials travel with the config file, so a second
+    /// Mac that starts the same tunnel becomes a second connector: Cloudflare
+    /// then spreads requests across both, and every request that lands on the
+    /// Mac without Apple Core fails. Recording the owner lets any other Mac
+    /// recognise the tunnel as not its own and stand down instead.
+    public var ownerMachineID: String
+    /// Human-readable name for `ownerMachineID`, for messages only.
+    public var ownerMachineName: String
 
     public init(
         enabled: Bool = false,
@@ -58,7 +67,9 @@ public struct CloudflareSettings: Codable, Sendable, Equatable {
         createdByAppleCore: Bool = false,
         accessProtectAuthorizePage: Bool = false,
         accessAllowedEmails: [String] = [],
-        accessApplicationID: String = ""
+        accessApplicationID: String = "",
+        ownerMachineID: String = "",
+        ownerMachineName: String = ""
     ) {
         self.enabled = enabled
         self.profileName = profileName
@@ -77,6 +88,8 @@ public struct CloudflareSettings: Codable, Sendable, Equatable {
         self.accessProtectAuthorizePage = accessProtectAuthorizePage
         self.accessAllowedEmails = accessAllowedEmails
         self.accessApplicationID = accessApplicationID
+        self.ownerMachineID = ownerMachineID
+        self.ownerMachineName = ownerMachineName
     }
 
     // Tolerant decoding: every field falls back to its default when absent,
@@ -126,6 +139,10 @@ public struct CloudflareSettings: Codable, Sendable, Equatable {
         accessApplicationID =
             try container.decodeIfPresent(String.self, forKey: .accessApplicationID)
             ?? defaults.accessApplicationID
+        ownerMachineID =
+            try container.decodeIfPresent(String.self, forKey: .ownerMachineID) ?? defaults.ownerMachineID
+        ownerMachineName =
+            try container.decodeIfPresent(String.self, forKey: .ownerMachineName) ?? defaults.ownerMachineName
     }
 }
 
@@ -138,6 +155,9 @@ public enum CloudflareTunnelState: String, Codable, Sendable {
     case stopped
     case running
     case error
+    /// Enabled in this config, but another Mac runs the connector. This Mac
+    /// must not start one: see `CloudflareSettings.ownerMachineID`.
+    case ownedElsewhere
 }
 
 public struct CloudflareTunnelStatus: Codable, Sendable, Equatable {
@@ -164,6 +184,13 @@ public struct CloudflareTunnelStatus: Codable, Sendable, Equatable {
     public var originCertificatePath: String
     /// Why the configured hostname cannot be routed, when it cannot be.
     public var hostnameError: String?
+    /// The Mac recorded as running this tunnel, when it is not this one.
+    public var ownerMachineName: String
+    /// How many cloudflared processes Cloudflare sees on the tunnel, when the
+    /// tunnel is running here and the count could be read. More than one
+    /// means another Mac is also serving it and the public address will fail
+    /// on every request that lands there.
+    public var connectorCount: Int?
 
     public init(
         state: CloudflareTunnelState = .disabled,
@@ -184,7 +211,9 @@ public struct CloudflareTunnelStatus: Codable, Sendable, Equatable {
         createdByAppleCore: Bool = false,
         loggedIn: Bool = false,
         originCertificatePath: String = "",
-        hostnameError: String? = nil
+        hostnameError: String? = nil,
+        ownerMachineName: String = "",
+        connectorCount: Int? = nil
     ) {
         self.state = state
         self.message = message
@@ -205,6 +234,8 @@ public struct CloudflareTunnelStatus: Codable, Sendable, Equatable {
         self.loggedIn = loggedIn
         self.originCertificatePath = originCertificatePath
         self.hostnameError = hostnameError
+        self.ownerMachineName = ownerMachineName
+        self.connectorCount = connectorCount
     }
 }
 
@@ -219,6 +250,8 @@ public actor CloudflareManager {
     private let port: UInt16
     private let bindHost: String
     private let fileManager: FileManager
+    private let currentMachineID: String
+    private let currentMachineName: String
 
     #if os(macOS)
         private let uid = getuid()
@@ -226,11 +259,89 @@ public actor CloudflareManager {
         private let uid: UInt32 = 0
     #endif
 
-    public init(settings: CloudflareSettings, port: UInt16, bindHost: String, fileManager: FileManager = .default) {
+    public init(
+        settings: CloudflareSettings,
+        port: UInt16,
+        bindHost: String,
+        fileManager: FileManager = .default,
+        currentMachineID: String = MachineIdentity.currentID(),
+        currentMachineName: String = MachineIdentity.currentName()
+    ) {
         self.settings = Self.normalizedSettings(settings)
         self.port = port
         self.bindHost = bindHost
         self.fileManager = fileManager
+        self.currentMachineID = currentMachineID
+        self.currentMachineName = currentMachineName
+    }
+
+    /// Whose tunnel this config describes, from the Mac asking.
+    public static func ownership(of settings: CloudflareSettings, currentMachineID: String) -> CloudflareTunnelOwnership
+    {
+        CloudflareTunnelOwnershipRules.ownership(
+            ownerMachineID: settings.ownerMachineID,
+            ownerMachineName: settings.ownerMachineName,
+            currentMachineID: currentMachineID
+        )
+    }
+
+    private var ownership: CloudflareTunnelOwnership {
+        Self.ownership(of: settings, currentMachineID: currentMachineID)
+    }
+
+    private func adoptTunnel() {
+        settings.ownerMachineID = currentMachineID
+        settings.ownerMachineName = currentMachineName
+    }
+
+    /// Asks Cloudflare who is connected to the tunnel. Needs the origin
+    /// certificate and the network, so a failure is nil rather than a number.
+    private func probeConnectors() async -> CloudflareConnectorReport? {
+        let tunnel = settings.tunnelId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !tunnel.isEmpty, fileManager.fileExists(atPath: settings.cloudflaredPath) else { return nil }
+        let result = await runShellAsync(settings.cloudflaredPath, ["tunnel", "info", "--output", "json", tunnel])
+        guard result.status == 0, let data = result.stdout.data(using: .utf8) else { return nil }
+        return CloudflareTunnelOwnershipRules.parseTunnelInfo(data)
+    }
+
+    /// This Mac is not the owner: make sure no connector runs here, and say
+    /// why, without changing what the config asks for. Turning it off here
+    /// or taking it over are both decisions for the person, not for launch.
+    private func standDownForOwner(named owner: String) async -> CloudflareOperationResult {
+        let before = settings
+        if await isLaunchAgentLoaded() {
+            let result = await LaunchAgentManager.bootoutAsync(
+                label: settings.launchAgentLabel,
+                uid: uid,
+                plistURL: launchAgentURL
+            )
+            if result.status != 0, await isLaunchAgentLoaded() {
+                logMessage("CloudflareManager: could not stop a connector this Mac does not own: \(result.stderr)")
+            }
+        }
+        if fileManager.fileExists(atPath: launchAgentURL.path) {
+            try? fileManager.removeItem(at: launchAgentURL)
+        }
+        let tunnelStatus = await status(
+            messageOverride: CloudflareTunnelOwnershipRules.ownedElsewhereMessage(
+                owner: owner,
+                hostname: settings.hostname
+            ),
+            forcedState: .ownedElsewhere
+        )
+        return CloudflareOperationResult(
+            settings: settings,
+            status: tunnelStatus,
+            didChangeSettings: before != settings
+        )
+    }
+
+    /// Makes this Mac the owner and starts the connector. The other Mac's
+    /// copy of the config keeps its old owner id, so it stands down at its
+    /// next launch, but its running connector is not stopped from here.
+    public func takeOverTunnel() async -> CloudflareOperationResult {
+        adoptTunnel()
+        return await bootstrapTunnel()
     }
 
     public func status() async -> CloudflareTunnelStatus {
@@ -320,7 +431,20 @@ public actor CloudflareManager {
     }
 
     public func reconcileTunnel() async -> CloudflareOperationResult {
-        settings.enabled ? await bootstrapTunnel() : await disableTunnel()
+        guard settings.enabled else { return await disableTunnel() }
+        switch ownership {
+        case let .otherMac(name):
+            return await standDownForOwner(named: name)
+        case .unowned:
+            // A config from before ownership existed. The Mac that launches
+            // with it enabled has been running it, so record that and carry
+            // on; from now on a copy of this config elsewhere stands down.
+            logMessage("CloudflareManager: adopting tunnel \(settings.tunnelName) on \(currentMachineName)")
+            adoptTunnel()
+            return await bootstrapTunnel()
+        case .thisMac:
+            return await bootstrapTunnel()
+        }
     }
 
     public func bootstrapTunnel() async -> CloudflareOperationResult {
@@ -331,6 +455,13 @@ public actor CloudflareManager {
                 forcedState: .disabled
             )
             return CloudflareOperationResult(settings: settings, status: status, didChangeSettings: before != settings)
+        }
+        if case let .otherMac(name) = ownership {
+            return await standDownForOwner(named: name)
+        }
+        // Setting up remote access on a Mac is what makes it the owner.
+        if ownership == .unowned {
+            adoptTunnel()
         }
         guard fileManager.fileExists(atPath: settings.cloudflaredPath) else {
             let status = await status(
@@ -441,6 +572,8 @@ public actor CloudflareManager {
     public func disableTunnel() async -> CloudflareOperationResult {
         let before = settings
         settings.enabled = false
+        settings.ownerMachineID = ""
+        settings.ownerMachineName = ""
 
         if await isLaunchAgentLoaded() {
             let result = await LaunchAgentManager.bootoutAsync(
@@ -697,12 +830,26 @@ public actor CloudflareManager {
         let originCertificatePath = Self.originCertificatePath()
         let loggedIn = fileManager.fileExists(atPath: originCertificatePath)
         let hostnameError = Self.hostnameValidationError(for: settings.hostname)
+        var ownerMachineName = ""
+        if case let .otherMac(name) = ownership {
+            ownerMachineName = name
+        }
+        var connectorCount: Int?
+        if settings.enabled, launchAgentRunning, ownerMachineName.isEmpty, loggedIn {
+            connectorCount = await probeConnectors()?.connectorCount
+        }
 
         let inferredState: CloudflareTunnelState
         let inferredMessage: String
         if !settings.enabled {
             inferredState = .disabled
             inferredMessage = "Cloudflare is disabled."
+        } else if !ownerMachineName.isEmpty {
+            inferredState = .ownedElsewhere
+            inferredMessage = CloudflareTunnelOwnershipRules.ownedElsewhereMessage(
+                owner: ownerMachineName,
+                hostname: settings.hostname
+            )
         } else if !cloudflaredInstalled {
             inferredState = .missingCloudflared
             inferredMessage = "cloudflared is not installed."
@@ -721,6 +868,12 @@ public actor CloudflareManager {
         } else if !configFileExists || !launchAgentInstalled {
             inferredState = .needsConfig
             inferredMessage = "Cloudflare local config or LaunchAgent needs to be created."
+        } else if launchAgentRunning, let connectorCount, connectorCount > 1 {
+            inferredState = .error
+            inferredMessage = CloudflareTunnelOwnershipRules.duplicateConnectorMessage(
+                count: connectorCount,
+                tunnelName: settings.tunnelName
+            )
         } else if launchAgentRunning {
             inferredState = .running
             inferredMessage = "Cloudflare tunnel is running at \(Self.publicBaseURL(for: settings))."
@@ -748,7 +901,9 @@ public actor CloudflareManager {
             createdByAppleCore: settings.createdByAppleCore,
             loggedIn: loggedIn,
             originCertificatePath: originCertificatePath,
-            hostnameError: hostnameError
+            hostnameError: hostnameError,
+            ownerMachineName: ownerMachineName,
+            connectorCount: connectorCount
         )
     }
 

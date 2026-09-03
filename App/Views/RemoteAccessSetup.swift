@@ -27,6 +27,13 @@ struct RemoteAccessSetup: View {
                 token: model.token,
                 onTurnOff: { Task { await model.stopCloudflareTunnel() } }
             )
+        } else if let status = model.cloudflareStatus, status.state == .ownedElsewhere {
+            RemoteAccessOwnedElsewhere(
+                message: status.message,
+                isWorking: model.isConfiguringRemoteAccess,
+                onTakeOver: { Task { await model.takeOverCloudflareTunnel() } },
+                onTurnOffHere: { Task { await model.stopCloudflareTunnel() } }
+            )
         } else {
             RemoteAccessOffer(model: model)
         }
@@ -103,6 +110,46 @@ private struct RemoteAccessAddressField: View {
             Text("A subdomain of a domain in your Cloudflare account.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+        }
+    }
+}
+
+// MARK: - Owned by another Mac
+
+/// The config says remote access is on, but another Mac runs it. This Mac
+/// has already refused to start a connector; what remains is the choice.
+private struct RemoteAccessOwnedElsewhere: View {
+    let message: String
+    let isWorking: Bool
+    let onTakeOver: () -> Void
+    let onTurnOffHere: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Label {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Remote access runs on another Mac")
+                        .font(.headline)
+                    Text(message)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                }
+            } icon: {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+            }
+
+            HStack(spacing: 10) {
+                Button("Take Over on This Mac", action: onTakeOver)
+                    .disabled(isWorking)
+                Button("Turn Off Here", action: onTurnOffHere)
+                    .disabled(isWorking)
+                if isWorking {
+                    ProgressView().controlSize(.small)
+                }
+                Spacer()
+            }
         }
     }
 }

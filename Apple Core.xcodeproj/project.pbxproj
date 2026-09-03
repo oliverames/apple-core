@@ -34,6 +34,7 @@
 		AC0000010000000000000049 /* NumericArgument.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC0000010000000000000048 /* NumericArgument.swift */; };
 		AC000001000000000000004A /* NumericArgument.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC0000010000000000000048 /* NumericArgument.swift */; };
 		AC000001000000000000004E /* CloudflareDNSRouteVerifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC000001000000000000004C /* CloudflareDNSRouteVerifier.swift */; };
+		AC00000100000000000000E4 /* CloudflareTunnelOwnership.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC00000100000000000000E3 /* CloudflareTunnelOwnership.swift */; };
 		AC000001000000000000004F /* CloudflaredPublisherVerifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC000001000000000000004D /* CloudflaredPublisherVerifier.swift */; };
 		AC000001000000000000000D /* ServiceAccessPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC000001000000000000000E /* ServiceAccessPolicy.swift */; };
 		AC000001000000000000000F /* ServiceAccessPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC000001000000000000000E /* ServiceAccessPolicy.swift */; };
@@ -103,6 +104,7 @@
 		AC0000010000000000000047 /* ProcessShell.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ProcessShell.swift; path = App/Services/Serving/ProcessShell.swift; sourceTree = SOURCE_ROOT; };
 		AC0000010000000000000048 /* NumericArgument.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NumericArgument.swift; sourceTree = "<group>"; };
 		AC000001000000000000004C /* CloudflareDNSRouteVerifier.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = CloudflareDNSRouteVerifier.swift; path = App/Services/Serving/CloudflareDNSRouteVerifier.swift; sourceTree = SOURCE_ROOT; };
+		AC00000100000000000000E3 /* CloudflareTunnelOwnership.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = CloudflareTunnelOwnership.swift; path = App/Services/Serving/CloudflareTunnelOwnership.swift; sourceTree = SOURCE_ROOT; };
 		AC000001000000000000004D /* CloudflaredPublisherVerifier.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = CloudflaredPublisherVerifier.swift; path = App/Services/Serving/CloudflaredPublisherVerifier.swift; sourceTree = SOURCE_ROOT; };
 		AC000001000000000000000E /* ServiceAccessPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServiceAccessPolicy.swift; sourceTree = "<group>"; };
 		AC0000010000000000000012 /* AttachmentSaveDirectory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachmentSaveDirectory.swift; sourceTree = "<group>"; };
@@ -203,6 +205,7 @@
 				AC0000010000000000000047 /* ProcessShell.swift */,
 				AC000001000000000000003F /* ConnectionApprovalView.swift */,
 				AC000001000000000000004C /* CloudflareDNSRouteVerifier.swift */,
+				AC00000100000000000000E3 /* CloudflareTunnelOwnership.swift */,
 				AC000001000000000000004D /* CloudflaredPublisherVerifier.swift */,
 				AC0000010000000000000004 /* Tests */,
 				F8F44E6E2D59038D0075D79C /* Products */,
@@ -420,6 +423,7 @@
 				AC0000010000000000000046 /* ProcessShell.swift in Sources */,
 				AC000001000000000000004A /* NumericArgument.swift in Sources */,
 				AC000001000000000000004E /* CloudflareDNSRouteVerifier.swift in Sources */,
+				AC00000100000000000000E4 /* CloudflareTunnelOwnership.swift in Sources */,
 				AC000001000000000000004F /* CloudflaredPublisherVerifier.swift in Sources */,
 				AC000001000000000000000F /* ServiceAccessPolicy.swift in Sources */,
 				AC000001000000000000001A /* ServicePermissionInventory.swift in Sources */,

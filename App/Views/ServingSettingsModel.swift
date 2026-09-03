@@ -628,6 +628,23 @@ final class ServingSettingsModel: ObservableObject {
         }
     }
 
+    /// Claims a tunnel another Mac owns and starts it here. The other Mac's
+    /// connector keeps running until remote access is turned off there.
+    func takeOverCloudflareTunnel() async {
+        isConfiguringRemoteAccess = true
+        defer { isConfiguringRemoteAccess = false }
+        cloudflareSetupError = nil
+        guard save(restartServer: false) else {
+            cloudflareSetupError = configurationSaveError
+            return
+        }
+        let result = await cloudflareManager().takeOverTunnel()
+        applyCloudflareResult(result)
+        if result.status.state == .error {
+            cloudflareSetupError = result.status.message
+        }
+    }
+
     func stopCloudflareTunnel() async {
         guard save(restartServer: false) else {
             cloudflareSetupError = configurationSaveError
