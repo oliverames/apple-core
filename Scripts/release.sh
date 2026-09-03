@@ -11,6 +11,11 @@ KEYCHAIN_PROFILE="${KEYCHAIN_PROFILE:-notarytool-profile}"
 NOTARY_KEY_FILE="${NOTARY_KEY_FILE:-}"
 NOTARY_KEY_ID="${NOTARY_KEY_ID:-}"
 NOTARY_ISSUER_ID="${NOTARY_ISSUER_ID:-}"
+# Where Sparkle downloads the release zip from. GitHub releases stopped
+# carrying binaries on 2026-09-02, so the appcast must be told where the zip
+# actually lives (the assets.amesvt.com R2 bucket); the GitHub asset URL is
+# only the historical default.
+ENCLOSURE_URL="${ENCLOSURE_URL:-}"
 GITHUB_REPOSITORY="${GITHUB_REPOSITORY:-oliverames/apple-core}"
 VERSION="${VERSION:-}"
 BUILD_NUMBER="${BUILD_NUMBER:-}"
@@ -480,9 +485,9 @@ update_appcast() {
   VERSION="${VERSION#v}" BUILD_NUMBER="${build_number}" SIGNATURE="${signature}" LENGTH="${length}" \
   NOTES_HTML="${notes_html}" PUB_DATE="${pub_date}" \
   REPO_SLUG="${GITHUB_REPOSITORY}" \
-  ENCLOSURE_URL="$(printf 'https://github.com/%s/releases/download/v%s/%s' \
+  ENCLOSURE_URL="${ENCLOSURE_URL:-$(printf 'https://github.com/%s/releases/download/v%s/%s' \
     "${GITHUB_REPOSITORY}" "${VERSION#v}" \
-    "$(printf '%s-%s.zip' "${APP_NAME}" "${VERSION#v}" | tr ' ' '.')")" \
+    "$(printf '%s-%s.zip' "${APP_NAME}" "${VERSION#v}" | tr ' ' '.')")}" \
   APPCAST_OUT="appcast.next.xml" python3 - <<'PYEOF'
 import os, re, sys
 import xml.etree.ElementTree as ET
