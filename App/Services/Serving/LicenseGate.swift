@@ -22,7 +22,7 @@ import Foundation
 /// like the Sparkle EdDSA key; only this public half ships in the binary.
 public enum AppleCoreLicensePublicKey {
     /// Raw Ed25519 public key bytes, base64.
-    public static let base64 = "REPLACE_AT_RELEASE"
+    public static let base64 = "qBn20Q2xAdkaU3U/wonWVTSTrbphkWCgnDldhI6RAsk="
     public static var raw: Data { Data(base64Encoded: base64) ?? Data() }
 }
 
