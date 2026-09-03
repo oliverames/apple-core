@@ -98,7 +98,17 @@ rm /tmp/sparkle.key
 VERSION=1.0.0 Scripts/release.sh appcast   # signs dist/Apple.Core-1.0.0.zip, prepends an item to appcast.xml
 ```
 
-  The item's release notes come from `docs/release-notes/v<version>.md`, rendered to HTML by `Scripts/render_release_notes.sh`; write that file first. The enclosure URL in `appcast.xml` has historically pointed at the GitHub release asset; going forward the signed binary is distributed through Gumroad, so keep the GitHub release as source + notes only and publish the zip via the Gumroad product instead. `SURequireSignedFeed` also requires a signature over the complete appcast XML. The script adds and verifies that feed signature after every edit.
+  The item's release notes come from `docs/release-notes/v<version>.md`, rendered to HTML by `Scripts/render_release_notes.sh`; write that file first.
+
+  **Enclosure URL (since 1.7.0):** GitHub releases carry no binary, so Sparkle downloads the zip from the `ames-website-assets` R2 bucket, served at `https://assets.amesvt.com/apple-core/<zip>`. Pass `ENCLOSURE_URL` to the `appcast` step (or to `all`), upload the zip and its `.sha256` before the appcast goes live, and purge the two URLs from Cloudflare's cache if anything fetched them before the upload landed, because the edge caches the 404 for an hour and `HEAD` will lie to you by returning 200 while `GET` still serves the cached 404:
+
+```bash
+VERSION=1.7.0 BUILD_NUMBER=<n> ENCLOSURE_URL="https://assets.amesvt.com/apple-core/Apple.Core-1.7.0.zip" Scripts/release.sh all
+op run --env-file=$HOME/.claude/.env -- sh -c 'for f in dist/Apple.Core-1.7.0.zip dist/Apple.Core-1.7.0.zip.sha256; do rclone copyto --s3-no-check-bucket --s3-provider Cloudflare --s3-access-key-id "$CLOUDFLARE_R2_WEBSITE_ASSETS_ACCESS_KEY_ID" --s3-secret-access-key "$CLOUDFLARE_R2_WEBSITE_ASSETS_SECRET_ACCESS_KEY" --s3-endpoint "$CLOUDFLARE_R2_WEBSITE_ASSETS_ENDPOINT" --s3-region auto "$f" ":s3:$CLOUDFLARE_R2_WEBSITE_ASSETS_BUCKET/apple-core/$(basename "$f")"; done'
+# then GET the zip, compare its sha256 with dist/*.sha256, and compare sign_update's enclosure signature with the appcast item
+```
+
+  `--s3-no-check-bucket` matters: the scoped R2 key cannot list or create buckets, and without the flag rclone tries `CreateBucket` first and fails with `AccessDenied`. The same zip is also attached to the Gumroad product (`gumroad products update <id> --file dist/<zip>`) as the buyer deliverable. `SURequireSignedFeed` also requires a signature over the complete appcast XML. The script adds and verifies that feed signature after every edit.
 
 - **Publish the appcast** by copying the updated `appcast.xml` to the `gh-pages` branch and pushing (Pages serves that branch, matching ping-warden):
 
