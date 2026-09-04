@@ -28,6 +28,11 @@ file selection and signed-license activation on 2026-09-04. The deactivation
 confirmation and its Cancel action also passed. Repeated buyer-download,
 public-download, appcast, and release-CI checks confirmed publication.
 
+Wrap-up corrected the README's stale GitHub binary-download link and three-pane
+settings description. Live Gumroad product data, the source-only GitHub release,
+and `SettingsPane` confirmed the replacements. Existing release artifacts and
+application code remain unchanged.
+
 ## 2026-09-03 - Tunnel ownership: one Mac per Cloudflare tunnel
 
 **What changed**: The claude.ai custom connector failed authorization against `https://applecore.amesvt.com/mcp` ("Authorization with Apple Core failed", reference `ofid_e2b3c235417649b6`) even with the right token and an approved connection on home-server. The cause was the duplicate-connector failure recorded in memory as item 5: a debug run on the MacBook Pro on 2026-09-02 at 09:47 launched with the production `~/.config/apple-core/config.json`, whose `cloudflare.enabled` was still `true`, and `CloudflareManager.reconcilePersistedConfiguration()` (called from `App/App.swift:176` on every launch) dutifully re-wrote `~/Library/LaunchAgents/com.oliverames.applecore.cloudflared.plist`, re-enabled the disabled label (commit 6e31041 made `bootstrap` clear the override), and registered a second connector on tunnel `6f89c86d…`. The MacBook's `cloudflared_stderr.log` shows `dial tcp 127.0.0.1:8756: connect: connection refused` for `/mcp` at 12:56Z, the minute of the failed authorization; the Cloudflare API showed two connectors (`run_at` 2026-08-30 for home-server and 2026-09-02T13:47Z for the MacBook). home-server was serving correctly throughout and logged the approval request at 08:56 and a `GET /oauth/authorize` at 09:00 local.

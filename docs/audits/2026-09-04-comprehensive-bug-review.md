@@ -163,3 +163,16 @@ then downloaded the Gumroad and public R2 ZIPs again. Both retained the recorded
 SHA-256, and the live appcast still matched the repository copy. All confirmed
 in-scope defects are fixed, the revised activation flow is visually verified,
 and the release is published. The separate production Mac remains untouched.
+
+## Wrap-up on 2026-09-04
+
+- [x] Resume the completed release without duplicating publication or worklog entries.
+- [x] Confirm the prior final commit is pushed and its CI passed.
+- [x] Correct README download and settings-pane drift against live release metadata and source.
+- [x] Verify the documentation corrections and prepare their closeout commit.
+
+GitHub reports no binary assets for 1.7.2. The published Gumroad product at
+`https://amesconsulting.gumroad.com/l/applecore` lists `Apple.Core-1.7.2.zip`
+with 9,740,846 bytes. `SettingsPane` declares Services, Access, Clients, and
+License. These observations support the README corrections. No host
+configuration, shared plugin files, or production services were changed.
