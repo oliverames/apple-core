@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		AC00000100000000000000F4 /* LicenseGate.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC00000100000000000000F5 /* LicenseGate.swift */; };
 		AC0000010000000000000031 /* FilesystemAccess.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC0000010000000000000030 /* FilesystemAccess.swift */; };
 		AC00000100000000000000E0 /* ClientIDMetadataDocument.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC00000100000000000000E2 /* ClientIDMetadataDocument.swift */; };
 		AC00000100000000000000E1 /* ClientIDMetadataDocument.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC00000100000000000000E2 /* ClientIDMetadataDocument.swift */; };
@@ -90,6 +91,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		AC00000100000000000000F5 /* LicenseGate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = LicenseGate.swift; path = App/Services/Serving/LicenseGate.swift; sourceTree = SOURCE_ROOT; };
 		AC0000010000000000000030 /* FilesystemAccess.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilesystemAccess.swift; sourceTree = "<group>"; };
 		AC00000100000000000000E2 /* ClientIDMetadataDocument.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ClientIDMetadataDocument.swift; path = Shared/ClientIDMetadataDocument.swift; sourceTree = SOURCE_ROOT; };
 		AC0000010000000000000033 /* MessagesDatabaseReader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessagesDatabaseReader.swift; sourceTree = "<group>"; };
@@ -209,6 +211,7 @@
 				AC000001000000000000004C /* CloudflareDNSRouteVerifier.swift */,
 				AC00000100000000000000E3 /* CloudflareTunnelOwnership.swift */,
 				AC00000100000000000000E5 /* GumroadLicense.swift */,
+				AC00000100000000000000F5 /* LicenseGate.swift */,
 				AC000001000000000000004D /* CloudflaredPublisherVerifier.swift */,
 				AC0000010000000000000004 /* Tests */,
 				F8F44E6E2D59038D0075D79C /* Products */,
@@ -408,6 +411,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				AC00000100000000000000F4 /* LicenseGate.swift in Sources */,
 				AC0000010000000000000013 /* AttachmentSaveDirectory.swift in Sources */,
 				AC0000010000000000000016 /* OAuthSupport.swift in Sources */,
 				AC00000100000000000000D0 /* CloudflareAccess.swift in Sources */,

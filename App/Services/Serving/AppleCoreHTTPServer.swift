@@ -69,7 +69,7 @@ public actor AppleCoreHTTPServer {
                 clientRegistryURL: AppleCoreServingPaths.oauthClientRegistryURL(),
                 accessTokenStoreURL: AppleCoreServingPaths.oauthAccessTokenStoreURL()
             )
-        self.licenseGate = licenseGate ?? LicenseGate()
+        self.licenseGate = licenseGate ?? .shared
     }
 
     /// Set once, before `start()`, by ServerNetworkManager.

@@ -60,7 +60,7 @@ final class ServingSettingsModel: ObservableObject {
     @Published var licensePasteText: String = ""
     @Published var isActivatingLicense = false
     @Published var licenseActivationError: String?
-    private let licenseGate = LicenseGate()
+    private let licenseGate = LicenseGate.shared
 
     /// Re-reads the license file and updates the pane. Called on pane
     /// appearance; activation and deactivation also refresh.

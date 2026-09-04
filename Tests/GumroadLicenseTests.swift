@@ -50,7 +50,10 @@ struct GumroadLicenseTests {
             #"{"success": false, "message": "That license does not exist for the provided product."}"#,
             #"{"success": true, "purchase": {"refunded": true}}"#,
             #"{"success": true, "purchase": {"chargebacked": true}}"#,
+            #"{"success": true, "purchase": {"disputed": true}}"#,
             #"{"success": true, "purchase": {"subscription_ended_at": "2026-01-01T00:00:00Z"}}"#,
+            #"{"success": true, "purchase": {"subscription_cancelled_at": "2026-01-01T00:00:00Z"}}"#,
+            #"{"success": true, "purchase": {"subscription_failed_at": "2026-01-01T00:00:00Z"}}"#,
         ] {
             #expect(GumroadLicense.verifyResponse(Data(json.utf8)) == .revoked, Comment(rawValue: json))
         }
@@ -60,6 +63,17 @@ struct GumroadLicenseTests {
     func unparseableResponse() {
         #expect(GumroadLicense.verifyResponse(Data("<html>502</html>".utf8)) == nil)
         #expect(GumroadLicense.verifyResponse(Data(#"{"error": "x"}"#.utf8)) == nil)
+        for json in [
+            #"{"success": true}"#,
+            #"{"success": true, "purchase": null}"#,
+            #"{"success": true, "purchase": []}"#,
+            #"{"success": 1, "purchase": {}}"#,
+            #"{"success": "true", "purchase": {}}"#,
+            #"{"success": null}"#,
+            #"{"success": true, "purchase": {"refunded": "true"}}"#,
+        ] {
+            #expect(GumroadLicense.verifyResponse(Data(json.utf8)) == nil, Comment(rawValue: json))
+        }
     }
 
     @Test("Entitlement survives offline only inside the grace window, and asks again after a day")

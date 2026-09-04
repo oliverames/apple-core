@@ -18,6 +18,7 @@
 
 import CryptoKit
 import Foundation
+import OSLog
 
 /// The Ed25519 public key whose private half signs Apple Core licenses.
 /// The private key lives in Oliver's login Keychain and 1Password, exactly
@@ -37,47 +38,52 @@ public struct LicenseActivationError: Error, Sendable, Equatable {
 }
 
 public actor LicenseGate {
-    /// A cached, verified document plus the wall-clock moment it was
-    /// checked, so an expiry that passes while the app is running is
-    /// noticed on the next request without re-reading the file.
-    private var cached: (document: LicenseDocument, verifiedAt: Date)?
+    /// Cache signature verification, but compare the file bytes on every
+    /// request so deletion and replacement take effect without a relaunch.
+    private var cached: (document: LicenseDocument, source: Data)?
+    private static let log = Logger(subsystem: "com.oliverames.applecore", category: "license")
 
     private let licenseURL: URL
     private let gumroadRecordURL: URL
     private let verifier: GumroadLicense.Verifier
+    private let publicKey: Data
     private var reverifyInFlight = false
+    private var activationGeneration = UUID()
+    private var revokedKeys: Set<String> = []
 
     public init(
-        licenseURL: URL = AppleCoreServingPaths.licenseURL(),
+        licenseURL: URL,
         gumroadRecordURL: URL? = nil,
-        verifier: @escaping GumroadLicense.Verifier = GumroadLicense.liveVerifier
+        verifier: @escaping GumroadLicense.Verifier = GumroadLicense.liveVerifier,
+        publicKey: Data = AppleCoreLicensePublicKey.raw
     ) {
         self.licenseURL = licenseURL
         self.gumroadRecordURL =
             gumroadRecordURL
             ?? licenseURL.deletingLastPathComponent().appendingPathComponent("gumroad-license.json")
         self.verifier = verifier
+        self.publicKey = publicKey
     }
 
     /// Reads and verifies the license file. Returns nil when there is no
-    /// file or it does not verify. The result is cached until the file's
-    /// mtime changes or an expiry boundary passes.
+    /// file or it does not verify. Signature verification is cached only
+    /// while the exact file bytes and the document's validity are unchanged.
     public func validatedDocument(now: Date = Date()) -> LicenseDocument? {
-        if let cached, let expires = cached.document.expiresAt, expires < now {
-            self.cached = nil
-        } else if let cached {
+        let data = try? Data(contentsOf: licenseURL)
+        if let cached, data == cached.source, cached.document.isValid(on: now) {
             return cached.document
         }
+        cached = nil
 
-        if let data = try? Data(contentsOf: licenseURL),
+        if let data,
             let text = String(data: data, encoding: .utf8)
         {
-            switch LicenseDocumentCodec.verify(text, publicKey: AppleCoreLicensePublicKey.raw, now: now) {
+            switch LicenseDocumentCodec.verify(text, publicKey: publicKey, now: now) {
             case .success(let document):
-                cached = (document, now)
+                cached = (document, data)
                 return document
             case .failure(let error):
-                logMessage("LicenseGate: license rejected: \(error)")
+                Self.log.notice("License rejected: \(String(describing: error), privacy: .public)")
                 cached = nil
             }
         }
@@ -94,11 +100,13 @@ public actor LicenseGate {
 
     // MARK: - Gumroad keys
 
-    private func readGumroadRecord() -> GumroadLicenseRecord? {
-        guard let data = try? Data(contentsOf: gumroadRecordURL) else { return nil }
+    private func readGumroadRecord(from snapshot: Data? = nil) -> GumroadLicenseRecord? {
+        guard let data = snapshot ?? (try? Data(contentsOf: gumroadRecordURL)) else { return nil }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        return try? decoder.decode(GumroadLicenseRecord.self, from: data)
+        guard var record = try? decoder.decode(GumroadLicenseRecord.self, from: data) else { return nil }
+        if revokedKeys.contains(record.key) { record.cachedValid = false }
+        return record
     }
 
     private func writeGumroadRecord(_ record: GumroadLicenseRecord) throws {
@@ -120,7 +128,13 @@ public actor LicenseGate {
         guard let key = GumroadLicense.normalizeKey(raw), GumroadLicense.looksLikeKey(key) else {
             return .failure(LicenseActivationError("This does not look like a Gumroad license key."))
         }
-        switch await verifier(GumroadLicense.verifyRequestBody(licenseKey: key)) {
+        let generation = UUID()
+        activationGeneration = generation
+        let response = await verifier(GumroadLicense.verifyRequestBody(licenseKey: key))
+        guard activationGeneration == generation else {
+            return .failure(LicenseActivationError("The license changed while this key was being checked. Try again."))
+        }
+        switch response {
         case .failure(let error):
             return .failure(
                 LicenseActivationError(
@@ -154,8 +168,9 @@ public actor LicenseGate {
                         LicenseActivationError("Apple Core could not save the license: \(error.localizedDescription)")
                     )
                 }
+                revokedKeys.remove(key)
                 cached = nil
-                logMessage("LicenseGate: activated Gumroad key \(record.maskedKey)")
+                Self.log.notice("Activated Gumroad key \(record.maskedKey, privacy: .public)")
                 return .success(record.document)
             }
         }
@@ -171,7 +186,6 @@ public actor LicenseGate {
 
     private func scheduleReverification() {
         guard !reverifyInFlight else { return }
-        reverifyInFlight = true
         Task { await self.reverifyGumroadKey() }
     }
 
@@ -179,26 +193,46 @@ public actor LicenseGate {
     /// gate; an unreachable Gumroad changes nothing and the grace window
     /// decides.
     public func reverifyGumroadKey(now: Date = Date()) async {
+        guard !reverifyInFlight else { return }
+        reverifyInFlight = true
         defer { reverifyInFlight = false }
-        guard var record = readGumroadRecord() else { return }
+        guard let originalData = try? Data(contentsOf: gumroadRecordURL),
+            var record = readGumroadRecord(from: originalData)
+        else { return }
+        let generation = activationGeneration
         guard case .success(let data) = await verifier(GumroadLicense.verifyRequestBody(licenseKey: record.key)),
             let verdict = GumroadLicense.verifyResponse(data)
         else {
-            logMessage("LicenseGate: Gumroad unreachable; keeping cached entitlement for \(record.maskedKey)")
+            Self.log.notice(
+                "Gumroad unreachable; retaining cached entitlement for \(record.maskedKey, privacy: .public)"
+            )
             return
         }
+        // Settings and the HTTP server share this actor. Its generation
+        // rejects stale replies after an activation/deactivation, and the
+        // byte comparison also notices external edits made during the await.
+        guard activationGeneration == generation,
+            originalData == (try? Data(contentsOf: gumroadRecordURL))
+        else { return }
         switch verdict {
         case .valid(let purchase):
             record.lastVerifiedAt = now
             record.cachedValid = true
+            revokedKeys.remove(record.key)
             if let email = purchase.email { record.email = email }
             if let saleID = purchase.saleID { record.saleID = saleID }
         case .revoked:
             record.cachedValid = false
+            revokedKeys.insert(record.key)
             cached = nil
-            logMessage("LicenseGate: Gumroad reports key \(record.maskedKey) is no longer entitled")
+            Self.log.notice("Gumroad revoked key \(record.maskedKey, privacy: .public)")
         }
-        try? writeGumroadRecord(record)
+        do {
+            try writeGumroadRecord(record)
+        } catch {
+            // A failed write must not undo a revocation in this process.
+            Self.log.error("Could not persist Gumroad verification: \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     /// Called from Settings after a successful paste-in activation writes
@@ -223,12 +257,13 @@ public actor LicenseGate {
     }
 
     public func activationState(now: Date = Date()) -> ActivationState {
+        if let document = validatedDocument(now: now) { return .active(document) }
         guard let data = try? Data(contentsOf: licenseURL),
             let text = String(data: data, encoding: .utf8)
         else {
             return gumroadActivationState(now: now)
         }
-        switch LicenseDocumentCodec.verify(text, publicKey: AppleCoreLicensePublicKey.raw, now: now) {
+        switch LicenseDocumentCodec.verify(text, publicKey: publicKey, now: now) {
         case .success(let document):
             return .active(document)
         case .failure(.expired):
@@ -264,7 +299,7 @@ public actor LicenseGate {
         now: Date = Date(),
         write: (Data, URL) throws -> Void = { try $0.write(to: $1, options: .atomic) }
     ) -> Result<LicenseDocument, LicenseActivationError> {
-        switch LicenseDocumentCodec.verify(text, publicKey: AppleCoreLicensePublicKey.raw, now: now) {
+        switch LicenseDocumentCodec.verify(text, publicKey: publicKey, now: now) {
         case .success(let document):
             do {
                 try FileManager.default.createDirectory(
@@ -272,7 +307,9 @@ public actor LicenseGate {
                     withIntermediateDirectories: true
                 )
                 try write(Data(text.utf8), licenseURL)
-                cached = (document, now)
+                try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: licenseURL.path)
+                activationGeneration = UUID()
+                cached = (document, Data(text.utf8))
                 return .success(document)
             } catch {
                 return .failure(
@@ -296,6 +333,7 @@ public actor LicenseGate {
     /// not activated.
     @discardableResult
     public func deactivate() -> Bool {
+        activationGeneration = UUID()
         cached = nil
         let fm = FileManager.default
         var removed = false

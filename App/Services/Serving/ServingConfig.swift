@@ -11,6 +11,11 @@
 import Foundation
 import Security
 
+extension LicenseGate {
+    /// One actor owns activation and network verification for the app.
+    public static let shared = LicenseGate(licenseURL: AppleCoreServingPaths.licenseURL())
+}
+
 /// Per-service settings for the HTTP/SSE server, keyed by
 /// `String(describing: type(of: service))` -- the same identifier
 /// `ServiceConfig` and `ServiceRegistry` already use for local enablement.

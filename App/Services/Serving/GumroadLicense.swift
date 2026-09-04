@@ -81,32 +81,47 @@ public enum GumroadLicense {
     /// than as a verdict. A `success: false` body is authoritative: the
     /// API answered, and the key is not entitled.
     public static func verifyResponse(_ data: Data) -> Verification? {
-        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-            json["success"] != nil
-        else {
+        guard let response = try? JSONDecoder().decode(VerifyResponse.self, from: data) else {
             return nil
         }
-        guard json["success"] as? Bool == true else { return .revoked }
-        var purchase = Purchase()
-        if let object = json["purchase"] as? [String: Any] {
-            if object["refunded"] as? Bool == true || object["chargebacked"] as? Bool == true
-                || object["disputed"] as? Bool == true
-            {
-                return .revoked
-            }
-            if object["subscription_ended_at"] as? String != nil
-                || object["subscription_cancelled_at"] as? String != nil
-            {
-                return .revoked
-            }
-            purchase.email = object["email"] as? String
-            purchase.saleID = (object["sale_id"] as? String) ?? (object["id"] as? String)
-            purchase.productName = object["product_name"] as? String
-            if let created = object["sale_timestamp"] as? String ?? object["created_at"] as? String {
-                purchase.purchasedAt = parseDate(created)
-            }
+        guard response.success else { return .revoked }
+        guard let object = response.purchase else { return nil }
+        if object.refunded == true || object.chargebacked == true || object.disputed == true
+            || object.subscription_ended_at != nil || object.subscription_cancelled_at != nil
+            || object.subscription_failed_at != nil
+        {
+            return .revoked
         }
-        return .valid(purchase)
+        return .valid(
+            Purchase(
+                email: object.email,
+                saleID: object.sale_id ?? object.id,
+                purchasedAt: (object.sale_timestamp ?? object.created_at).flatMap(parseDate),
+                productName: object.product_name
+            )
+        )
+    }
+
+    /// Typed decoding rejects numeric/string "success" values and malformed
+    /// purchase fields instead of promoting an incomplete response to a license.
+    private struct VerifyResponse: Decodable {
+        let success: Bool
+        let purchase: VerifiedPurchase?
+    }
+
+    private struct VerifiedPurchase: Decodable {
+        let email: String?
+        let sale_id: String?
+        let id: String?
+        let sale_timestamp: String?
+        let created_at: String?
+        let product_name: String?
+        let refunded: Bool?
+        let chargebacked: Bool?
+        let disputed: Bool?
+        let subscription_ended_at: String?
+        let subscription_cancelled_at: String?
+        let subscription_failed_at: String?
     }
 
     private static func parseDate(_ text: String) -> Date? {
