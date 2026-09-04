@@ -3,6 +3,17 @@ import Testing
 
 @Suite("Filesystem service behaviour")
 struct FilesystemServiceTests {
+    @Test("Extreme page offsets and lookback days cannot overflow")
+    func extremeArguments() throws {
+        #expect(FilesystemContent.pageEnd(offset: Int.max, limit: 500) == Int.max)
+        #expect(FilesystemContent.pageEnd(offset: Int.max - 500, limit: 500) == Int.max)
+        #expect(FilesystemContent.pageEnd(offset: 20, limit: 50) == 70)
+        #expect(try Spotlight.lookbackSeconds(days: 7) == 604_800)
+        #expect(try Spotlight.lookbackSeconds(days: Int.max / 86_400) <= Int.max)
+        #expect(throws: FilesystemContentError.invalidLookback) {
+            try Spotlight.lookbackSeconds(days: Int.max)
+        }
+    }
 
     private static func makeSandbox() throws -> URL {
         let root = FileManager.default.temporaryDirectory

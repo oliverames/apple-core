@@ -13,9 +13,12 @@ import Foundation
 public enum FilesystemContentError: LocalizedError, Equatable {
     case spotlightUnavailable(Int)
     case tagWriteFailed(path: String, code: Int)
+    case invalidLookback
 
     public var errorDescription: String? {
         switch self {
+        case .invalidLookback:
+            return "The number of days is too large to represent as a Spotlight lookback."
         case let .spotlightUnavailable(status):
             return
                 "Spotlight could not answer that search (mdfind exited \(status)). Indexing may "
@@ -27,6 +30,12 @@ public enum FilesystemContentError: LocalizedError, Equatable {
 }
 
 public enum FilesystemContent {
+    /// Paging beyond the end must return an empty page, never overflow.
+    public static func pageEnd(offset: Int, limit: Int) -> Int {
+        let result = max(0, offset).addingReportingOverflow(max(0, limit))
+        return result.overflow ? Int.max : result.partialValue
+    }
+
     /// A byte window trimmed so it decodes as UTF-8 on its own.
     ///
     /// `byteCount` is how many bytes the returned text occupies. `consumed`
@@ -142,6 +151,12 @@ extension FilesystemContent {
 }
 
 public enum Spotlight {
+    public static func lookbackSeconds(days: Int) throws -> Int {
+        let result = max(1, days).multipliedReportingOverflow(by: 86_400)
+        guard !result.overflow else { throw FilesystemContentError.invalidLookback }
+        return result.partialValue
+    }
+
     /// Quotes a user string for the metadata query language. Arguments reach
     /// mdfind through argv rather than a shell, so this is about the query
     /// parser and not about shell injection.

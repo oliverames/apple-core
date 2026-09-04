@@ -6,6 +6,7 @@ import Ontology
 private let log = Logger.service("maps")
 
 private let defaultSearchRadius: CLLocationDistance = 5000  // Default 5km
+private let defaultPointOfInterestRadius = min(defaultSearchRadius, MKLocalPointsOfInterestRequest.maxRadius)
 private let defaultSearchLimit: Int = 10
 private let defaultMapImageSize: CGSize = CGSize(width: 1024, height: 1024)
 private let maximumMapImageDimension = 4096
@@ -48,11 +49,12 @@ final class MapsService: NSObject, Service {
                     "region": .object(
                         description: "Region to bias search results",
                         properties: [
-                            "latitude": .number(),
-                            "longitude": .number(),
+                            "latitude": .number(minimum: -90, maximum: 90),
+                            "longitude": .number(minimum: -180, maximum: 180),
                             "radius": .number(
                                 description: "Search radius in meters",
-                                default: .double(defaultSearchRadius)
+                                default: .double(defaultSearchRadius),
+                                exclusiveMinimum: 0
                             ),
                         ],
                         required: ["latitude", "longitude"],
@@ -81,17 +83,21 @@ final class MapsService: NSObject, Service {
             searchRequest.naturalLanguageQuery = query
 
             // Configure region if provided
-            if let regionArg = arguments["region"]?.objectValue,
-                let lat = regionArg["latitude"]?.doubleCoerced,
-                let lon = regionArg["longitude"]?.doubleCoerced
-            {
+            if let suppliedRegion = arguments["region"] {
+                guard let regionArg = suppliedRegion.objectValue else {
+                    throw Self.invalidGeometry("region must contain latitude and longitude.")
+                }
+                let center = try Self.coordinate(from: regionArg)
                 let radius = regionArg["radius"]?.doubleCoerced ?? defaultSearchRadius
-                let center = CLLocationCoordinate2D(latitude: lat, longitude: lon)
+                guard radius.isFinite, radius > 0 else {
+                    throw Self.invalidGeometry("radius must be a positive, finite number of meters.")
+                }
                 let region = MKCoordinateRegion(
                     center: center,
                     latitudinalMeters: radius,
                     longitudinalMeters: radius
                 )
+                try Self.validate(span: region.span)
                 searchRequest.region = region
             }
 
@@ -137,8 +143,8 @@ final class MapsService: NSObject, Service {
                     "originCoordinates": .object(
                         description: "Origin coordinates",
                         properties: [
-                            "latitude": .number(),
-                            "longitude": .number(),
+                            "latitude": .number(minimum: -90, maximum: 90),
+                            "longitude": .number(minimum: -180, maximum: 180),
                         ],
                         required: ["latitude", "longitude"],
                         additionalProperties: false
@@ -149,8 +155,8 @@ final class MapsService: NSObject, Service {
                     "destinationCoordinates": .object(
                         description: "Destination coordinates",
                         properties: [
-                            "latitude": .number(),
-                            "longitude": .number(),
+                            "latitude": .number(minimum: -90, maximum: 90),
+                            "longitude": .number(minimum: -180, maximum: 180),
                         ],
                         required: ["latitude", "longitude"],
                         additionalProperties: false
@@ -305,11 +311,13 @@ final class MapsService: NSObject, Service {
                         description: "POI category",
                         enum: MKPointOfInterestCategory.allCases.map { .string($0.stringValue) }
                     ),
-                    "latitude": .number(),
-                    "longitude": .number(),
+                    "latitude": .number(minimum: -90, maximum: 90),
+                    "longitude": .number(minimum: -180, maximum: 180),
                     "radius": .number(
                         description: "Search radius in meters",
-                        default: .double(defaultSearchRadius)
+                        default: .double(defaultPointOfInterestRadius),
+                        maximum: MKLocalPointsOfInterestRequest.maxRadius,
+                        exclusiveMinimum: 0
                     ),
                     "limit": .integer(
                         description: "Maximum results to return",
@@ -325,9 +333,7 @@ final class MapsService: NSObject, Service {
                 openWorldHint: true
             )
         ) { arguments in
-            guard let categoryString = arguments["category"]?.stringValue,
-                let latitude = arguments["latitude"]?.doubleCoerced,
-                let longitude = arguments["longitude"]?.doubleCoerced
+            guard let categoryString = arguments["category"]?.stringValue
             else {
                 throw NSError(
                     domain: "MapsServiceError",
@@ -336,7 +342,13 @@ final class MapsService: NSObject, Service {
                 )
             }
 
-            let radius = arguments["radius"]?.doubleCoerced ?? defaultSearchRadius
+            let center = try Self.coordinate(from: arguments)
+            let radius = arguments["radius"]?.doubleCoerced ?? defaultPointOfInterestRadius
+            guard radius.isFinite, radius > 0, radius <= MKLocalPointsOfInterestRequest.maxRadius else {
+                throw Self.invalidGeometry(
+                    "radius must be greater than zero and at most \(MKLocalPointsOfInterestRequest.maxRadius) meters."
+                )
+            }
             // Clamp for consistency with the other surfaces; MapKit's own
             // result ceiling bounds this in practice, but the schema makes
             // no promise and an unclamped value is a footgun.
@@ -352,7 +364,7 @@ final class MapsService: NSObject, Service {
 
             // Create search request
             let request = MKLocalPointsOfInterestRequest(
-                center: CLLocationCoordinate2D(latitude: latitude, longitude: longitude),
+                center: center,
                 radius: radius
             )
             request.pointOfInterestFilter = MKPointOfInterestFilter(including: [category])
@@ -393,10 +405,10 @@ final class MapsService: NSObject, Service {
             description: "Calculate estimated travel time between two locations",
             inputSchema: .object(
                 properties: [
-                    "originLatitude": .number(),
-                    "originLongitude": .number(),
-                    "destinationLatitude": .number(),
-                    "destinationLongitude": .number(),
+                    "originLatitude": .number(minimum: -90, maximum: 90),
+                    "originLongitude": .number(minimum: -180, maximum: 180),
+                    "destinationLatitude": .number(minimum: -90, maximum: 90),
+                    "destinationLongitude": .number(minimum: -180, maximum: 180),
                     "transportType": .string(
                         description: "Transport type",
                         default: "automobile",
@@ -429,12 +441,14 @@ final class MapsService: NSObject, Service {
                 )
             }
 
+            let origin = try Self.coordinate(latitude: originLat, longitude: originLng)
+            let destination = try Self.coordinate(latitude: destLat, longitude: destLng)
             // Create origin and destination placemarks
             let originPlacemark = MKPlacemark(
-                coordinate: CLLocationCoordinate2D(latitude: originLat, longitude: originLng)
+                coordinate: origin
             )
             let destPlacemark = MKPlacemark(
-                coordinate: CLLocationCoordinate2D(latitude: destLat, longitude: destLng)
+                coordinate: destination
             )
 
             // Create map items from placemarks
@@ -495,13 +509,17 @@ final class MapsService: NSObject, Service {
             description: "Generate a static map image for given coordinates and parameters",
             inputSchema: .object(
                 properties: [
-                    "latitude": .number(),
-                    "longitude": .number(),
+                    "latitude": .number(minimum: -90, maximum: 90),
+                    "longitude": .number(minimum: -180, maximum: 180),
                     "latitudeDelta": .number(
-                        description: "Latitude degrees visible on map"
+                        description: "Latitude degrees visible on map",
+                        minimum: 0,
+                        maximum: 180
                     ),
                     "longitudeDelta": .number(
-                        description: "Longitude degrees visible on map"
+                        description: "Longitude degrees visible on map",
+                        minimum: 0,
+                        maximum: 360
                     ),
                     "width": .integer(
                         description: "Image width in pixels",
@@ -584,11 +602,12 @@ final class MapsService: NSObject, Service {
 
             let options = MKMapSnapshotter.Options()
 
-            let center = CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
+            let center = try Self.coordinate(latitude: latitude, longitude: longitude)
             let span = MKCoordinateSpan(
                 latitudeDelta: latitudeDelta,
                 longitudeDelta: longitudeDelta
             )
+            try Self.validate(span: span)
             options.region = MKCoordinateRegion(center: center, span: span)
 
             switch mapTypeString {
@@ -687,6 +706,29 @@ final class MapsService: NSObject, Service {
 
     // MARK: - Helper methods
 
+    private static func invalidGeometry(_ message: String) -> NSError {
+        NSError(domain: "MapsServiceError", code: 16, userInfo: [NSLocalizedDescriptionKey: message])
+    }
+
+    private static func coordinate(from arguments: [String: Value]) throws -> CLLocationCoordinate2D {
+        guard let latitude = arguments["latitude"]?.doubleCoerced,
+            let longitude = arguments["longitude"]?.doubleCoerced
+        else { throw invalidGeometry("Latitude and longitude are required.") }
+        return try coordinate(latitude: latitude, longitude: longitude)
+    }
+
+    private static func coordinate(latitude: Double, longitude: Double) throws -> CLLocationCoordinate2D {
+        guard NumericArgument.validatedDouble(latitude, in: -90 ... 90) != nil,
+            NumericArgument.validatedDouble(longitude, in: -180 ... 180) != nil
+        else { throw invalidGeometry("Latitude must be -90 through 90 and longitude -180 through 180.") }
+        return CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
+    }
+
+    private static func validate(span: MKCoordinateSpan) throws {
+        guard NumericArgument.isValidMapSpan(latitude: span.latitudeDelta, longitude: span.longitudeDelta)
+        else { throw invalidGeometry("Latitude span must be 0 through 180 and longitude span 0 through 360.") }
+    }
+
     private func getMapItem(address: String?, coordinates: [String: Value]?) async throws
         -> MKMapItem
     {
@@ -716,7 +758,7 @@ final class MapsService: NSObject, Service {
 
             // Create placemark and map item from coordinates
             let placemark = MKPlacemark(
-                coordinate: CLLocationCoordinate2D(latitude: lat, longitude: lng)
+                coordinate: try Self.coordinate(latitude: lat, longitude: lng)
             )
             return MKMapItem(placemark: placemark)
         } else {

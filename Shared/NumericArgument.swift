@@ -30,4 +30,8 @@ enum NumericArgument {
     static func uint32(_ value: Int) -> UInt32? {
         UInt32(exactly: value)
     }
+
+    static func isValidMapSpan(latitude: Double, longitude: Double) -> Bool {
+        validatedDouble(latitude, in: 0 ... 180) != nil && validatedDouble(longitude, in: 0 ... 360) != nil
+    }
 }

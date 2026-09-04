@@ -2,6 +2,14 @@ import Testing
 
 @Suite("Numeric MCP arguments")
 struct NumericArgumentTests {
+    @Test("Map spans reject values that raise MapKit exceptions")
+    func mapSpans() {
+        #expect(NumericArgument.isValidMapSpan(latitude: 0, longitude: 0))
+        #expect(NumericArgument.isValidMapSpan(latitude: 180, longitude: 360))
+        for (latitude, longitude) in [(-1.0, 1.0), (181, 1), (1, 361), (Double.nan, 1), (1, .infinity)] {
+            #expect(!NumericArgument.isValidMapSpan(latitude: latitude, longitude: longitude))
+        }
+    }
     @Test("Extreme floating-point values clamp before integer conversion")
     func extremeDoublesClampSafely() {
         #expect(NumericArgument.clampedInt(1e300, to: 1 ... 10) == 10)

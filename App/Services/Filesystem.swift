@@ -354,7 +354,7 @@ final class FilesystemService: Service {
             // paying for the entire traversal every call, so report the
             // continuation rather than a count that would be a lie.
             var found: [URL] = []
-            let ceiling = offset + limit
+            let ceiling = FilesystemContent.pageEnd(offset: offset, limit: limit)
             // Was unconditionally `.skipsHiddenFiles`, while filesystem_list
             // had no such option. A dotfile was therefore listable but could
             // never be found by name. The two now agree, and both default to
@@ -797,7 +797,7 @@ final class FilesystemService: Service {
             )
             let days = max(1, arguments["days"]?.intValue ?? 7)
             let limit = clampedPageSize(arguments["limit"]?.intValue)
-            let seconds = days * 24 * 60 * 60
+            let seconds = try Spotlight.lookbackSeconds(days: days)
             let expression = "kMDItemContentModificationDate >= $time.now(-\(seconds))"
             let hits = try Spotlight.run(arguments: ["-onlyin", url.path, expression])
 

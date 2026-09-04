@@ -331,8 +331,8 @@ final class LocationService: NSObject, Service, CLLocationManagerDelegate {
             description: "Convert geographic coordinates to an address",
             inputSchema: .object(
                 properties: [
-                    "latitude": .number(),
-                    "longitude": .number(),
+                    "latitude": .number(minimum: -90, maximum: 90),
+                    "longitude": .number(minimum: -180, maximum: 180),
                 ],
                 required: ["latitude", "longitude"]
             ),
@@ -343,7 +343,9 @@ final class LocationService: NSObject, Service, CLLocationManagerDelegate {
             )
         ) { arguments in
             guard let latitude = arguments["latitude"]?.doubleCoerced,
-                let longitude = arguments["longitude"]?.doubleCoerced
+                let longitude = arguments["longitude"]?.doubleCoerced,
+                NumericArgument.validatedDouble(latitude, in: -90 ... 90) != nil,
+                NumericArgument.validatedDouble(longitude, in: -180 ... 180) != nil
             else {
                 log.error("Invalid coordinates")
                 throw NSError(
