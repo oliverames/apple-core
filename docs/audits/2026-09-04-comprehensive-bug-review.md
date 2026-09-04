@@ -112,8 +112,11 @@ The preliminary R2 package was replaced and reverified before feed publication.
 The revised Debug build passes all 191 tests in 28 suites, formatting, and static
 analysis. Rendered checks confirm the compact form, purchase link, collapsed
 details, keyboard submission, and key-specific error feedback. The native file
-picker opens, but automation timed out in its path-navigation sheet. End-to-end
-picker selection is not claimed. Direct source tests prove import bounds,
+picker initially opened, but automation timed out in its path-navigation sheet.
+A fresh isolated launch of the published app completed native file selection
+and activation on 2026-09-04. The rendered activated state matched
+the imported signed fixture. The deactivation confirmation appeared, and Cancel
+preserved activation. Direct source tests also prove import bounds,
 CRLF normalization, successful signature verification, and rejection of invalid
 signatures and unrelated files.
 
@@ -152,5 +155,11 @@ Final publication checks on 2026-09-04:
 
 The activation UI uses native controls and a width-limited form, following the
 macOS SwiftUI skill. The humanizer pass kept the release notes focused on the
-verified changes. A clean second Mac, Apple-account writes, real purchases,
-and end-to-end native file-picker selection remain outside verified coverage.
+verified changes. A clean second Mac, Apple-account writes, and real purchases
+remain outside verified coverage.
+
+The completion audit rechecked the published release and successful release CI,
+then downloaded the Gumroad and public R2 ZIPs again. Both retained the recorded
+SHA-256, and the live appcast still matched the repository copy. All confirmed
+in-scope defects are fixed, the revised activation flow is visually verified,
+and the release is published. The separate production Mac remains untouched.

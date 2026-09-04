@@ -23,7 +23,10 @@ Gumroad requires an explicit `--file-name` for reliable upload naming. The buyer
 page retains the EULA and license-key block and displays only the new ZIP.
 No production Mac was changed directly. SSH authentication to the separate
 server failed at the local credential agent. Native file-picker automation
-timed out, so its complete selection flow is not claimed as verified.
+initially timed out, but a fresh isolated launch of the published app completed
+file selection and signed-license activation on 2026-09-04. The deactivation
+confirmation and its Cancel action also passed. Repeated buyer-download,
+public-download, appcast, and release-CI checks confirmed publication.
 
 ## 2026-09-03 - Tunnel ownership: one Mac per Cloudflare tunnel
 
