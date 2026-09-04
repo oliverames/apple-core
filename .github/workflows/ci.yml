@@ -64,7 +64,7 @@ jobs:
             # Apple containers and are run manually, never in CI.
 
     secrets:
-        name: Scan full history for secrets
+        name: Scan changed commits for secrets
         runs-on: ubuntu-latest
         timeout-minutes: 10
         steps:

@@ -1,0 +1,14 @@
+title = "Apple Core secret scan"
+
+[extend]
+useDefault = true
+
+# Historical test fixtures and Swift type declarations, never real keys.
+# This syntax also works with the Gitleaks version used by the CI action.
+[allowlist]
+description = "Exact license test fixture and typed signing-key parameters"
+regexTarget = "line"
+regexes = [
+  '''key: "6F0E4C97-B72A4E69-A11BF6C4-AF6517E7"''',
+  '''signingKey: Curve25519\.Signing\.PrivateKey''',
+]

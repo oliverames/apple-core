@@ -2,7 +2,7 @@
 
 Apple Core uses two separate automation paths, mirrored from `bridgeport`:
 
-- **CI** (`.github/workflows/ci.yml`) runs on `main`, pull requests, manual dispatch, and as a reusable release gate. It lints (`swift format`), builds, and runs unit tests via `xcodebuild` on the GitHub-hosted `macos-26` image, and scans full Git history with Gitleaks. Runtime Apple-account write tests require named disposable containers and run manually, not in CI.
+- **CI** (`.github/workflows/ci.yml`) runs on `main`, pull requests, manual dispatch, and as a reusable release gate. It lints (`swift format`), builds, and runs unit tests via `xcodebuild` on the GitHub-hosted `macos-26` image. Gitleaks scans the commit range selected by the event; the local preflight below scans full history. Runtime Apple-account write tests require named disposable containers and run manually, not in CI.
 - **Release** (`.github/workflows/release.yml`) runs for `v*` tags or manual dispatch. It calls the CI workflow first, then creates the GitHub release. Developer ID signing and notarization happen locally because those credentials are held in 1Password and the local keychain, never in CI.
 
 The runtime write harness is `Scripts/integration_test.py`. Its default mode only performs authenticated enumeration. `--writes` requires the exact `APPLE_CORE_INTEGRATION_ACK=I_AM_USING_DISPOSABLE_ACCOUNTS` acknowledgement. Calendar, Reminders, Notes, and Mail mailbox mutations run only when their corresponding `APPLE_CORE_TEST_*` disposable-container variable is set, and the harness cleans up every fixture it creates.
