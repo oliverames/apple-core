@@ -9,8 +9,8 @@ Date: 2026-09-04. Author: Oliver Ames.
 - [x] Verify the baseline checks and retained test report.
 - [x] Challenge suspected defects and implement verified fixes.
 - [x] Verify the requested activation-screen revision and repeat final checks.
-- [ ] **In progress:** prepare version 1.7.2, build 26, and release artifacts.
-- [ ] Publish and verify GitHub, Gumroad, R2, and the signed Sparkle feed.
+- [x] Prepare version 1.7.2, build 26, and release artifacts.
+- [ ] **In progress:** publish and verify GitHub, Gumroad, R2, and the signed Sparkle feed.
 
 ## Starting evidence
 
@@ -117,6 +117,14 @@ picker selection is not claimed. Direct source tests prove import bounds,
 CRLF normalization, successful signature verification, and rejection of invalid
 signatures and unrelated files.
 
-Version 1.7.2/build 26 is the release target. Signing, notarization, artifact
-publication, buyer content, and the public update feed will be recorded here
-after verification.
+The final 1.7.2/build 26 package includes the activation-screen revision.
+Developer ID signature validation, Gatekeeper acceptance, and stapled-ticket
+validation pass. Apple accepted notarization submission
+`0d2453d6-8a0e-4b49-9279-4ee6368a5417` on 2026-09-04.
+The ZIP SHA-256 is
+`9eb56524663237c889f55153fb70d9ba7e2e455d8f1c09a8e217388ac1576b47`.
+The archive and complete appcast signatures verify with the existing signing key.
+
+[CI for the final source](https://github.com/oliverames/apple-core/actions/runs/33915385784)
+passed on Xcode 26.0. The tag workflow repeats those checks before creating the
+source-only GitHub release. Distribution verification follows publication.
