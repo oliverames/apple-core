@@ -8,6 +8,8 @@
 
 /* Begin PBXBuildFile section */
 		AC00000100000000000000F4 /* LicenseGate.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC00000100000000000000F5 /* LicenseGate.swift */; };
+		AC00000100000000000000F6 /* ProcessCompletion.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC00000100000000000000F8 /* ProcessCompletion.swift */; };
+		AC00000100000000000000F7 /* ProcessCompletion.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC00000100000000000000F8 /* ProcessCompletion.swift */; };
 		AC0000010000000000000031 /* FilesystemAccess.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC0000010000000000000030 /* FilesystemAccess.swift */; };
 		AC00000100000000000000E0 /* ClientIDMetadataDocument.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC00000100000000000000E2 /* ClientIDMetadataDocument.swift */; };
 		AC00000100000000000000E1 /* ClientIDMetadataDocument.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC00000100000000000000E2 /* ClientIDMetadataDocument.swift */; };
@@ -92,6 +94,7 @@
 
 /* Begin PBXFileReference section */
 		AC00000100000000000000F5 /* LicenseGate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = LicenseGate.swift; path = App/Services/Serving/LicenseGate.swift; sourceTree = SOURCE_ROOT; };
+		AC00000100000000000000F8 /* ProcessCompletion.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProcessCompletion.swift; sourceTree = "<group>"; };
 		AC0000010000000000000030 /* FilesystemAccess.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilesystemAccess.swift; sourceTree = "<group>"; };
 		AC00000100000000000000E2 /* ClientIDMetadataDocument.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ClientIDMetadataDocument.swift; path = Shared/ClientIDMetadataDocument.swift; sourceTree = SOURCE_ROOT; };
 		AC0000010000000000000033 /* MessagesDatabaseReader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessagesDatabaseReader.swift; sourceTree = "<group>"; };
@@ -233,6 +236,7 @@
 				AC000001000000000000003C /* SensitiveTextSanitizer.swift */,
 				AC0000010000000000000041 /* MessagesParticipantMatcher.swift */,
 				AC0000010000000000000048 /* NumericArgument.swift */,
+				AC00000100000000000000F8 /* ProcessCompletion.swift */,
 				AC000001000000000000000E /* ServiceAccessPolicy.swift */,
 				AC0000010000000000000018 /* ServicePermissionInventory.swift */,
 				AC00000100000000000F1 /* LicenseDocument.swift */,
@@ -412,6 +416,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				AC00000100000000000000F4 /* LicenseGate.swift in Sources */,
+				AC00000100000000000000F6 /* ProcessCompletion.swift in Sources */,
 				AC0000010000000000000013 /* AttachmentSaveDirectory.swift in Sources */,
 				AC0000010000000000000016 /* OAuthSupport.swift in Sources */,
 				AC00000100000000000000D0 /* CloudflareAccess.swift in Sources */,
@@ -444,6 +449,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				AC0000010000000000000011 /* AttachmentSaveDirectory.swift in Sources */,
+				AC00000100000000000000F7 /* ProcessCompletion.swift in Sources */,
 				AC0000010000000000000032 /* FilesystemAccess.swift in Sources */,
 				AC00000100000000000000E1 /* ClientIDMetadataDocument.swift in Sources */,
 				AC0000010000000000000035 /* MessagesDatabaseReader.swift in Sources */,

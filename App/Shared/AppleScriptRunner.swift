@@ -144,19 +144,8 @@ actor AppleScriptRunner {
         }
 
         do {
-            try await withThrowingTaskGroup(of: Void.self) { group in
-                group.addTask {
-                    await process.waitUntilTermination()
-                }
-
-                group.addTask {
-                    try await Task.sleep(for: .seconds(timeout))
-                    process.terminate()
-                    throw RunnerError.timeout(seconds: timeout)
-                }
-
-                _ = try await group.next()
-                group.cancelAll()
+            if try await !ProcessCompletion.wait(for: process, timeout: .seconds(timeout)) {
+                throw RunnerError.timeout(seconds: timeout)
             }
         } catch {
             if process.isRunning {
@@ -229,18 +218,6 @@ actor AppleScriptRunner {
             stderr: stderr.trimmingCharacters(in: .whitespacesAndNewlines),
             exitCode: exitCode
         )
-    }
-}
-
-extension Process {
-    /// Awaits process termination via the termination handler, mirroring
-    /// the pattern in `ShortcutsService.runProcess`.
-    fileprivate func waitUntilTermination() async {
-        await withCheckedContinuation { continuation in
-            self.terminationHandler = { _ in
-                continuation.resume()
-            }
-        }
     }
 }
 

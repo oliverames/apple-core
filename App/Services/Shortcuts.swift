@@ -183,18 +183,8 @@ final class ShortcutsService: Service {
         }
 
         do {
-            try await withThrowingTaskGroup(of: Void.self) { group in
-                group.addTask {
-                    await process.waitUntilTermination()
-                }
-
-                group.addTask {
-                    try await Task.sleep(for: Self.captureTimeout)
-                    process.terminate()
-                    throw ShortcutsError.commandFailed(what, "timed out")
-                }
-                _ = try await group.next()
-                group.cancelAll()
+            if try await !ProcessCompletion.wait(for: process, timeout: Self.captureTimeout) {
+                throw ShortcutsError.commandFailed(what, "timed out")
             }
         } catch {
             if process.isRunning {
@@ -317,24 +307,7 @@ final class ShortcutsService: Service {
         }
 
         do {
-            let exitedBeforeTimeout = try await withThrowingTaskGroup(of: Bool.self) { group in
-                group.addTask {
-                    await process.waitUntilTermination()
-                    return true
-                }
-
-                group.addTask {
-                    try await Task.sleep(for: self.executionTimeout)
-                    return false
-                }
-
-                let exited = try await group.next() ?? false
-                if !exited, process.isRunning {
-                    process.terminate()
-                }
-                group.cancelAll()
-                return exited
-            }
+            let exitedBeforeTimeout = try await ProcessCompletion.wait(for: process, timeout: self.executionTimeout)
             if !exitedBeforeTimeout {
                 throw ShortcutsError.timedOut(name)
             }
@@ -408,18 +381,6 @@ enum ShortcutsError: LocalizedError {
                 ? "The shortcut \(name) failed." : "The shortcut \(name) failed: \(message)"
         case let .timedOut(name):
             return "The shortcut \(name) did not finish within five minutes."
-        }
-    }
-}
-
-extension Process {
-    /// Awaits process termination via the termination handler, mirroring
-    /// the pattern in AppleScriptRunner.
-    fileprivate func waitUntilTermination() async {
-        await withCheckedContinuation { continuation in
-            self.terminationHandler = { _ in
-                continuation.resume()
-            }
         }
     }
 }
