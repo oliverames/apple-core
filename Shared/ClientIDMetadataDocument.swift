@@ -127,6 +127,20 @@ public struct ClientIDMetadataURL: Sendable, Equatable {
 
 /// A client metadata document that has been fetched and checked.
 public struct ClientIDMetadata: Sendable, Equatable {
+    /// Enforce the limit while consuming the body, before untrusted bytes
+    /// can accumulate in memory. Reading one extra byte detects overflow.
+    static func boundedBody<Bytes: AsyncSequence>(from bytes: Bytes, limit: Int = 5 * 1024) async throws -> Data
+    where Bytes.Element == UInt8 {
+        var data = Data()
+        for try await byte in bytes {
+            guard data.count < limit else {
+                throw ClientIDMetadataError.documentTooLarge(bytes: data.count + 1, limit: limit)
+            }
+            data.append(byte)
+        }
+        return data
+    }
+
     public let clientID: String
     public let clientName: String
     public let redirectURIs: [String]
@@ -201,16 +215,16 @@ public enum ClientIDMetadataRedirect {
     /// not.
     public static func matches(requested: String, registered: [String]) -> Bool {
         if registered.contains(requested) { return true }
-        guard let wanted = URLComponents(string: requested), isLoopback(wanted) else {
+        guard var wanted = URLComponents(string: requested), isLoopback(wanted) else {
             return false
         }
+        wanted.port = nil
         return registered.contains { candidate in
-            guard let known = URLComponents(string: candidate), isLoopback(known) else {
+            guard var known = URLComponents(string: candidate), isLoopback(known) else {
                 return false
             }
-            return known.scheme?.lowercased() == wanted.scheme?.lowercased()
-                && known.host?.lowercased() == wanted.host?.lowercased()
-                && known.path == wanted.path
+            known.port = nil
+            return known.string == wanted.string
         }
     }
 

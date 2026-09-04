@@ -181,9 +181,12 @@ public struct OAuthTokenPair: Sendable, Equatable {
 
 public enum OAuthTokenStoreError: LocalizedError, Equatable, Sendable {
     case persistenceFailed(String)
+    case clientCapacityReached
 
     public var errorDescription: String? {
         switch self {
+        case .clientCapacityReached:
+            return "The OAuth client registry is full. Disconnect an unused client before adding another."
         case let .persistenceFailed(detail):
             return "Apple Core could not save the OAuth client state: \(detail)"
         }
@@ -302,8 +305,8 @@ public actor OAuthTokenStore {
             issuedAt: Int(now.timeIntervalSince1970)
         )
         clients[client.clientID] = client
-        pruneClientsIfNeeded()
         do {
+            try pruneClientsIfNeeded(keeping: client.clientID, now: now)
             try persistClients()
         } catch {
             clients = previousClients
@@ -362,6 +365,7 @@ public actor OAuthTokenStore {
         let previous = clients
         clients[metadata.clientID] = client
         do {
+            try pruneClientsIfNeeded(keeping: client.clientID, now: now)
             try persistClients()
         } catch {
             clients = previous
@@ -395,8 +399,8 @@ public actor OAuthTokenStore {
             issuedAt: Int(now.timeIntervalSince1970)
         )
         clients[clientID] = client
-        pruneClientsIfNeeded()
         do {
+            try pruneClientsIfNeeded(keeping: client.clientID, now: now)
             try persistClients()
         } catch {
             clients = previousClients
@@ -413,7 +417,12 @@ public actor OAuthTokenStore {
         now: Date = Date()
     ) -> String? {
         cleanup(now: now)
-        guard let client = clients[clientID], client.redirectURIs.contains(redirectURI) else {
+        guard let client = clients[clientID] else { return nil }
+        let redirectMatches =
+            ClientIDMetadataURL.looksLikeClientIDMetadataURL(clientID)
+            ? ClientIDMetadataRedirect.matches(requested: redirectURI, registered: client.redirectURIs)
+            : client.redirectURIs.contains(redirectURI)
+        guard redirectMatches else {
             return nil
         }
 
@@ -658,10 +667,18 @@ public actor OAuthTokenStore {
         refreshTokens = refreshTokens.filter { $0.value.grantID != grantID }
     }
 
-    private func pruneClientsIfNeeded() {
+    private func pruneClientsIfNeeded(keeping clientID: String, now: Date) throws {
         guard clients.count > Self.maxPersistedClients else { return }
-        let oldestFirst = clients.values.sorted { $0.issuedAt < $1.issuedAt }
-        for stale in oldestFirst.prefix(clients.count - Self.maxPersistedClients) {
+        var protectedIDs = signedInClientIDs(now: now)
+        protectedIDs.insert(clientID)
+        for code in authorizationCodes.values where code.expiresAt > now {
+            protectedIDs.insert(code.clientID)
+        }
+        let candidates = clients.values.filter { !protectedIDs.contains($0.clientID) }
+            .sorted { $0.issuedAt < $1.issuedAt }
+        let countToRemove = clients.count - Self.maxPersistedClients
+        guard candidates.count >= countToRemove else { throw OAuthTokenStoreError.clientCapacityReached }
+        for stale in candidates.prefix(countToRemove) {
             clients.removeValue(forKey: stale.clientID)
         }
     }

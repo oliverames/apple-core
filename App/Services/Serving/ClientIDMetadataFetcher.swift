@@ -23,11 +23,10 @@ private let log = Logger.service("cimd")
 actor ClientIDMetadataFetcher {
     static let shared = ClientIDMetadataFetcher()
 
-    /// Section 8.2 recommends reading no more than 5KB.
-    private static let maximumBytes = 5 * 1024
     /// Bounds on how long a document is reused, whatever the origin asks for.
     private static let minimumCacheSeconds: TimeInterval = 60
     private static let maximumCacheSeconds: TimeInterval = 24 * 60 * 60
+    private static let maximumCacheEntries = 256
 
     private struct CacheEntry {
         let metadata: ClientIDMetadata
@@ -61,6 +60,7 @@ actor ClientIDMetadataFetcher {
     func metadata(for identifier: ClientIDMetadataURL, now: Date = Date()) async throws
         -> ClientIDMetadata
     {
+        cache = cache.filter { $0.value.expiresAt > now }
         if let cached = cache[identifier.value], cached.expiresAt > now {
             return cached.metadata
         }
@@ -75,7 +75,8 @@ actor ClientIDMetadataFetcher {
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.cachePolicy = .reloadIgnoringLocalCacheData
 
-        let (data, response) = try await session.data(for: request)
+        let (bytes, response) = try await session.bytes(for: request)
+        defer { bytes.task.cancel() }
         guard let http = response as? HTTPURLResponse else {
             throw ClientIDMetadataError.unexpectedStatus(0)
         }
@@ -89,18 +90,18 @@ actor ClientIDMetadataFetcher {
         guard http.statusCode == 200 else {
             throw ClientIDMetadataError.unexpectedStatus(http.statusCode)
         }
-        guard data.count <= Self.maximumBytes else {
-            throw ClientIDMetadataError.documentTooLarge(
-                bytes: data.count,
-                limit: Self.maximumBytes
-            )
-        }
+        let data = try await ClientIDMetadata.boundedBody(from: bytes)
 
         let metadata = try ClientIDMetadata.validated(
             data: data,
             fetchedFrom: identifier,
             redirectURIIsAcceptable: OAuthSupport.isAllowedRedirectURI
         )
+        if cache[identifier.value] == nil, cache.count >= Self.maximumCacheEntries,
+            let oldest = cache.min(by: { $0.value.expiresAt < $1.value.expiresAt })?.key
+        {
+            cache.removeValue(forKey: oldest)
+        }
         cache[identifier.value] = CacheEntry(
             metadata: metadata,
             expiresAt: now.addingTimeInterval(cacheLifetime(from: http))
