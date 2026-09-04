@@ -10,7 +10,7 @@ Date: 2026-09-04. Author: Oliver Ames.
 - [x] Challenge suspected defects and implement verified fixes.
 - [x] Verify the requested activation-screen revision and repeat final checks.
 - [x] Prepare version 1.7.2, build 26, and release artifacts.
-- [ ] **In progress:** publish and verify GitHub, Gumroad, R2, and the signed Sparkle feed.
+- [x] Publish and verify GitHub, Gumroad, R2, and the signed Sparkle feed.
 
 ## Starting evidence
 
@@ -107,7 +107,7 @@ Publication paused before the GitHub release, buyer-content update, or update
 feed changed. The revised pane separates key entry from bounded file import,
 adds the verified purchase URL, collapses verification details, and confirms
 deactivation. Its file-import boundary test brings the suite to 191 tests.
-The preliminary R2 package will be replaced and reverified before publication.
+The preliminary R2 package was replaced and reverified before feed publication.
 
 The revised Debug build passes all 191 tests in 28 suites, formatting, and static
 analysis. Rendered checks confirm the compact form, purchase link, collapsed
@@ -126,5 +126,31 @@ The ZIP SHA-256 is
 The archive and complete appcast signatures verify with the existing signing key.
 
 [CI for the final source](https://github.com/oliverames/apple-core/actions/runs/33915385784)
-passed on Xcode 26.0. The tag workflow repeats those checks before creating the
-source-only GitHub release. Distribution verification follows publication.
+passed on Xcode 26.0. The tag workflow repeated those checks before creating the
+source-only GitHub release. Distribution checks are recorded below.
+
+Final publication checks on 2026-09-04:
+
+- [Apple Core 1.7.2](https://github.com/oliverames/apple-core/releases/tag/v1.7.2)
+  is published from tag `v1.7.2` at `41733ea`. The GitHub release contains source
+  and notes, with no binary assets, as required by the distribution policy.
+- [The release workflow](https://github.com/oliverames/apple-core/actions/runs/33915918042)
+  passed its build, tests, secret scan, and publication jobs.
+- The public R2 ZIP and checksum are byte-identical to the final local artifacts.
+  The downloaded ZIP passes Sparkle verification, Developer ID validation,
+  Gatekeeper assessment, and stapled-ticket validation. Its bundle reports
+  1.7.2/build 26.
+- Gumroad's buyer ZIP is named `Apple.Core-1.7.2.zip`, contains 9,740,846 bytes,
+  and downloads with the same SHA-256. The buyer page contains exactly the EULA,
+  new ZIP, and license-key block. Older uploads and the first unnamed upload
+  remain in the file store but are not embedded or visible to buyers.
+- The deployed appcast is byte-identical to the signed repository copy, and
+  its complete-feed signature verifies. Pages deployed commit `ab874fa`.
+- The downloaded release itself launched in the isolated profile and passed
+  enumeration of 128 tools, all six invalid-input checks, extreme pagination,
+  immediate license removal (HTTP 402), and restoration without relaunch.
+
+The activation UI uses native controls and a width-limited form, following the
+macOS SwiftUI skill. The humanizer pass kept the release notes focused on the
+verified changes. A clean second Mac, Apple-account writes, real purchases,
+and end-to-end native file-picker selection remain outside verified coverage.

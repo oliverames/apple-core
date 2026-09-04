@@ -108,7 +108,7 @@ op run --env-file=$HOME/.claude/.env -- sh -c 'for f in dist/Apple.Core-1.7.0.zi
 # then GET the zip, compare its sha256 with dist/*.sha256, and compare sign_update's enclosure signature with the appcast item
 ```
 
-  `--s3-no-check-bucket` matters: the scoped R2 key cannot list or create buckets, and without the flag rclone tries `CreateBucket` first and fails with `AccessDenied`. The same zip is also attached to the Gumroad product (`gumroad products update <id> --file dist/<zip>`) as the buyer deliverable. `SURequireSignedFeed` also requires a signature over the complete appcast XML. The script adds and verifies that feed signature after every edit.
+  `--s3-no-check-bucket` matters: the scoped R2 key cannot list or create buckets, and without the flag rclone tries `CreateBucket` first and fails with `AccessDenied`. The same zip is also attached to the Gumroad product (`gumroad products update <id> --file dist/<zip> --file-name <zip>`) as the buyer deliverable. Pass the filename explicitly: omission produced an unnamed file entry during the 1.7.2 release. Verify the uploaded name, size, and downloaded checksum. Use `gumroad products content get`, then `content set --page <page-id> --dry-run`, to replace the old visible download while preserving the EULA, license-key block, and any other buyer content. Removing an old embed does not delete its uploaded file. `SURequireSignedFeed` also requires a signature over the complete appcast XML. The script adds and verifies that feed signature after every edit.
 
 - **Publish the appcast** by copying the updated `appcast.xml` to the `gh-pages` branch and pushing (Pages serves that branch, matching ping-warden):
 

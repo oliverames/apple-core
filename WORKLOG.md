@@ -1,5 +1,30 @@
 # Apple Core worklog
 
+## 2026-09-04 - Bug review, activation UI, and release 1.7.2
+
+Reviewed the app, CLI, shared helpers, tests, and distribution workflow with
+independent read-only reviewers. Fixed nine runtime defect groups covering
+license persistence and concurrency, Gumroad responses, numeric inputs,
+OAuth callbacks and client retention, metadata limits, and subprocess cleanup.
+The full findings, rejected candidates, and coverage limits are in
+`docs/audits/2026-09-04-comprehensive-bug-review.md`.
+
+The activation pane now has a compact key field, purchase link, bounded file
+import, optional verification details, and deactivation confirmation. All
+191 tests pass, as do static analysis, formatting, secret scanning, and CI.
+
+Released 1.7.2/build 26 at `41733ea`. Apple accepted notarization
+`0d2453d6-8a0e-4b49-9279-4ee6368a5417`. R2 and Gumroad downloads match SHA-256
+`9eb56524663237c889f55153fb70d9ba7e2e455d8f1c09a8e217388ac1576b47`.
+The signed appcast is live from `ab874fa`, and the source-only GitHub release
+passed its CI gate. The actual downloaded app passed the isolated runtime checks.
+
+Gumroad requires an explicit `--file-name` for reliable upload naming. The buyer
+page retains the EULA and license-key block and displays only the new ZIP.
+No production Mac was changed directly. SSH authentication to the separate
+server failed at the local credential agent. Native file-picker automation
+timed out, so its complete selection flow is not claimed as verified.
+
 ## 2026-09-03 - Tunnel ownership: one Mac per Cloudflare tunnel
 
 **What changed**: The claude.ai custom connector failed authorization against `https://applecore.amesvt.com/mcp` ("Authorization with Apple Core failed", reference `ofid_e2b3c235417649b6`) even with the right token and an approved connection on home-server. The cause was the duplicate-connector failure recorded in memory as item 5: a debug run on the MacBook Pro on 2026-09-02 at 09:47 launched with the production `~/.config/apple-core/config.json`, whose `cloudflare.enabled` was still `true`, and `CloudflareManager.reconcilePersistedConfiguration()` (called from `App/App.swift:176` on every launch) dutifully re-wrote `~/Library/LaunchAgents/com.oliverames.applecore.cloudflared.plist`, re-enabled the disabled label (commit 6e31041 made `bootstrap` clear the override), and registered a second connector on tunnel `6f89c86d…`. The MacBook's `cloudflared_stderr.log` shows `dial tcp 127.0.0.1:8756: connect: connection refused` for `/mcp` at 12:56Z, the minute of the failed authorization; the Cloudflare API showed two connectors (`run_at` 2026-08-30 for home-server and 2026-09-02T13:47Z for the MacBook). home-server was serving correctly throughout and logged the approval request at 08:56 and a `GET /oauth/authorize` at 09:00 local.
