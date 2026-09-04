@@ -62,6 +62,23 @@ struct LicenseDocumentTests {
         )
     }
 
+    @Test("File import accepts bounded UTF-8 envelopes, not arbitrary files")
+    func importBounds() throws {
+        let envelope = try Self.envelope(Self.document)
+        #expect(LicenseDocumentCodec.importedEnvelope(from: Data(envelope.utf8)) == envelope)
+        let windowsEnvelope = envelope.replacingOccurrences(of: "\n", with: "\r\n")
+        let imported = try #require(LicenseDocumentCodec.importedEnvelope(from: Data(windowsEnvelope.utf8)))
+        #expect(imported == envelope)
+        #expect(LicenseDocumentCodec.verify(imported, publicKey: Self.publicKeyData) == .success(Self.document))
+        #expect(LicenseDocumentCodec.importedEnvelope(from: Data("not a license".utf8)) == nil)
+        #expect(LicenseDocumentCodec.importedEnvelope(from: Data([0xFF, 0xFE])) == nil)
+        #expect(
+            LicenseDocumentCodec.importedEnvelope(
+                from: Data((envelope + String(repeating: "x", count: LicenseDocumentCodec.maximumImportBytes)).utf8)
+            ) == nil
+        )
+    }
+
     @Test("A signature from a different key is rejected")
     func wrongKey() throws {
         let attackerKey = Curve25519.Signing.PrivateKey()

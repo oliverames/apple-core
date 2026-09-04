@@ -83,6 +83,18 @@ public enum LicenseDocumentCodec {
     /// Keep a tampered envelope from making the app allocate and parse an
     /// arbitrary blob before the signature check runs.
     public static let maximumPayloadBytes = 8192
+    /// Allows the base64 payload, header, and signature without reading arbitrary files into memory.
+    public static let maximumImportBytes = 16 * 1024
+
+    public static func importedEnvelope(from data: Data) -> String? {
+        guard data.count <= maximumImportBytes,
+            let decoded = String(data: data, encoding: .utf8)
+        else { return nil }
+        let text = decoded.replacingOccurrences(of: "\r\n", with: "\n")
+        guard text.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix(envelopeHeader + "\n")
+        else { return nil }
+        return text
+    }
 
     private static let encoder: JSONEncoder = {
         let encoder = JSONEncoder()

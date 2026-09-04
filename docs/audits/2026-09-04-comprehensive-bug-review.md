@@ -8,7 +8,7 @@ Date: 2026-09-04. Author: Oliver Ames.
 - [x] Inventory source, tests, distribution, and existing verification.
 - [x] Verify the baseline checks and retained test report.
 - [x] Challenge suspected defects and implement verified fixes.
-- [x] Run regression tests, full verification, and application smoke checks.
+- [x] Verify the requested activation-screen revision and repeat final checks.
 - [ ] **In progress:** prepare version 1.7.2, build 26, and release artifacts.
 - [ ] Publish and verify GitHub, Gumroad, R2, and the signed Sparkle feed.
 
@@ -101,6 +101,21 @@ checks used [Apple's point-of-interest request documentation](https://developer.
 and the [Gitleaks action source](https://github.com/gitleaks/gitleaks-action).
 
 ## Release verification
+
+During the packaged-app check, the user requested a better activation screen.
+Publication paused before the GitHub release, buyer-content update, or update
+feed changed. The revised pane separates key entry from bounded file import,
+adds the verified purchase URL, collapses verification details, and confirms
+deactivation. Its file-import boundary test brings the suite to 191 tests.
+The preliminary R2 package will be replaced and reverified before publication.
+
+The revised Debug build passes all 191 tests in 28 suites, formatting, and static
+analysis. Rendered checks confirm the compact form, purchase link, collapsed
+details, keyboard submission, and key-specific error feedback. The native file
+picker opens, but automation timed out in its path-navigation sheet. End-to-end
+picker selection is not claimed. Direct source tests prove import bounds,
+CRLF normalization, successful signature verification, and rejection of invalid
+signatures and unrelated files.
 
 Version 1.7.2/build 26 is the release target. Signing, notarization, artifact
 publication, buyer content, and the public update feed will be recorded here

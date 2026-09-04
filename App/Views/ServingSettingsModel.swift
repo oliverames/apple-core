@@ -71,8 +71,17 @@ final class ServingSettingsModel: ObservableObject {
     }
 
     func activateLicense() {
+        guard !isActivatingLicense else { return }
         let pasted = licensePasteText
         guard !pasted.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        guard
+            GumroadLicense.looksLikeKey(pasted)
+                || pasted.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix(LicenseDocumentCodec.envelopeHeader)
+        else {
+            licenseActivationError =
+                "Enter the complete license key from your Gumroad receipt, or import your license file."
+            return
+        }
         isActivatingLicense = true
         licenseActivationError = nil
         Task {
@@ -88,7 +97,27 @@ final class ServingSettingsModel: ObservableObject {
         }
     }
 
+    func importLicense(from url: URL) {
+        guard !isActivatingLicense else { return }
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        do {
+            let file = try FileHandle(forReadingFrom: url)
+            defer { try? file.close() }
+            let data = try file.read(upToCount: LicenseDocumentCodec.maximumImportBytes + 1) ?? Data()
+            guard let text = LicenseDocumentCodec.importedEnvelope(from: data) else {
+                licenseActivationError = "This is not a valid license file. Choose the file issued to you."
+                return
+            }
+            licensePasteText = text
+            activateLicense()
+        } catch {
+            licenseActivationError = "Could not read the license file. Check that you can open it and try again."
+        }
+    }
+
     func deactivateLicense() {
+        guard !isActivatingLicense else { return }
         isActivatingLicense = true
         Task {
             defer { isActivatingLicense = false }
