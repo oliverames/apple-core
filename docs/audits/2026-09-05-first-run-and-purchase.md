@@ -9,8 +9,8 @@ Author: Oliver Ames
 - [x] Verify clean installation, checkout, and buyer delivery without a real charge.
 - [x] Build, sign, notarize, and publish the DMG through Gumroad and source release through GitHub.
 - [x] Publication verification re-run on September 5, 2026 (afternoon) from a fresh Claude Code session.
-- [ ] Remove historical GitHub assets after explicit approval (28 assets across v1.0.0 through v1.6.1 remain public).
-- [ ] Publish authorized community announcements where local rules permit.
+- [x] Removed the 28 historical GitHub assets on September 5, 2026 at 16:00 EDT with Oliver's explicit approval. All 23 releases, their tags, source archives, and notes remain.
+- [ ] Publish community announcements. Held on September 5: r/macapps is closed to the account until it earns 10 local karma, r/codex and r/MacOS forbid bot posts, and Oliver has not chosen the r/ClaudeCode showcase comment yet. Drafts live in `docs/planning/announcements/`.
 
 ## Scope
 
@@ -75,3 +75,7 @@ A fresh session reviewed the Codex rollout for this work and re-checked every li
 - The Gumroad product page returned HTTP 200.
 - The clean-Mac acceptance VM `Apple Core Acceptance` (macOS 26.6.2, VirtualBuddy) finished installing and first booted at 13:13 EDT. Its shared folder holds the release DMG, a config naming tunnel `applecore-acceptance-eb9bf8e0`, and an owner-signed test license that expired at 15:11 EDT. The combined browser-login and DNS-provisioning test inside that VM has not been run. It needs an interactive session: a new short-lived test license and a Cloudflare browser sign-in inside the VM.
 - Community announcement drafts moved from the temporary audit folder to `docs/planning/announcements/2026-09-05-release-1.7.3-reddit-drafts.md`. Nothing has been posted. r/codex and r/MacOS prohibit bot posts, r/macapps requires local karma and mod approval, and the r/ClaudeCode showcase thread is a comment, not a post.
+
+## Asset removal, September 5, 2026, 16:00 EDT
+
+With explicit approval, `gh release delete-asset` removed all 28 ZIP and SHA-256 assets from releases v1.0.0 through v1.6.1. A follow-up listing showed zero assets on every release and 23 releases still present. The official app is now downloadable only through Gumroad after payment and through the license-gated update worker.
