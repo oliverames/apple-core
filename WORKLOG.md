@@ -21,6 +21,12 @@ the key. Eight Worker tests and the deployed download checks pass. Historical
 GitHub asset removal awaits the explicit approval requested after automatic
 approval review rejected that operation.
 
+The final distribution audit also found Debug app output in the full-DerivedData
+CI cache. Both generated caches were removed. CI now retains only Swift package
+dependencies, using a new key namespace that cannot restore the old build caches.
+The source history, packages, and active Pages artifacts exposed no additional
+application archives.
+
 ## 2026-09-04 - Bug review, activation UI, and release 1.7.2
 
 Reviewed the app, CLI, shared helpers, tests, and distribution workflow with
