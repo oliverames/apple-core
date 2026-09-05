@@ -1,5 +1,40 @@
 # Apple Core worklog
 
+## 2026-09-05 - Codex session review, asset removal, and showcase post
+
+**What changed**: A fresh Claude Code session reviewed the Codex rollout for the
+1.7.3 release against its tool output and re-verified the live claims. With
+explicit approval, all 28 historical ZIP and SHA-256 assets were deleted from
+releases v1.0.0 through v1.6.1; every release, tag, and source archive remains.
+The r/ClaudeCode weekly showcase comment was posted from u/upandolli. The Reddit
+drafts moved from `/private/tmp` into `docs/planning/announcements/`, and the
+audit record gained re-verification and asset-removal sections. Commits
+`daf2a13`, `8df4b0a`, `183c73e`.
+
+**Verification**: 198 Xcode tests passed at `2a77474` (the earlier note of 208
+did not reproduce; nothing failed). Eight Worker tests and strict lint passed.
+The deployed Worker version `52202004-2749-4993-83b4-a588c7e3972c` is the
+esbuild bundle of `Distribution/worker.mjs` at HEAD. Both asset domains returned
+402 anonymously and 403 to a forged license. A post-deletion listing showed zero
+assets on all 23 releases.
+
+**Decisions made**: r/macapps is held until u/upandolli earns 10 local karma;
+the account has no history there, the app is not in the Mac App Store, and the
+megathread warns that a first linked comment is auto-removed and starts the
+30-day cooldown. A megathread-format comment replaces the main-feed draft.
+r/codex and r/MacOS forbid bot posts and stay manual.
+
+**Left off at**: The clean-VM Cloudflare first-run test is approved but not run.
+VirtualBuddy VM `Apple Core Acceptance` (macOS 26.6.2) is installed and booted;
+its share folder holds the DMG and a test license that expired at 15:11 EDT. It
+needs an interactive session because a scheduled run cannot grant computer-use.
+
+**Open questions**: Still open from the prior entry: real payment processing has
+not been exercised, and public GPL source still permits independent builds.
+Resolved this session: historical GitHub asset removal.
+
+---
+
 ## 2026-09-05 - First-run licensing and paid DMG release 1.7.3
 
 Released 1.7.3/build 27 with a signed, notarized universal DMG delivered through
