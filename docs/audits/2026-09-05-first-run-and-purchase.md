@@ -10,7 +10,7 @@ Author: Oliver Ames
 - [x] Build, sign, notarize, and publish the DMG through Gumroad and source release through GitHub.
 - [x] Publication verification re-run on September 5, 2026 (afternoon) from a fresh Claude Code session.
 - [x] Removed the 28 historical GitHub assets on September 5, 2026 at 16:00 EDT with Oliver's explicit approval. All 23 releases, their tags, source archives, and notes remain.
-- [ ] Publish community announcements. Held on September 5: r/macapps is closed to the account until it earns 10 local karma, r/codex and r/MacOS forbid bot posts, and Oliver has not chosen the r/ClaudeCode showcase comment yet. Drafts live in `docs/planning/announcements/`.
+- [ ] Publish community announcements. Held on September 5: r/macapps is closed to the account until it earns 10 local karma, r/codex and r/MacOS forbid bot posts, and the r/ClaudeCode showcase comment was posted on September 5 at 16:40 EDT with approval. Drafts live in `docs/planning/announcements/`.
 
 ## Scope
 
@@ -59,7 +59,7 @@ Observed September 5, 2026. No real purchase has been made.
 
 - Real payment processing has not been exercised. The no-charge seller test verified checkout, receipt, buyer delivery, and rejection of unpaid test licenses.
 - Historical GitHub releases still contain 28 ZIP/checksum assets. Automatic approval review rejected deletion without explicit approval of existing assets. The user was asked to authorize removing those exact assets while preserving source archives, tags, and release notes.
-- A fresh external Cloudflare account's interactive browser authorization and live DNS provisioning have not been exercised. Installer, readiness, ownership, DNS policy, and OAuth behavior were checked separately without altering the production tunnel.
+- A fresh external Cloudflare account's interactive browser authorization and live DNS provisioning have not been exercised. Oliver approved running it in the prepared VM on September 5 at 16:30 EDT, but the session was a scheduled run where computer-use access cannot be granted, so it still waits for an interactive session. Installer, readiness, ownership, DNS policy, and OAuth behavior were checked separately without altering the production tunnel.
 - The existing Mac cannot represent a fully fresh user: cloudflared is already installed, its login writes the current user's default certificate path, and app preferences are shared beyond the configuration-profile override. VirtualBuddy's current library is empty. UTM's inventory call timed out. A clean Mac/VM is needed for the remaining combined browser-login and DNS-provisioning acceptance test.
 - Public GPL source permits independent builds. Protection applies to official downloads and the official app's licensing, not third-party builds or copies already downloaded.
 
