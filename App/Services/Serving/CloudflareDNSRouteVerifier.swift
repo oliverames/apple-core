@@ -94,3 +94,29 @@ public enum CloudflareDNSRouteVerifier {
         return normalized
     }
 }
+
+/// Public discovery must reach this hostname before setup can call it ready.
+public enum CloudflareReadiness {
+    public static func accepts(data: Data, response: URLResponse, baseURL: String) -> Bool {
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200,
+            response.url?.absoluteString == baseURL + "/.well-known/oauth-authorization-server",
+            let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return false }
+        return object["issuer"] as? String == baseURL
+            && object["authorization_endpoint"] as? String == baseURL + "/oauth/authorize"
+            && object["token_endpoint"] as? String == baseURL + "/oauth/token"
+            && (object["code_challenge_methods_supported"] as? [String])?.contains("S256") == true
+    }
+
+    public static func isReady(baseURL: String, session: URLSession = .shared) async -> Bool {
+        guard let url = URL(string: baseURL + "/.well-known/oauth-authorization-server"),
+            url.scheme == "https"
+        else { return false }
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 5)
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        do {
+            let (data, response) = try await session.data(for: request)
+            return accepts(data: data, response: response, baseURL: baseURL)
+        } catch { return false }
+    }
+}

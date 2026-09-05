@@ -31,7 +31,7 @@ struct GumroadLicenseTests {
         let json = """
             {"success": true, "uses": 1, "purchase": {"email": "buyer@example.com", "sale_id": "abc123",
              "sale_timestamp": "2026-09-03T14:00:00Z", "refunded": false, "chargebacked": false,
-             "product_name": "Apple Core License"}}
+             "product_name": "Apple Core License", "product_id": "H5iMAgmqjSc9_p61iSwApA==", "price": 1500}}
             """
         let verdict = GumroadLicense.verifyResponse(Data(json.utf8))
         guard case .valid(let purchase)? = verdict else {
@@ -84,6 +84,8 @@ struct GumroadLicenseTests {
             email: "b@x",
             lastVerifiedAt: verified
         )
+        #expect(!record.isEntitled(now: verified.addingTimeInterval(-1)))
+        #expect(record.needsReverification(now: verified.addingTimeInterval(-1)))
         #expect(record.isEntitled(now: verified.addingTimeInterval(13 * 86_400)))
         #expect(!record.isEntitled(now: verified.addingTimeInterval(15 * 86_400)))
         #expect(!record.needsReverification(now: verified.addingTimeInterval(3600)))
@@ -127,4 +129,60 @@ struct GumroadLicenseTests {
         let decoded = try decoder.decode(GumroadLicenseRecord.self, from: encoder.encode(record))
         #expect(decoded == record)
     }
+
+    @Test("Only paid purchases for this product activate, including gifts paid by their sender")
+    func paidPurchase() throws {
+        var purchase: [String: Any] = ["product_id": GumroadLicense.productID, "sale_id": "sale", "price": 1500]
+        func response(_ purchase: [String: Any]) throws -> GumroadLicense.Verification? {
+            GumroadLicense.verifyResponse(
+                try JSONSerialization.data(withJSONObject: ["success": true, "purchase": purchase])
+            )
+        }
+        #expect(try response([:]) == nil)
+        for flag in ["test", "is_preorder_authorization"] {
+            var testPurchase = purchase
+            testPurchase[flag] = true
+            #expect(try response(testPurchase) == .revoked)
+        }
+        purchase["product_id"] = "another-product"
+        #expect(try response(purchase) == nil)
+        purchase["product_id"] = GumroadLicense.productID
+        purchase["price"] = 0
+        #expect(try response(purchase) == .revoked)
+        purchase["is_gift_receiver_purchase"] = true
+        purchase["gift_price"] = 1500
+        guard case .valid? = try response(purchase) else { Issue.record("Paid gift rejected"); return }
+        purchase["gift_price"] = 0
+        #expect(try response(purchase) == .revoked)
+    }
+
+    @Test("Updater credentials are restricted to the official HTTPS archive path")
+    func updateCredentialScope() throws {
+        let record = GumroadLicenseRecord(key: "AAAAAAAA-BBBBBBBB-CCCCCCCC-DDDDDDDD", lastVerifiedAt: Date())
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let data = try encoder.encode(record)
+        for address in [
+            "http://assets.amesvt.com/apple-core/a.zip", "https://attacker.example/apple-core/a.zip",
+            "https://assets.amesvt.com/appcast.xml", "https://assets.amesvt.com/apple-core/notes.html",
+            "https://assets.amesvt.com:8443/apple-core/a.zip",
+            "https://assets.amesvt.com.evil.example/apple-core/a.zip",
+        ] {
+            #expect(
+                AppleCoreUpdateAuthorization.credential(
+                    for: URL(string: address)!,
+                    signedLicense: nil,
+                    gumroadRecord: data
+                ) == nil
+            )
+        }
+        #expect(
+            AppleCoreUpdateAuthorization.credential(
+                for: URL(string: "https://assets.amesvt.com/apple-core/a.zip")!,
+                signedLicense: nil,
+                gumroadRecord: data
+            ) == record.key
+        )
+    }
+
 }

@@ -100,4 +100,33 @@ struct CloudflareDNSRouteVerifierTests {
             """.utf8
         )
     }
+
+    @Test("Remote readiness requires exact public OAuth discovery, not an HTML login or localhost issuer")
+    func publicReadiness() throws {
+        let base = "https://mcp.example.com"
+        let url = URL(string: base + "/.well-known/oauth-authorization-server")!
+        let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
+        var metadata: [String: Any] = [
+            "issuer": base, "authorization_endpoint": base + "/oauth/authorize",
+            "token_endpoint": base + "/oauth/token", "code_challenge_methods_supported": ["S256"],
+        ]
+        func encode() throws -> Data { try JSONSerialization.data(withJSONObject: metadata) }
+        #expect(CloudflareReadiness.accepts(data: try encode(), response: response, baseURL: base))
+        metadata["issuer"] = "http://localhost:8756"
+        #expect(!CloudflareReadiness.accepts(data: try encode(), response: response, baseURL: base))
+        #expect(
+            !CloudflareReadiness.accepts(data: Data("<html>Sign in</html>".utf8), response: response, baseURL: base)
+        )
+        metadata["issuer"] = base
+        let redirected = HTTPURLResponse(
+            url: URL(string: "https://login.example.com/")!,
+            statusCode: 200,
+            httpVersion: nil,
+            headerFields: nil
+        )!
+        #expect(!CloudflareReadiness.accepts(data: try encode(), response: redirected, baseURL: base))
+        let unavailable = HTTPURLResponse(url: url, statusCode: 503, httpVersion: nil, headerFields: nil)!
+        #expect(!CloudflareReadiness.accepts(data: try encode(), response: unavailable, baseURL: base))
+    }
+
 }

@@ -109,7 +109,7 @@ enum AppLaunchAgent {
 }
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, SPUUpdaterDelegate {
     private static let enableItemTag = 100
     private static let servicesHeaderTag = 110
     private static let checkForUpdatesItemTag = 120
@@ -164,7 +164,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         updaterController = SPUStandardUpdaterController(
             startingUpdater: false,
-            updaterDelegate: nil,
+            updaterDelegate: self,
             userDriverDelegate: nil
         )
         _ = startUpdaterIfNeeded()
@@ -443,6 +443,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         alert.alertStyle = .warning
         alert.addButton(withTitle: "OK")
         alert.runModal()
+    }
+
+    func updater(_ updater: SPUUpdater, willDownloadUpdate item: SUAppcastItem, with request: NSMutableURLRequest) {
+        guard let url = request.url else { return }
+        let root = AppleCoreServingPaths.configURL().deletingLastPathComponent()
+        let credential = AppleCoreUpdateAuthorization.credential(
+            for: url,
+            signedLicense: try? Data(contentsOf: root.appendingPathComponent("license.txt")),
+            gumroadRecord: try? Data(contentsOf: root.appendingPathComponent("gumroad-license.json"))
+        )
+        request.setValue(credential, forHTTPHeaderField: AppleCoreUpdateAuthorization.header)
     }
 
     @objc private func checkForUpdates() {

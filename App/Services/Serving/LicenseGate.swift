@@ -18,7 +18,61 @@
 
 import CryptoKit
 import Foundation
+import LocalAuthentication
 import OSLog
+import Security
+
+/// A Keychain witness binds the offline cache to bytes written after a live
+/// verification. Editing or copying JSON alone cannot create an entitlement.
+public struct GumroadReceiptTrust: Sendable {
+    public var read: @Sendable (URL) -> Data?
+    public var write: @Sendable (Data?, URL) throws -> Void
+
+    public static let keychain = GumroadReceiptTrust(
+        read: { url in
+            var query = keychainQuery(url)
+            query[kSecReturnData as String] = true
+            query[kSecMatchLimit as String] = kSecMatchLimitOne
+            let context = LAContext()
+            context.interactionNotAllowed = true
+            query[kSecUseAuthenticationContext as String] = context
+            var result: CFTypeRef?
+            guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess else { return nil }
+            return result as? Data
+        },
+        write: { data, url in
+            let query = keychainQuery(url)
+            guard let data else {
+                let status = SecItemDelete(query as CFDictionary)
+                guard status == errSecSuccess || status == errSecItemNotFound else {
+                    throw NSError(domain: NSOSStatusErrorDomain, code: Int(status))
+                }
+                return
+            }
+            let attributes = [kSecValueData as String: data]
+            var status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
+            if status == errSecItemNotFound {
+                var item = query
+                item[kSecValueData as String] = data
+                item[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+                status = SecItemAdd(item as CFDictionary, nil)
+            }
+            guard status == errSecSuccess else {
+                throw NSError(domain: NSOSStatusErrorDomain, code: Int(status))
+            }
+        }
+    )
+
+    private static func keychainQuery(_ url: URL) -> [String: Any] {
+        [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecUseDataProtectionKeychain as String: true,
+            kSecAttrService as String: "com.oliverames.applecore.gumroad-receipt",
+            kSecAttrAccount as String: url.standardizedFileURL.path,
+            kSecAttrSynchronizable as String: false,
+        ]
+    }
+}
 
 /// The Ed25519 public key whose private half signs Apple Core licenses.
 /// The private key lives in Oliver's login Keychain and 1Password, exactly
@@ -47,7 +101,9 @@ public actor LicenseGate {
     private let gumroadRecordURL: URL
     private let verifier: GumroadLicense.Verifier
     private let publicKey: Data
+    private let receiptTrust: GumroadReceiptTrust
     private var reverifyInFlight = false
+    private var lastReverifyAttempt: Date?
     private var activationGeneration = UUID()
     private var revokedKeys: Set<String> = []
 
@@ -55,7 +111,8 @@ public actor LicenseGate {
         licenseURL: URL,
         gumroadRecordURL: URL? = nil,
         verifier: @escaping GumroadLicense.Verifier = GumroadLicense.liveVerifier,
-        publicKey: Data = AppleCoreLicensePublicKey.raw
+        publicKey: Data = AppleCoreLicensePublicKey.raw,
+        receiptTrust: GumroadReceiptTrust = .keychain
     ) {
         self.licenseURL = licenseURL
         self.gumroadRecordURL =
@@ -63,6 +120,7 @@ public actor LicenseGate {
             ?? licenseURL.deletingLastPathComponent().appendingPathComponent("gumroad-license.json")
         self.verifier = verifier
         self.publicKey = publicKey
+        self.receiptTrust = receiptTrust
     }
 
     /// Reads and verifies the license file. Returns nil when there is no
@@ -87,12 +145,14 @@ public actor LicenseGate {
                 cached = nil
             }
         }
-        guard let record = readGumroadRecord(), record.isEntitled(now: now) else {
-            return nil
+        guard let data = try? Data(contentsOf: gumroadRecordURL),
+            let record = readGumroadRecord(from: data)
+        else { return nil }
+        let trusted = receiptTrust.read(gumroadRecordURL) == Data(SHA256.hash(data: data))
+        if !trusted || record.needsReverification(now: now) || !record.isEntitled(now: now) {
+            scheduleReverification(now: now)
         }
-        if record.needsReverification(now: now) {
-            scheduleReverification()
-        }
+        guard trusted, record.isEntitled(now: now) else { return nil }
         // Not cached: the record is the cache, and re-reading a small file
         // per session keeps a background re-check visible immediately.
         return record.document
@@ -115,8 +175,10 @@ public actor LicenseGate {
         encoder.outputFormatting = [.sortedKeys, .prettyPrinted]
         let fm = FileManager.default
         try fm.createDirectory(at: gumroadRecordURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try encoder.encode(record).write(to: gumroadRecordURL, options: .atomic)
+        let data = try encoder.encode(record)
+        try data.write(to: gumroadRecordURL, options: .atomic)
         try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: gumroadRecordURL.path)
+        try receiptTrust.write(Data(SHA256.hash(data: data)), gumroadRecordURL)
     }
 
     /// Asks Gumroad about a pasted key and records the answer. Nothing is
@@ -184,9 +246,11 @@ public actor LicenseGate {
         return activate(input, now: now)
     }
 
-    private func scheduleReverification() {
+    private func scheduleReverification(now: Date) {
         guard !reverifyInFlight else { return }
-        Task { await self.reverifyGumroadKey() }
+        if let lastReverifyAttempt, now.timeIntervalSince(lastReverifyAttempt) < 60 { return }
+        lastReverifyAttempt = now
+        Task { await self.reverifyGumroadKey(now: now) }
     }
 
     /// Re-asks Gumroad about the recorded key. A reachable "no" closes the
@@ -224,6 +288,7 @@ public actor LicenseGate {
         case .revoked:
             record.cachedValid = false
             revokedKeys.insert(record.key)
+            try? receiptTrust.write(nil, gumroadRecordURL)
             cached = nil
             Self.log.notice("Gumroad revoked key \(record.maskedKey, privacy: .public)")
         }
@@ -279,8 +344,10 @@ public actor LicenseGate {
 
     private func gumroadActivationState(now: Date) -> ActivationState {
         guard let record = readGumroadRecord() else { return .notActivated }
-        if record.isEntitled(now: now) {
-            return .active(record.document)
+        guard let data = try? Data(contentsOf: gumroadRecordURL),
+            receiptTrust.read(gumroadRecordURL) == Data(SHA256.hash(data: data))
+        else {
+            return .rejected("Connect to the internet to verify this Mac's license, or paste your Gumroad key again.")
         }
         if !record.cachedValid {
             return .rejected("Gumroad reports this license key was refunded, disputed, or disabled.")
@@ -335,6 +402,7 @@ public actor LicenseGate {
     public func deactivate() -> Bool {
         activationGeneration = UUID()
         cached = nil
+        try? receiptTrust.write(nil, gumroadRecordURL)
         let fm = FileManager.default
         var removed = false
         for url in [licenseURL, gumroadRecordURL] where fm.fileExists(atPath: url.path) {

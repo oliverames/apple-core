@@ -20,6 +20,7 @@ import SwiftUI
 
 enum OnboardingStep: Int, CaseIterable {
     case welcome
+    case license
     case access
     case services
     case done
@@ -41,6 +42,8 @@ struct OnboardingView: View {
             switch step {
             case .welcome:
                 OnboardingWelcomeStep()
+            case .license:
+                LicensePane(model: model)
             case .access:
                 OnboardingAccessStep(model: model, wantsRemote: $wantsRemote)
             case .services:
@@ -63,7 +66,7 @@ struct OnboardingView: View {
                 cancelTitle: "Back",
                 showsCancel: step != .welcome && step != .done,
                 canCancel: !isAccessActionInProgress,
-                canConfirm: !isAccessActionInProgress,
+                canConfirm: !isAccessActionInProgress && (step != .license || model.licenseState.isActive),
                 onCancel: { step = OnboardingStep(rawValue: step.rawValue - 1) ?? .welcome },
                 onConfirm: performPrimaryAction
             )
@@ -233,7 +236,7 @@ private struct OnboardingAccessStep: View {
                     OnboardingChoiceRow(
                         icon: "globe",
                         title: "Reachable from anywhere",
-                        detail: "Also Claude's web and mobile clients. Signs you in to Cloudflare once.",
+                        detail: "Also Claude's web and mobile clients. Requires a domain managed by Cloudflare.",
                         isSelected: wantsRemote
                     ) {
                         wantsRemote = true
@@ -282,9 +285,11 @@ private struct RemoteAccessProgress: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
         } else {
-            Text("Apple Core publishes one web address for this Mac using your own Cloudflare account.")
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            Text(
+                "Apple Core uses your Cloudflare account and a domain whose DNS is managed by Cloudflare. Sign-in opens in your browser."
+            )
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
         }
     }
 }

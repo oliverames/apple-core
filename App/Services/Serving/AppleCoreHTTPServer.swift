@@ -1043,7 +1043,6 @@ public actor AppleCoreHTTPServer {
             object = [
                 "activated": true,
                 "plan": document.plan,
-                "licensed_to": document.licensedTo ?? "",
             ]
         case .rejected(let reason):
             object = ["activated": false, "reason": reason]

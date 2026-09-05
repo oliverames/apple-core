@@ -1,0 +1,13 @@
+{
+  "name": "apple-core-downloads",
+  "main": "worker.mjs",
+  "account_id": "059585806715245840e5581f7174246d",
+  "compatibility_date": "2026-09-05",
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [
+    {"pattern": "assets.amesvt.com/*", "zone_name": "amesvt.com"},
+    {"pattern": "assets.ames.consulting/*", "zone_name": "ames.consulting"}
+  ],
+  "observability": {"enabled": false}
+}

@@ -51,7 +51,7 @@ private struct RemoteAccessOffer: View {
         VStack(alignment: .leading, spacing: 16) {
             Text(
                 "Apple Core can publish one web address for this Mac using your own Cloudflare account, so cloud "
-                    + "clients can reach it. You will sign in to Cloudflare once in your browser."
+                    + "clients can reach it. You need a domain with DNS managed by Cloudflare. You will sign in once in your browser."
             )
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)

@@ -14,7 +14,7 @@ NOTARY_ISSUER_ID="${NOTARY_ISSUER_ID:-}"
 # Where Sparkle downloads the release zip from. GitHub releases stopped
 # carrying binaries on 2026-09-02, so the appcast must be told where the zip
 # actually lives (the assets.amesvt.com R2 bucket); the GitHub asset URL is
-# only the historical default.
+# must never be used for a new release.
 ENCLOSURE_URL="${ENCLOSURE_URL:-}"
 GITHUB_REPOSITORY="${GITHUB_REPOSITORY:-oliverames/apple-core}"
 VERSION="${VERSION:-}"
@@ -53,14 +53,15 @@ Commands:
   archive     Create an Xcode archive for direct distribution
   export      Export a Developer ID signed app from the archive
   profiles    List installed provisioning profiles
-  package     Create the release zip from the app bundle
+  package     Create the Sparkle update zip from the app bundle
+  dmg         Create, sign, notarize, and staple the Gumroad installer DMG
   notarize    Submit the app bundle for notarization
   staple      Staple the notarization ticket to the app bundle
   appcast     Sign the release zip (Sparkle EdDSA) and add an item to appcast.xml
   commit      Commit version bump and create release tag
   push-tags   Push the release commit and requested tag to origin (asks for confirmation)
   release     Create a GitHub release (no assets)
-  upload      Upload the release asset to GitHub
+  upload      Refuse GitHub binary uploads; official installers belong on Gumroad
   help        Show this help
 
 Environment:
@@ -423,6 +424,36 @@ package_release() {
   echo "Done: ${release_zip_path}"
 }
 
+package_dmg() {
+  require_version
+  validate_distribution_app
+  require_notary_credentials
+  ensure_dist_dir
+  local staging dmg digest
+  staging="$(mktemp -d "${TMPDIR:-/tmp}/apple-core-dmg.XXXXXX")"
+  dmg="${DIST_DIR}/${APP_NAME// /.}-${VERSION}.dmg"
+  ditto "${APP_BUNDLE}" "${staging}/${APP_NAME}.app"
+  ln -s /Applications "${staging}/Applications"
+  cp EULA.md "${staging}/EULA.md"
+  cat > "${staging}/Install Apple Core.txt" <<'INSTALL'
+Drag Apple Core into Applications, then open it.
+Enter the license key from your Gumroad receipt when setup asks you to activate.
+For remote access, use a domain whose DNS is managed by your Cloudflare account.
+Keep this Mac awake and connected while remote clients use it.
+INSTALL
+  hdiutil create -volname "${APP_NAME}" -srcfolder "${staging}" -format UDZO -ov "${dmg}"
+  /usr/bin/trash "${staging}"
+  codesign --force --timestamp --sign "${SIGNING_CERTIFICATE}" "${dmg}"
+  xcrun notarytool submit "${dmg}" --wait "${NOTARYTOOL_AUTH_ARGS[@]}"
+  xcrun stapler staple "${dmg}"
+  xcrun stapler validate "${dmg}"
+  codesign --verify --strict "${dmg}"
+  spctl --assess --type open --context context:primary-signature --verbose=2 "${dmg}"
+  digest="$(shasum -a 256 "${dmg}" | awk '{print $1}')"
+  printf '%s  %s\n' "${digest}" "${dmg##*/}" > "${dmg}.sha256"
+  echo "Gumroad installer: ${dmg}"
+}
+
 validate_staple() {
   require_app_bundle
   echo "Validating stapled ticket"
@@ -482,13 +513,12 @@ update_appcast() {
   pub_date="$(LC_ALL=en_US.UTF-8 date -u '+%a, %d %b %Y %H:%M:%S +0000')"
   build_number="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "${APP_BUNDLE}/Contents/Info.plist")"
 
+  local archive_url="${ENCLOSURE_URL:-https://assets.amesvt.com/apple-core/${APP_NAME// /.}-${VERSION#v}.zip}"
   VERSION="${VERSION#v}" BUILD_NUMBER="${build_number}" SIGNATURE="${signature}" LENGTH="${length}" \
   NOTES_HTML="${notes_html}" PUB_DATE="${pub_date}" \
   REPO_SLUG="${GITHUB_REPOSITORY}" \
-  ENCLOSURE_URL="${ENCLOSURE_URL:-$(printf 'https://github.com/%s/releases/download/v%s/%s' \
-    "${GITHUB_REPOSITORY}" "${VERSION#v}" \
-    "$(printf '%s-%s.zip' "${APP_NAME}" "${VERSION#v}" | tr ' ' '.')")}" \
-  APPCAST_OUT="appcast.next.xml" python3 - <<'PYEOF'
+  ENCLOSURE_URL="${archive_url}" \
+  APPCAST_OUT="appcast.next.xml" /opt/homebrew/bin/python3 - <<'PYEOF'
 import os, re, sys
 import xml.etree.ElementTree as ET
 
@@ -504,7 +534,10 @@ appcast_out = os.environ["APPCAST_OUT"]
 
 item = f"""    <item>
       <title>Version {version}</title>
-      <link>https://github.com/{repo_slug}/releases/tag/v{version}</link>
+      <link>https://amesconsulting.gumroad.com/l/applecore</link>
+      <sparkle:informationalUpdate>
+        <sparkle:belowVersion>27</sparkle:belowVersion>
+      </sparkle:informationalUpdate>
       <sparkle:version>{build_number}</sparkle:version>
       <sparkle:shortVersionString>{version}</sparkle:shortVersionString>
       <description><![CDATA[
@@ -653,15 +686,8 @@ upload_asset() {
 GitHub releases no longer carry the signed DMG — see docs/licensing.md.
 
 The official binary is distributed through Gumroad under EULA.md.
-Use the Gumroad product's asset upload (or `gumroad products` CLI)
-to publish the notarized zip; keep the GitHub release as source + notes only.
-
-If you need to publish a legacy free binary (e.g. a security fix for
-the last GPL-conveyed tag), re-enable the GitHub upload explicitly:
-
-  gh release upload <tag> dist/Apple.Core-<version>.zip dist/Apple.Core-<version>.zip.sha256 --repo <owner>/<repo>
-
-For the normal flow, do not run `Scripts/release.sh upload`.
+Upload dist/Apple.Core-<version>.dmg to the Gumroad product after
+notarization. Keep GitHub releases as source and release notes only.
 EOF
   exit 1
 }
@@ -679,6 +705,7 @@ all() {
   staple
   validate_distribution_app
   package_release
+  package_dmg
   update_appcast
 }
 
@@ -712,6 +739,9 @@ case "${COMMAND}" in
     ;;
   package)
     package_release
+    ;;
+  dmg)
+    package_dmg
     ;;
   notarize)
     notarize

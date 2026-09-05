@@ -89,7 +89,17 @@ public enum GumroadLicense {
         if object.refunded == true || object.chargebacked == true || object.disputed == true
             || object.subscription_ended_at != nil || object.subscription_cancelled_at != nil
             || object.subscription_failed_at != nil
+            || object.test == true || object.is_preorder_authorization == true
         {
+            return .revoked
+        }
+        guard object.product_id == productID,
+            let saleID = object.sale_id ?? object.id, !saleID.isEmpty,
+            let price = object.price
+        else { return nil }
+        // Gift receivers have price zero; the gift's original paid price is
+        // supplied separately by Gumroad. Unpaid and test keys cannot unlock.
+        guard price > 0 || (object.is_gift_receiver_purchase == true && (object.gift_price ?? 0) > 0) else {
             return .revoked
         }
         return .valid(
@@ -110,6 +120,12 @@ public enum GumroadLicense {
     }
 
     private struct VerifiedPurchase: Decodable {
+        let product_id: String?
+        let price: Int?
+        let test: Bool?
+        let is_preorder_authorization: Bool?
+        let is_gift_receiver_purchase: Bool?
+        let gift_price: Int?
         let email: String?
         let sale_id: String?
         let id: String?
@@ -187,11 +203,13 @@ public struct GumroadLicenseRecord: Codable, Equatable, Sendable {
     }
 
     public func isEntitled(now: Date, grace: TimeInterval = GumroadLicense.offlineGraceInterval) -> Bool {
-        cachedValid && now.timeIntervalSince(lastVerifiedAt) <= grace
+        let age = now.timeIntervalSince(lastVerifiedAt)
+        return cachedValid && age >= 0 && age <= grace
     }
 
     public func needsReverification(now: Date, interval: TimeInterval = GumroadLicense.reverifyInterval) -> Bool {
-        now.timeIntervalSince(lastVerifiedAt) > interval
+        let age = now.timeIntervalSince(lastVerifiedAt)
+        return age < 0 || age > interval
     }
 
     /// The last eight characters, for display; the whole key is the
@@ -211,5 +229,33 @@ public struct GumroadLicenseRecord: Codable, Equatable, Sendable {
             issuedAt: purchasedAt ?? lastVerifiedAt,
             expiresAt: nil
         )
+    }
+}
+
+/// Sparkle sends activation only to the official archive endpoint. Feed and
+/// release-note requests never receive buyer credentials.
+public enum AppleCoreUpdateAuthorization {
+    public static let header = "X-Apple-Core-License"
+
+    public static func credential(for url: URL, signedLicense: Data?, gumroadRecord: Data?) -> String? {
+        guard url.scheme == "https", url.host == "assets.amesvt.com",
+            url.port == nil || url.port == 443,
+            url.user == nil, url.password == nil,
+            url.path.hasPrefix("/apple-core/"), url.pathExtension == "zip"
+        else { return nil }
+        if let signedLicense, signedLicense.count <= LicenseDocumentCodec.maximumImportBytes,
+            let text = String(data: signedLicense, encoding: .utf8),
+            case .success = LicenseDocumentCodec.verify(text, publicKey: AppleCoreLicensePublicKey.raw)
+        {
+            return signedLicense.base64EncodedString()
+        }
+        guard let gumroadRecord, gumroadRecord.count <= 16384 else { return nil }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        guard let record = try? decoder.decode(GumroadLicenseRecord.self, from: gumroadRecord),
+            let key = GumroadLicense.normalizeKey(record.key), GumroadLicense.looksLikeKey(key)
+        else { return nil }
+        // The download service independently verifies payment with Gumroad.
+        return key
     }
 }

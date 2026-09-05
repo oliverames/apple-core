@@ -2,6 +2,26 @@ import CryptoKit
 import Foundation
 import Testing
 
+private final class ReceiptTrustSandbox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [URL: Data] = [:]
+
+    var store: GumroadReceiptTrust {
+        GumroadReceiptTrust(
+            read: { [self] url in
+                lock.lock()
+                defer { lock.unlock() }
+                return values[url]
+            },
+            write: { [self] data, url in
+                lock.lock()
+                defer { lock.unlock() }
+                values[url] = data
+            }
+        )
+    }
+}
+
 private actor SuspendedLicenseVerifier {
     private var reply: CheckedContinuation<Result<Data, Error>, Never>?
     private var started: CheckedContinuation<Void, Never>?
@@ -20,7 +40,14 @@ private actor SuspendedLicenseVerifier {
     }
 
     func finish() {
-        reply?.resume(returning: .success(Data(#"{"success":true,"purchase":{}}"#.utf8)))
+        reply?.resume(
+            returning: .success(
+                Data(
+                    #"{"success":true,"purchase":{"product_id":"H5iMAgmqjSc9_p61iSwApA==","sale_id":"test-sale","price":1500}}"#
+                        .utf8
+                )
+            )
+        )
         reply = nil
     }
 }
@@ -28,6 +55,7 @@ private actor SuspendedLicenseVerifier {
 @Suite("License gate persistence and concurrency")
 struct LicenseGateTests {
     private let now = Date(timeIntervalSince1970: 1_800_000_000)
+    private let trust = ReceiptTrustSandbox()
 
     private func sandbox() throws -> URL {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("apple-core-license-\(UUID())")
@@ -62,8 +90,12 @@ struct LicenseGateTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let url = root.appendingPathComponent("license.txt")
         let key = Curve25519.Signing.PrivateKey()
-        let settings = LicenseGate(licenseURL: url, publicKey: key.publicKey.rawRepresentation)
-        let server = LicenseGate(licenseURL: url, publicKey: key.publicKey.rawRepresentation)
+        let settings = LicenseGate(
+            licenseURL: url,
+            publicKey: key.publicKey.rawRepresentation,
+            receiptTrust: trust.store
+        )
+        let server = LicenseGate(licenseURL: url, publicKey: key.publicKey.rawRepresentation, receiptTrust: trust.store)
         _ = await settings.activate(try envelope(using: key), now: now)
         #expect(await server.validatedDocument(now: now)?.licenseID == "test")
         try Data(envelope(using: key, id: "replacement").utf8).write(to: url, options: .atomic)
@@ -78,7 +110,7 @@ struct LicenseGateTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let url = root.appendingPathComponent("license.txt")
         let key = Curve25519.Signing.PrivateKey()
-        let gate = LicenseGate(licenseURL: url, publicKey: key.publicKey.rawRepresentation)
+        let gate = LicenseGate(licenseURL: url, publicKey: key.publicKey.rawRepresentation, receiptTrust: trust.store)
         let result = await gate.activate(try envelope(using: key), now: now)
         guard case .success = result else { Issue.record("Activation failed"); return }
         let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
@@ -90,9 +122,11 @@ struct LicenseGateTests {
         let root = try sandbox()
         defer { try? FileManager.default.removeItem(at: root) }
         try record(at: root)
+        let receipt = root.appendingPathComponent("gumroad-license.json")
+        try trust.store.write(Data(SHA256.hash(data: Data(contentsOf: receipt))), receipt)
         let url = root.appendingPathComponent("license.txt")
         try Data("damaged".utf8).write(to: url)
-        let gate = LicenseGate(licenseURL: url)
+        let gate = LicenseGate(licenseURL: url, receiptTrust: trust.store)
         #expect(await gate.validatedDocument(now: now)?.plan == "gumroad")
         #expect(await gate.activationState(now: now).isActive)
     }
@@ -106,7 +140,8 @@ struct LicenseGateTests {
             let verifier = SuspendedLicenseVerifier()
             let gate = LicenseGate(
                 licenseURL: root.appendingPathComponent("license.txt"),
-                verifier: { body in await verifier.verify(body) }
+                verifier: { body in await verifier.verify(body) },
+                receiptTrust: trust.store
             )
             let task = Task { await gate.reverifyGumroadKey(now: now) }
             await verifier.waitUntilStarted()
@@ -118,11 +153,7 @@ struct LicenseGateTests {
             await verifier.finish()
             await task.value
             let document = await gate.validatedDocument(now: now)
-            if replacement {
-                #expect(document?.licenseID == "gumroad:…HHHHHHHH")
-            } else {
-                #expect(document == nil)
-            }
+            #expect(document == nil)
         }
     }
 
@@ -133,7 +164,8 @@ struct LicenseGateTests {
         let verifier = SuspendedLicenseVerifier()
         let gate = LicenseGate(
             licenseURL: root.appendingPathComponent("license.txt"),
-            verifier: { body in await verifier.verify(body) }
+            verifier: { body in await verifier.verify(body) },
+            receiptTrust: trust.store
         )
         let task = Task { await gate.activateGumroadKey("AAAAAAAA-BBBBBBBB-CCCCCCCC-DDDDDDDD", now: now) }
         await verifier.waitUntilStarted()
@@ -157,7 +189,8 @@ struct LicenseGateTests {
         let gate = LicenseGate(
             licenseURL: url,
             verifier: { body in await verifier.verify(body) },
-            publicKey: key.publicKey.rawRepresentation
+            publicKey: key.publicKey.rawRepresentation,
+            receiptTrust: trust.store
         )
         let task = Task { await gate.reverifyGumroadKey(now: now.addingTimeInterval(3600)) }
         await verifier.waitUntilStarted()
@@ -177,7 +210,8 @@ struct LicenseGateTests {
         try record(at: root)
         let gate = LicenseGate(
             licenseURL: root.appendingPathComponent("license.txt"),
-            verifier: { _ in .success(Data(#"{"success":false}"#.utf8)) }
+            verifier: { _ in .success(Data(#"{"success":false}"#.utf8)) },
+            receiptTrust: trust.store
         )
         try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: root.path)
         await gate.reverifyGumroadKey(now: now)
@@ -191,4 +225,89 @@ struct LicenseGateTests {
         #expect(await gate.validatedDocument(now: now) == nil)
         #expect(await !gate.activationState(now: now).isActive)
     }
+
+    @Test("Forged and copied JSON cannot activate a Mac, even with a future verification date")
+    func forgedRecord() async throws {
+        let root = try sandbox()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try record(at: root)
+        let gate = LicenseGate(
+            licenseURL: root.appendingPathComponent("license.txt"),
+            verifier: { _ in .failure(URLError(.notConnectedToInternet)) },
+            receiptTrust: trust.store
+        )
+        #expect(await gate.validatedDocument(now: now) == nil)
+        #expect(await !gate.activationState(now: now).isActive)
+        #expect(await gate.validatedDocument(now: now.addingTimeInterval(-86_400)) == nil)
+    }
+
+    @Test("Verified receipts survive relaunch offline but edits invalidate the Keychain witness")
+    func trustedReceipt() async throws {
+        let root = try sandbox()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("license.txt")
+        let gate = LicenseGate(
+            licenseURL: url,
+            verifier: { _ in
+                .success(
+                    Data(
+                        #"{"success":true,"purchase":{"product_id":"H5iMAgmqjSc9_p61iSwApA==","sale_id":"test-sale","price":1500}}"#
+                            .utf8
+                    )
+                )
+            },
+            receiptTrust: trust.store
+        )
+        guard case .success = await gate.activateGumroadKey("AAAAAAAA-BBBBBBBB-CCCCCCCC-DDDDDDDD", now: now) else {
+            Issue.record("Activation failed")
+            return
+        }
+        let relaunched = LicenseGate(
+            licenseURL: url,
+            verifier: { _ in .failure(URLError(.notConnectedToInternet)) },
+            receiptTrust: trust.store
+        )
+        #expect(await relaunched.validatedDocument(now: now.addingTimeInterval(3600)) != nil)
+        try record(at: root, key: "EEEEEEEE-FFFFFFFF-GGGGGGGG-HHHHHHHH")
+        #expect(await relaunched.validatedDocument(now: now) == nil)
+    }
+
+    @Test("Legacy receipts migrate only after online verification and witness write failures fail closed")
+    func migrationAndTrustFailure() async throws {
+        let root = try sandbox()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try record(at: root)
+        let gate = LicenseGate(
+            licenseURL: root.appendingPathComponent("license.txt"),
+            verifier: { _ in
+                .success(
+                    Data(
+                        #"{"success":true,"purchase":{"product_id":"H5iMAgmqjSc9_p61iSwApA==","sale_id":"test-sale","price":1500}}"#
+                            .utf8
+                    )
+                )
+            },
+            receiptTrust: trust.store
+        )
+        await gate.reverifyGumroadKey(now: now)
+        #expect(await gate.validatedDocument(now: now) != nil)
+        let failing = LicenseGate(
+            licenseURL: root.appendingPathComponent("license.txt"),
+            verifier: { _ in
+                .success(
+                    Data(
+                        #"{"success":true,"purchase":{"product_id":"H5iMAgmqjSc9_p61iSwApA==","sale_id":"test-sale","price":1500}}"#
+                            .utf8
+                    )
+                )
+            },
+            receiptTrust: GumroadReceiptTrust(read: { _ in nil }, write: { _, _ in throw URLError(.cannotWriteToFile) })
+        )
+        guard case .failure = await failing.activateGumroadKey("AAAAAAAA-BBBBBBBB-CCCCCCCC-DDDDDDDD", now: now) else {
+            Issue.record("Activation succeeded without a trusted receipt")
+            return
+        }
+        #expect(await failing.validatedDocument(now: now) == nil)
+    }
+
 }

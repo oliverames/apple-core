@@ -543,7 +543,7 @@ public actor CloudflareManager {
         }
 
         if await isLaunchAgentRunning() {
-            return await status(messageOverride: "Cloudflare tunnel is already running.", forcedState: .running)
+            return await status(messageOverride: nil, forcedState: nil)
         }
 
         let result = await LaunchAgentManager.bootstrapAsync(
@@ -650,7 +650,7 @@ public actor CloudflareManager {
         }
         return await status(
             messageOverride:
-                "Finish the Cloudflare login in your browser, then choose Check Login. Apple Core is waiting for \(Self.originCertificatePath()).",
+                "Finish the Cloudflare login in your browser, then return to Apple Core. Apple Core is waiting for \(Self.originCertificatePath()).",
             forcedState: .needsLogin
         )
     }
@@ -839,6 +839,11 @@ public actor CloudflareManager {
             connectorCount = await probeConnectors()?.connectorCount
         }
 
+        var publicReady = false
+        if settings.enabled, launchAgentRunning, ownerMachineName.isEmpty, connectorCount != 0 {
+            publicReady = await CloudflareReadiness.isReady(baseURL: Self.publicBaseURL(for: settings))
+        }
+
         let inferredState: CloudflareTunnelState
         let inferredMessage: String
         if !settings.enabled {
@@ -874,6 +879,12 @@ public actor CloudflareManager {
                 count: connectorCount,
                 tunnelName: settings.tunnelName
             )
+        } else if launchAgentRunning,
+            !publicReady
+        {
+            inferredState = .stopped
+            inferredMessage =
+                "The tunnel process is running, but the public sign-in endpoint is not reachable yet. Check your domain and Cloudflare access rules, then retry."
         } else if launchAgentRunning {
             inferredState = .running
             inferredMessage = "Cloudflare tunnel is running at \(Self.publicBaseURL(for: settings))."

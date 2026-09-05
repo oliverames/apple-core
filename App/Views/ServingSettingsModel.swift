@@ -555,7 +555,8 @@ final class ServingSettingsModel: ObservableObject {
             await performCloudflareLogin()
             guard CloudflareAccount.isSignedIn() else {
                 cloudflareSetupError =
-                    "The Cloudflare sign-in did not finish. Try again, and approve the domain you want to use."
+                    cloudflareSetupError
+                    ?? "The Cloudflare sign-in did not finish. Try again, and approve the domain you want to use."
                 return
             }
         }
@@ -591,8 +592,19 @@ final class ServingSettingsModel: ObservableObject {
         remoteSetupStage = "Creating the tunnel and routing \(settings.hostname)…"
         await bootstrapCloudflareTunnel()
 
-        if let status = cloudflareStatus, status.state == .error {
-            cloudflareSetupError = status.message
+        // launchd loading a job is only the beginning. Give the connector and
+        // public DNS a bounded opportunity to expose working OAuth discovery.
+        remoteSetupStage = "Checking your public sign-in address…"
+        let deadline = Date().addingTimeInterval(30)
+        while let status = cloudflareStatus, status.state == .stopped,
+            status.launchAgentRunning, Date() < deadline, !Task.isCancelled
+        {
+            try? await Task.sleep(for: .seconds(2))
+            await refreshCloudflareStatus()
+        }
+        if let status = cloudflareStatus, status.state != .running {
+            cloudflareSetupError = configurationSaveError ?? status.message
+            needsManualHostname = true
         }
     }
 
@@ -614,6 +626,10 @@ final class ServingSettingsModel: ObservableObject {
     /// certificate appears on disk the moment they authorize, so poll for it.
     private func performCloudflareLogin() async {
         cloudflareStatus = await cloudflareManager().logInToCloudflare()
+        if let status = cloudflareStatus, status.state == .error || status.state == .missingCloudflared {
+            cloudflareSetupError = status.message
+            return
+        }
 
         // Two minutes is long enough to find the right Cloudflare account in a
         // browser and short enough that an abandoned sign-in stops spinning.
