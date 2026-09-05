@@ -8,7 +8,8 @@ Author: Oliver Ames
 - [x] Fix confirmed gaps and add focused regression coverage.
 - [x] Verify clean installation, checkout, and buyer delivery without a real charge.
 - [x] Build, sign, notarize, and publish the DMG through Gumroad and source release through GitHub.
-- [ ] In progress: finish publication verification and remove historical GitHub assets after explicit approval.
+- [x] Publication verification re-run on September 5, 2026 (afternoon) from a fresh Claude Code session.
+- [ ] Remove historical GitHub assets after explicit approval (28 assets across v1.0.0 through v1.6.1 remain public).
 - [ ] Publish authorized community announcements where local rules permit.
 
 ## Scope
@@ -61,3 +62,16 @@ Observed September 5, 2026. No real purchase has been made.
 - A fresh external Cloudflare account's interactive browser authorization and live DNS provisioning have not been exercised. Installer, readiness, ownership, DNS policy, and OAuth behavior were checked separately without altering the production tunnel.
 - The existing Mac cannot represent a fully fresh user: cloudflared is already installed, its login writes the current user's default certificate path, and app preferences are shared beyond the configuration-profile override. VirtualBuddy's current library is empty. UTM's inventory call timed out. A clean Mac/VM is needed for the remaining combined browser-login and DNS-provisioning acceptance test.
 - Public GPL source permits independent builds. Protection applies to official downloads and the official app's licensing, not third-party builds or copies already downloaded.
+
+## Re-verification, September 5, 2026, 15:45 EDT
+
+A fresh session reviewed the Codex rollout for this work and re-checked every live claim it could reach without a screen.
+
+- `main` at `2a77474` is clean and pushed. The full Xcode test suite passed with 198 tests, 0 failures, at 15:46 EDT. The earlier note of 208 tests could not be reproduced from the current scheme; the count difference is unexplained and no test failed. The eight distribution-worker tests and `swift format lint --strict` also passed.
+- The deployed Cloudflare worker version `52202004-2749-4993-83b4-a588c7e3972c` (deployed 15:22 UTC) is the esbuild bundle of `Distribution/worker.mjs` at HEAD. It carries the manual-redirect fix and no longer contains `redirect: "error"`.
+- Both `assets.amesvt.com` and `assets.ames.consulting` returned HTTP 402 to an anonymous request for `Apple.Core-1.7.3.zip` and HTTP 403 to a forged license header.
+- Release v1.7.3 through v1.7.0 carry zero assets. Releases v1.0.0 through v1.6.1 still carry 28 ZIP and checksum assets. Deletion remains unauthorized. Note that the published appcast still lists GitHub download URLs for entries at or below 1.6.1, so those historical entries will dangle after deletion, which does not affect current clients.
+- The only remaining Actions caches are the SwiftPM package cache and the Gitleaks cache. Both DerivedData caches are gone. The last two main CI runs passed.
+- The Gumroad product page returned HTTP 200.
+- The clean-Mac acceptance VM `Apple Core Acceptance` (macOS 26.6.2, VirtualBuddy) finished installing and first booted at 13:13 EDT. Its shared folder holds the release DMG, a config naming tunnel `applecore-acceptance-eb9bf8e0`, and an owner-signed test license that expired at 15:11 EDT. The combined browser-login and DNS-provisioning test inside that VM has not been run. It needs an interactive session: a new short-lived test license and a Cloudflare browser sign-in inside the VM.
+- Community announcement drafts moved from the temporary audit folder to `docs/planning/announcements/2026-09-05-release-1.7.3-reddit-drafts.md`. Nothing has been posted. r/codex and r/MacOS prohibit bot posts, r/macapps requires local karma and mod approval, and the r/ClaudeCode showcase thread is a comment, not a post.
