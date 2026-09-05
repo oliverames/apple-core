@@ -12,6 +12,24 @@ permissions:
     contents: read
 
 jobs:
+    distribution:
+        name: Verify licensed downloads and source-only repository
+        runs-on: ubuntu-latest
+        timeout-minutes: 5
+        steps:
+            - uses: actions/checkout@v6
+            - uses: actions/setup-node@v6
+              with:
+                  node-version: '22'
+            - run: node --test Distribution/worker.test.mjs
+            - name: Reject packaged application files in source
+              shell: bash
+              run: |
+                  if git ls-files | grep -Ei '\.(dmg|zip|pkg|ipa)$|\.app/'; then
+                    echo 'Application packages belong in paid distribution, not GitHub source.'
+                    exit 1
+                  fi
+
     build:
         name: Build and test on macOS ${{ matrix.macos }} with Xcode ${{ matrix.xcode }}
         runs-on: macos-${{ matrix.macos }}

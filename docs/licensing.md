@@ -1,8 +1,8 @@
 # Apple Core — licensing (dual)
 
 *Decision dated 2026-09-02. `EULA.md` governs the next signed binary whose `MARKETING_VERSION`
-is tagged after this file appears; prior GitHub Releases through v1.6.1 remain
-under `LICENSE.md` (GPL-3.0-or-later).*
+is tagged after this file appears; prior binaries through v1.6.1 were conveyed
+under `LICENSE.md` (GPL-3.0-or-later). Removing their download links does not change those rights.*
 
 ## The split
 
@@ -17,7 +17,7 @@ When someone says "Apple Core is GPL'd," the source is. When someone says "I bou
 
 ## Why this exists
 
-Gumroad's monetization with teeth — "an unlicensed copy does not allow for setting up any MCP" — requires an unsigned, unactivated copy's MCP session-creating requests (`POST /mcp`, `GET /sse`, `POST /message`, and the OAuth endpoints) to be rejected with `402 Payment Required` until a signed license file is dropped into `~/.config/apple-core/license.txt` via **Settings → License**. A GPL-conveyed binary cannot carry such a term: recipients receive GPL rights, the check would be a further restriction, and anyone could legally strip it and redistribute under the GPL. So the EULA-conveyed binary must contain **no** GPL-licensed third-party code. The source already carries `THIRD_PARTY_LICENSES/` and `NOTICE`; those attribution files ride in the binary too, because the MIT donors' notice-preservation obligations survive any conveyance.
+Gumroad's monetization with teeth — "an unlicensed copy does not allow for setting up any MCP" — requires an unsigned, unactivated copy's MCP session-creating requests (`POST /mcp`, `GET /mcp`, `DELETE /mcp`, `GET /sse`, and `POST /message`) to be rejected with `402 Payment Required` until a signed license file is dropped into `~/.config/apple-core/license.txt` via **Settings → License**. A GPL-conveyed binary cannot carry such a term: recipients receive GPL rights, the check would be a further restriction, and anyone could legally strip it and redistribute under the GPL. So the EULA-conveyed binary must contain **no** GPL-licensed third-party code. The source already carries `THIRD_PARTY_LICENSES/` and `NOTICE`; those attribution files ride in the binary too, because the MIT donors' notice-preservation obligations survive any conveyance.
 
 `apple-mail-mcp` (imdinu, GPL-3.0) is the pivot that forced the split:
 
@@ -28,9 +28,11 @@ Gumroad's monetization with teeth — "an unlicensed copy does not allow for set
 
 ## The activation mechanism
 
-**Two activation paths.** Buyers paste the Gumroad license key from their purchase into **Settings → License**; `App/Services/Serving/GumroadLicense.swift` verifies it against `POST https://api.gumroad.com/v2/licenses/verify` (product `H5iMAgmqjSc9_p61iSwApA==`, uses not counted), writes `~/.config/apple-core/gumroad-license.json` (mode 0600) and re-checks about daily while the app runs, with a 14-day offline grace before the gate closes. A refund, chargeback, or disabled key closes the gate at the next re-check. This mirrors Ping Warden. The second path is the signed envelope Oliver issues directly, verified offline with Ed25519: `Shared/LicenseDocument.swift` parses the three-line envelope (canonical JSON payload + Ed25519 signature over it, base64) with `CryptoKit`. `App/Services/Serving/LicenseGate.swift` loads `license.txt` from the config dir, verifies against the public key embedded in the binary, and `AppleCoreHTTPServer.swift` consults the gate before opening any MCP session. `GET /license-status` (unauthenticated) so a support conversation can distinguish "not activated" from "server broken" without tokens. Sparkle updates, the landing page, and the unauthenticated icon routes stay reachable either way.
+**Two activation paths.** Buyers paste the Gumroad license key from their purchase into **Settings → License**; `App/Services/Serving/GumroadLicense.swift` verifies it against `POST https://api.gumroad.com/v2/licenses/verify` (product `H5iMAgmqjSc9_p61iSwApA==`, uses not counted), writes `~/.config/apple-core/gumroad-license.json` (mode 0600), binds its exact bytes to the app's protected Keychain group, and re-checks about daily while the app runs, with a 14-day offline grace before the gate closes. A refund, chargeback, or disabled key closes the gate at the next re-check. This mirrors Ping Warden. The second path is the signed envelope Oliver issues directly, verified offline with Ed25519: `Shared/LicenseDocument.swift` parses the three-line envelope (canonical JSON payload + Ed25519 signature over it, base64) with `CryptoKit`. `App/Services/Serving/LicenseGate.swift` loads `license.txt` from the config dir, verifies against the public key embedded in the binary, and `AppleCoreHTTPServer.swift` consults the gate before opening any MCP session. `GET /license-status` (unauthenticated) so a support conversation can distinguish "not activated" from "server broken" without tokens. The landing page, discovery metadata, and icons remain public. License status never exposes the buyer's email. Sparkle downloads require a valid license through the distribution worker.
 
 An unlicensed installation answers every MCP session-creating request with `402 Payment Required` + a plain-text body pointing at **Settings → License**. Once a valid license file is written, the HTTP server picks the change up on the next request (no restart needed).
+
+Paid activation rejects other products, unpaid or zero-price purchases, seller test purchases, preorder authorizations, refunds, chargebacks, disputes, and ended subscriptions. Paid gifts are supported. Editing or copying the cache does not grant offline access. An old cache without Keychain trust must be verified online before it can authorize serving. Existing source licenses remain GPL-3.0-or-later, so the official binary gate does not prevent people from modifying and building the source.
 
 ## Selling through Gumroad
 
@@ -46,7 +48,7 @@ Only the embedded public key ships. The private key is never in the repository.
 
 ### Creating a product
 
-The repo ships the Gumroad CLI as an optional helper (authenticated in this workspace as `oliverames@gmail.com`; re-authenticate locally with `gumroad auth login` or `op run --env-file=~/.claude/.env -- gumroad …`). At publication time, create the product once, with a real fulfillment asset (the DMG/ZIP is the per-purchase deliverable; the license file is the buyer's own activation material).
+The repo ships the Gumroad CLI as an optional helper (authenticated in this workspace as `oliverames@gmail.com`; re-authenticate locally with `gumroad auth login` or `op run --env-file=~/.claude/.env -- gumroad …`). At publication time, create the product once, with a real fulfillment asset (the DMG is the per-purchase deliverable; the license file is the buyer's own activation material).
 
 Checklist (verified by running the CLI against the live account):
 
@@ -69,7 +71,7 @@ Deliver the resulting `APPLE-CORE-LICENSE-1` file to the buyer via Gumroad's ful
 
 ### What buyers receive
 
-- The signed, notarized `.app` via Gumroad (the deliverable), governed by `EULA.md` (the purchaser also has the right to convey the Source Code under GPL-3.0-or-later, to IR receivers under it).
+- The signed, notarized DMG containing the `.app`, delivered by Gumroad after payment, governed by `EULA.md` (the purchaser also has the right to convey the Source Code under GPL-3.0-or-later, to IR receivers under it).
 - A Gumroad license key on the product's Content page and in the receipt, which they paste into **Apple Core → Settings → License**. The key is the credential; treat it like a password.
 
 ## Compliance and release posture

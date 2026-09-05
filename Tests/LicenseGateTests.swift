@@ -226,6 +226,30 @@ struct LicenseGateTests {
         #expect(await !gate.activationState(now: now).isActive)
     }
 
+    @Test("Re-entering a revoked installed key closes its cache but another rejected key does not")
+    func manualRevocation() async throws {
+        let root = try sandbox()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try record(at: root)
+        let receipt = root.appendingPathComponent("gumroad-license.json")
+        try trust.store.write(Data(SHA256.hash(data: Data(contentsOf: receipt))), receipt)
+        let gate = LicenseGate(
+            licenseURL: root.appendingPathComponent("license.txt"),
+            verifier: { _ in .success(Data(#"{"success":false}"#.utf8)) },
+            receiptTrust: trust.store
+        )
+        _ = await gate.activateGumroadKey("EEEEEEEE-FFFFFFFF-GGGGGGGG-HHHHHHHH", now: now)
+        #expect(await gate.validatedDocument(now: now) != nil)
+        _ = await gate.activateGumroadKey("AAAAAAAA-BBBBBBBB-CCCCCCCC-DDDDDDDD", now: now)
+        #expect(await gate.validatedDocument(now: now) == nil)
+        let relaunched = LicenseGate(
+            licenseURL: root.appendingPathComponent("license.txt"),
+            verifier: { _ in .failure(URLError(.notConnectedToInternet)) },
+            receiptTrust: trust.store
+        )
+        #expect(await relaunched.validatedDocument(now: now) == nil)
+    }
+
     @Test("Forged and copied JSON cannot activate a Mac, even with a future verification date")
     func forgedRecord() async throws {
         let root = try sandbox()

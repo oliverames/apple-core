@@ -621,9 +621,7 @@ final class ServingSettingsModel: ObservableObject {
         applyCloudflareResult(result)
     }
 
-    /// Opens the Cloudflare browser sign-in and waits for it, rather than
-    /// making the user come back and press a second "Check Login" button. The
-    /// certificate appears on disk the moment they authorize, so poll for it.
+    /// The manager waits asynchronously for browser sign-in and reports failure.
     private func performCloudflareLogin() async {
         cloudflareStatus = await cloudflareManager().logInToCloudflare()
         if let status = cloudflareStatus, status.state == .error || status.state == .missingCloudflared {
@@ -631,17 +629,7 @@ final class ServingSettingsModel: ObservableObject {
             return
         }
 
-        // Two minutes is long enough to find the right Cloudflare account in a
-        // browser and short enough that an abandoned sign-in stops spinning.
-        let deadline = Date().addingTimeInterval(120)
-        while Date() < deadline {
-            if CloudflareAccount.isSignedIn() {
-                await refreshCloudflareAccount()
-                await refreshCloudflareStatus()
-                return
-            }
-            try? await Task.sleep(for: .seconds(2))
-        }
+        await refreshCloudflareAccount()
         await refreshCloudflareStatus()
     }
 

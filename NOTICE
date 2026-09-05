@@ -15,7 +15,7 @@ The **signed-binary distribution channel** (the prebuilt DMG Oliver sells
 via Gumroad) is offered under `EULA.md`, not the GPL. It contains no
 GPL-licensed third-party code, so its conveyance creates no GPL offer.
 The published source — the thing a GPL fork rebuilds from — remains
-GPL-3.0-or-later; the GPL at `THIRD_PARTY_LICENSES/iMCP.LICENSE` is not
+GPL-3.0-or-later; the MIT license at `THIRD_PARTY_LICENSES/iMCP.LICENSE` is not
 the license on a bought binary. `apple-mail-mcp`'s GPL code is therefore
 clean-room reference only: new code must be written from the documented
 behavior (see `docs/planning/BUILD_PLAN.md` §4.4 and

@@ -50,7 +50,8 @@ VERSION=1.0.0 Scripts/release.sh check      # quick release-build check
 VERSION=1.0.0 Scripts/release.sh bump       # bump MARKETING_VERSION / CURRENT_PROJECT_VERSION
 VERSION=1.0.0 Scripts/release.sh archive    # xcodebuild archive
 VERSION=1.0.0 Scripts/release.sh export     # export Developer ID signed app (requires TEAM_ID / signing identity)
-VERSION=1.0.0 Scripts/release.sh package    # creates Apple.Core-1.0.0.zip + sha256
+VERSION=1.0.0 Scripts/release.sh package    # creates the licensed Sparkle update ZIP
+VERSION=1.0.0 Scripts/release.sh dmg        # creates, signs, notarizes, and staples the buyer DMG
 ```
 
 `Scripts/release.sh all` uses the verified `notarytool-profile` keychain profile by default and performs the complete signed, notarized, stapled, and validated local preparation. Override `KEYCHAIN_PROFILE` if another Mac uses a different profile name. If the profile is unavailable, set `NOTARY_KEY_FILE`, `NOTARY_KEY_ID`, and `NOTARY_ISSUER_ID` together from a temporary, private 1Password-backed scratch directory. The script never stores those values in the repository. Individual subcommands remain available for diagnosis, but `commit` also refuses to tag an app that fails Developer ID, Gatekeeper, or stapler validation.
@@ -66,7 +67,17 @@ VERSION=1.0.0 Scripts/release.sh push-tags  # push the release commit and tag (p
 
 The command pushes the current `main` or `master` branch with the tag. The tag then triggers `release.yml`, which re-runs CI as a gate and creates the GitHub release (source + notes only; see below) using `docs/release-notes/vX.Y.Z.md` if present, otherwise auto-generated notes.
 
-GitHub releases no longer carry the signed DMG — see `docs/licensing.md`. The notarized zip (`dist/Apple.Core-<version>.zip` + `.sha256` from `Scripts/release.sh package`) is distributed through Gumroad under `EULA.md`; do not run `Scripts/release.sh upload` for normal releases (that subcommand now refuses and points at Gumroad).
+GitHub releases no longer carry the signed DMG — see `docs/licensing.md`. The signed, notarized DMG (`dist/Apple.Core-<version>.dmg` from `Scripts/release.sh dmg`) is delivered by Gumroad after payment under `EULA.md`; do not run `Scripts/release.sh upload` for normal releases (that subcommand now refuses and points at Gumroad).
+
+## Protected downloads
+
+From build 27, Sparkle adds `X-Apple-Core-License` only to HTTPS Apple Core ZIP requests at `assets.amesvt.com`. `Distribution/worker.mjs` verifies paid Gumroad purchases or valid owner-signed licenses before fetching an update. Both R2 custom domains must run this worker, and the bucket's `r2.dev` endpoint must stay disabled. Unrelated assets pass through unchanged. Authorized responses are private and are not cached.
+
+Run `node --test Distribution/worker.test.mjs` before deploying with `wrangler deploy --config Distribution/wrangler.jsonc`. Supply Cloudflare credentials through 1Password. Verify anonymous requests return 402 on both domains, invalid credentials return 403, and a valid credential downloads bytes with the published checksum. Never log license headers.
+
+The appcast marks this release as informational for builds below 27 and sends those users to Gumroad for a manual reinstall. Their updater cannot send license credentials. Publish the new buyer DMG and signed appcast before enabling protected downloads. GitHub release assets must remain empty, including historical releases. Retain their source tags and source archives.
+
+Paid activation requires an initial internet connection. The app binds the verified cache to its Data Protection Keychain access group. Release signing must include a Developer ID provisioning profile that authorizes the Apple Core identifier and Keychain group. Verify Keychain persistence in the signed app before publication.
 
 ## Sparkle Auto-Updates
 
@@ -108,7 +119,7 @@ op run --env-file=$HOME/.claude/.env -- sh -c 'for f in dist/Apple.Core-1.7.0.zi
 # then GET the zip, compare its sha256 with dist/*.sha256, and compare sign_update's enclosure signature with the appcast item
 ```
 
-  `--s3-no-check-bucket` matters: the scoped R2 key cannot list or create buckets, and without the flag rclone tries `CreateBucket` first and fails with `AccessDenied`. The same zip is also attached to the Gumroad product (`gumroad products update <id> --file dist/<zip> --file-name <zip>`) as the buyer deliverable. Pass the filename explicitly: omission produced an unnamed file entry during the 1.7.2 release. Verify the uploaded name, size, and downloaded checksum. Use `gumroad products content get`, then `content set --page <page-id> --dry-run`, to replace the old visible download while preserving the EULA, license-key block, and any other buyer content. Removing an old embed does not delete its uploaded file. `SURequireSignedFeed` also requires a signature over the complete appcast XML. The script adds and verifies that feed signature after every edit.
+  `--s3-no-check-bucket` matters: the scoped R2 key cannot list or create buckets, and without the flag rclone tries `CreateBucket` first and fails with `AccessDenied`. Attach the DMG to the Gumroad product (`gumroad products update <id> --file dist/<dmg> --file-name <dmg>`) as the buyer deliverable. The ZIP exists only for licensed Sparkle updates. Pass the filename explicitly: omission produced an unnamed file entry during the 1.7.2 release. Verify the uploaded name, size, and downloaded checksum. Use `gumroad products content get`, then `content set --page <page-id> --dry-run`, to replace the old visible download while preserving the EULA, license-key block, and any other buyer content. Removing an old embed does not delete its uploaded file. `SURequireSignedFeed` also requires a signature over the complete appcast XML. The script adds and verifies that feed signature after every edit.
 
 - **Publish the appcast** by copying the updated `appcast.xml` to the `gh-pages` branch and pushing (Pages serves that branch, matching ping-warden):
 

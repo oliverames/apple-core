@@ -210,6 +210,14 @@ public actor LicenseGate {
                     LicenseActivationError("Gumroad answered with something Apple Core did not understand.")
                 )
             case .revoked:
+                // An authoritative rejection of the installed key closes its
+                // cache immediately. A typo or another key cannot revoke it.
+                if var record = readGumroadRecord(), record.key == key {
+                    record.cachedValid = false
+                    revokedKeys.insert(key)
+                    try? receiptTrust.write(nil, gumroadRecordURL)
+                    try? writeGumroadRecord(record)
+                }
                 return .failure(
                     LicenseActivationError(
                         "Gumroad does not recognise this key for Apple Core, or the purchase was refunded or disabled."

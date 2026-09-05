@@ -523,9 +523,7 @@ public actor CloudflareManager {
         // rather than letting "started" stand as the whole story.
         if let routingWarning {
             startStatus.message = routingWarning
-            if startStatus.state == .running {
-                startStatus.state = .error
-            }
+            startStatus.state = .error
         }
         return CloudflareOperationResult(settings: settings, status: startStatus, didChangeSettings: before != settings)
     }
@@ -635,9 +633,8 @@ public actor CloudflareManager {
             .path
     }
 
-    /// Kicks off the browser-based Cloudflare login. The child process is not
-    /// awaited — it stays alive until the person finishes authorizing in the
-    /// browser — so the caller polls `status()` to notice the certificate.
+    /// Waits asynchronously for browser authorization, with a bounded lifetime.
+    /// Failed or abandoned login processes must not survive a retry.
     public func logInToCloudflare() async -> CloudflareTunnelStatus {
         guard fileManager.fileExists(atPath: settings.cloudflaredPath) else {
             return await status(
@@ -645,14 +642,38 @@ public actor CloudflareManager {
                 forcedState: .missingCloudflared
             )
         }
-        if let failure = runShellDetached(settings.cloudflaredPath, ["tunnel", "login"]) {
-            return await status(messageOverride: "Could not start Cloudflare login: \(failure)", forcedState: .error)
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: settings.cloudflaredPath)
+        process.arguments = ["tunnel", "login"]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+            guard try await ProcessCompletion.wait(for: process, timeout: .seconds(120)) else {
+                return await status(
+                    messageOverride: "Cloudflare sign-in timed out. Try again and finish authorizing in your browser.",
+                    forcedState: .error
+                )
+            }
+            guard process.terminationStatus == 0, CloudflareAccount.isSignedIn() else {
+                return await status(
+                    messageOverride:
+                        "Cloudflare sign-in did not finish. Try again and select a domain managed by Cloudflare in your browser.",
+                    forcedState: .error
+                )
+            }
+        } catch is CancellationError {
+            return await status(
+                messageOverride: "Cloudflare sign-in was cancelled. You can try again.",
+                forcedState: .error
+            )
+        } catch {
+            return await status(
+                messageOverride: "Could not start Cloudflare login: \(error.localizedDescription)",
+                forcedState: .error
+            )
         }
-        return await status(
-            messageOverride:
-                "Finish the Cloudflare login in your browser, then return to Apple Core. Apple Core is waiting for \(Self.originCertificatePath()).",
-            forcedState: .needsLogin
-        )
+        return await status()
     }
 
     /// The cloudflared to use. Prefers whatever is actually installed —
