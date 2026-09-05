@@ -29,6 +29,9 @@ test('valid Gumroad download preserves range, strips credentials and disables ca
     calls++;
     if(typeof request==='string') {
       assert.equal(new URLSearchParams(init.body).get('increment_uses_count'),'false');
+      assert.match(init.headers['User-Agent'], /Apple Core Updates/);
+      assert.equal(init.headers.Accept, 'application/json');
+      assert.equal(init.redirect, 'manual');
       return Response.json({success:true,purchase});
     }
     assert.equal(request.headers.get('X-Apple-Core-License'),null);
@@ -44,6 +47,18 @@ test('invalid, outage and oversized Gumroad replies fail closed', async () => {
     const result=await handle(new Request(url,{headers:{'X-Apple-Core-License':key}}),async()=>response);
     assert.ok([403,503].includes(result.status));
   }
+});
+test('Gumroad redirects are rejected without forwarding the license', async () => {
+  let calls=0;
+  const result=await handle(new Request(url,{headers:{'X-Apple-Core-License':key}}),async (request,init)=>{
+    calls++;
+    assert.equal(request,'https://api.gumroad.com/v2/licenses/verify');
+    assert.equal(init.redirect,'manual');
+    return new Response(null,{status:302,headers:{Location:'https://example.com/redirect'}});
+  });
+  assert.equal(calls,1);
+  assert.equal(result.status,503);
+  assert.equal(result.headers.get('X-Apple-Core-Error'),'gumroad_http_302');
 });
 test('signed license checks signature, product and expiration',async()=>{
   const pair=await crypto.subtle.generateKey('Ed25519',true,['sign','verify']);

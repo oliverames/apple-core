@@ -70,8 +70,10 @@ async function boundedJSON(response) {
   return JSON.parse(new TextDecoder().decode(data));
 }
 
-function failure(status, message) {
-  return new Response(message + '\n', {status, headers: {'Cache-Control': 'private, no-store', 'Content-Type': 'text/plain; charset=utf-8'}});
+function failure(status, message, reason) {
+  const headers = {'Cache-Control': 'private, no-store', 'Content-Type': 'text/plain; charset=utf-8'};
+  if (reason) headers['X-Apple-Core-Error'] = reason;
+  return new Response(message + '\n', {status, headers});
 }
 
 export async function handle(request, fetcher = fetch) {
@@ -91,14 +93,24 @@ export async function handle(request, fetcher = fetch) {
     try {
       const result = await fetcher('https://api.gumroad.com/v2/licenses/verify', {
         method: 'POST',
-        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          Accept: 'application/json',
+          'User-Agent': 'Apple Core Updates (+https://github.com/oliverames/apple-core)',
+        },
         body: new URLSearchParams({product_id: PRODUCT, license_key: credential, increment_uses_count: 'false'}),
         signal: AbortSignal.timeout(15000),
-        redirect: 'error',
+        // workerd rejects redirect:'error'. Manual mode keeps the key on this
+        // origin; the status check below rejects every redirect response.
+        redirect: 'manual',
       });
-      if (result.status !== 200 && result.status !== 404) return failure(503, 'License verification is temporarily unavailable.');
+      if (result.status !== 200 && result.status !== 404) return failure(503, 'License verification is temporarily unavailable.', 'gumroad_http_' + result.status);
       valid = paidPurchase(await boundedJSON(result));
-    } catch { return failure(503, 'License verification is temporarily unavailable.'); }
+    } catch (error) {
+      // A non-secret failure category supports diagnosis without logging keys,
+      // buyer details, request headers, or upstream response bodies.
+      return failure(503, 'License verification is temporarily unavailable.', 'gumroad_' + (error instanceof Error ? error.name : 'request_error'));
+    }
   } else {
     valid = await signedLicense(credential);
   }

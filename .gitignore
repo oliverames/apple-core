@@ -41,5 +41,8 @@ __pycache__/
 # Release artifacts
 dist/
 
+# Local Cloudflare development cache
+.wrangler/
+
 # macOS
 .DS_Store

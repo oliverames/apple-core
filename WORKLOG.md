@@ -1,5 +1,26 @@
 # Apple Core worklog
 
+## 2026-09-05 - First-run licensing and paid DMG release 1.7.3
+
+Released 1.7.3/build 27 with a signed, notarized universal DMG delivered through
+Gumroad. GitHub's new release contains source and notes only. First-run setup
+requires activation, reports Cloudflare routing/readiness failures, and bounds
+browser login. Offline Gumroad receipts now require a protected Keychain witness.
+The complete findings and verification limits are recorded in
+`docs/audits/2026-09-05-first-run-and-purchase.md`.
+
+All 208 Swift tests passed. The installed DMG passed the local OAuth/MCP flow,
+signature and notarization checks. Gumroad's no-charge seller checkout delivered
+the exact DMG and displayed a receipt/license key. The app and download servers
+rejected that unpaid test key.
+
+The distribution Worker protects both asset domains and leaves unrelated assets
+available. Live workerd testing found unsupported `redirect: 'error'` handling
+on Gumroad requests. Manual redirects now reject every redirect without exposing
+the key. Eight Worker tests and the deployed download checks pass. Historical
+GitHub asset removal awaits the explicit approval requested after automatic
+approval review rejected that operation.
+
 ## 2026-09-04 - Bug review, activation UI, and release 1.7.2
 
 Reviewed the app, CLI, shared helpers, tests, and distribution workflow with

@@ -6,9 +6,10 @@ Author: Oliver Ames
 
 - [x] Audit first-run tunnel, authentication, license enforcement, and live distribution.
 - [x] Fix confirmed gaps and add focused regression coverage.
-- [ ] Verify clean installation, checkout, and buyer delivery without a real charge.
-- [ ] In progress: build, sign, notarize, and publish the DMG through Gumroad and source release through GitHub.
-- [ ] Verify published downloads, update feed, license enforcement, and CI.
+- [x] Verify clean installation, checkout, and buyer delivery without a real charge.
+- [x] Build, sign, notarize, and publish the DMG through Gumroad and source release through GitHub.
+- [ ] In progress: finish publication verification and remove historical GitHub assets after explicit approval.
+- [ ] Publish authorized community announcements where local rules permit.
 
 ## Scope
 
@@ -25,12 +26,24 @@ The official application must be delivered by Gumroad after payment and require 
 
 Observed September 5, 2026. No real purchase has been made.
 
-- The final Debug app build and all 208 Swift tests passed. The seven distribution-worker tests passed, Swift formatting and shell checks passed, and the full-history Gitleaks scan found no secrets in 317 commits.
+- The final Debug app build and all 208 Swift tests passed. The eight distribution-worker tests passed, Swift formatting and shell checks passed, and the full-history Gitleaks scan found no secrets in 317 commits.
 - The production cloudflared installer downloaded version 2026.8.3 into an isolated temporary folder. GitHub SHA-256 verification, Cloudflare Developer ID verification, extraction, installation, and execution all passed.
 - The running app, with temporary configuration and a separate port, displayed the welcome and activation screens. Continue remained disabled without a license.
-- Full local HTTP verification passed: discovery, client registration, wrong master-token denial, PKCE rejection and successful exchange, unlicensed MCP rejection, short-lived signed test activation, one-time native client approval, MCP initialization and ping, refresh rotation and replay denial, and revocation of both access-token generations. The temporary activation was removed. No Apple service data was queried.
+- Full local HTTP verification passed against the app installed from the release DMG: discovery, client registration, wrong master-token denial, PKCE rejection and successful exchange, unlicensed MCP rejection, short-lived signed test activation, one-time native client approval, MCP initialization and ping, refresh rotation and replay denial, and revocation of both access-token generations. The temporary activation was removed. No Apple service data was queried.
 - Apple's profile API initially returned HTTP 500. A later retry created `Apple Core Developer ID`, authorizing this app's Keychain group. A Developer ID signed probe using the production receipt code wrote a temporary protected Keychain entry, read it in another process, and removed it successfully.
-- The public Gumroad product and checkout are reachable. The seller session in the available in-app browser is signed out. Receipt and no-charge seller test checkout remain pending user sign-in.
+- The authenticated seller checkout completed using Gumroad's test-purchase mode. Both checkout and receipt explicitly confirmed no charge. The buyer page displayed the EULA, Apple.Core-1.7.3.dmg, and a license key. The receipt displayed that key and a View content link. The DMG downloaded through the buyer page matched the locally signed release byte for byte.
+- Gumroad's live verification API marked the resulting purchase `test: true`. Both protected download domains rejected that actual test key with HTTP 403. The installed release rejected activation and kept Continue disabled. No paid entitlement was fabricated.
+
+## Published release
+
+- [Version 1.7.3, build 27](https://github.com/oliverames/apple-core/releases/tag/v1.7.3), source commit `8700879115eb5456939230ae987730057af5db3b`, has zero attached assets. It contains source archives and release notes.
+- The universal Intel/Apple Silicon app and DMG passed signature, Gatekeeper, and stapled-ticket validation. Apple accepted app notarization `07a74c10-0292-44d5-bcb7-21d223011dfd` and DMG notarization `52038975-7d4d-4ed6-90ae-ed54f75f348e`.
+- [Gumroad](https://amesconsulting.gumroad.com/l/applecore) remains published at $15. Its buyer page serves the DMG after checkout, with activation and installation instructions. Old ZIP embeds were removed from the buyer page.
+- DMG: 10,737,481 bytes, SHA-256 `08cd14d096f46f9e11b906f35a5f3de18433b145229335782442ee6a4b533ae3`.
+- Protected update ZIP: 9,777,491 bytes, SHA-256 `db89014993661065cbb292227e20ae3c5fd928ed21cd901dcdb26c0a695146ee`.
+- [Release CI](https://github.com/oliverames/apple-core/actions/runs/33973470579), [main CI](https://github.com/oliverames/apple-core/actions/runs/33973470587), and [Pages deployment](https://github.com/oliverames/apple-core/actions/runs/33973582928) passed. The live signed appcast matched the verified source bytes. Older clients receive an informational Gumroad reinstall link; build 27 and later authenticate automatic update downloads.
+- Cloudflare Worker version `52202004-2749-4993-83b4-a588c7e3972c` protects the complete `assets.amesvt.com` and `assets.ames.consulting` host routes. The R2 managed public URL is disabled. Both domains passed anonymous, encoded-path, forged-key, range, HEAD, and cache-isolation checks. Authorized downloads matched the ZIP. An unrelated existing site asset remained available.
+- A real Workers runtime exposed unsupported `redirect: 'error'` handling, which Node mocks had missed. The final server fix uses manual redirects and rejects all redirect responses without forwarding the license. A real Gumroad invalid-key lookup now returns HTTP 403 through both deployed routes. The regression suite covers redirect refusal.
 
 ## Fixes
 
@@ -41,7 +54,7 @@ Observed September 5, 2026. No real purchase has been made.
 
 ## Remaining verification
 
-- Complete Gumroad's no-charge seller checkout and inspect its receipt/download after sign-in. Real payment processing has not been exercised.
-- Verify the signed release, DMG, Gumroad upload, protected distribution routes, GitHub release inventory, appcast, and CI.
+- Real payment processing has not been exercised. The no-charge seller test verified checkout, receipt, buyer delivery, and rejection of unpaid test licenses.
+- Historical GitHub releases still contain 28 ZIP/checksum assets. Automatic approval review rejected deletion without explicit approval of existing assets. The user was asked to authorize removing those exact assets while preserving source archives, tags, and release notes.
 - A fresh external Cloudflare account's interactive browser authorization and live DNS provisioning have not been exercised. Installer, readiness, ownership, DNS policy, and OAuth behavior were checked separately without altering the production tunnel.
-
+- Public GPL source permits independent builds. Protection applies to official downloads and the official app's licensing, not third-party builds or copies already downloaded.
