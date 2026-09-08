@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Privacy Policy — Apple Core</title>
+<meta name="description" content="How Apple Core handles Mac permissions, hosted MCP requests, connection credentials, and information shared with AI providers.">
+<link rel="canonical" href="https://applecore.app/privacy.html">
+<link rel="icon" href="/favicon.ico">
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<header class="wrap"><p><a href="/">Apple Core</a></p></header>
+<main class="wrap legal">
+<h1>Privacy policy</h1>
+<p>Effective September 8, 2026. Apple Core is developed and operated by Oliver Ames.</p>
+<h2>You choose what to share</h2>
+<p>Apple Core connects AI clients to services on your Mac through the Model Context Protocol (MCP). The services available depend on your edition and the permissions you enable. They can include calendars, contacts, reminders, notes, messages, mail, files, location, screen or camera capture, audio, shortcuts, and system information.</p>
+<p>Enabling a service makes its available tools accessible to authorized clients. Some tools can change data. Review the permissions and actions requested by your AI client. You can disable services, remove shared folders, disconnect clients, or quit Apple Core to stop access.</p>
+<h2>Where requests and results go</h2>
+<p>For a local connection, the client communicates with Apple Core on your Mac. With your own Cloudflare setup, remote requests pass through infrastructure configured in your Cloudflare account.</p>
+<p>With Apple Core hosting, requests pass through Cloudflare infrastructure operated for Apple Core and an encrypted connection to your Mac. The relay processes requests and results in memory to deliver them. Its application code does not persist MCP request or response content. Cloudflare may process network and operational information, including IP addresses, to deliver and protect the service.</p>
+<p>Your AI provider receives the information returned by the tools you use. Its storage, training, and retention practices are governed by that provider’s policies and your account settings. Disconnecting Apple Core does not delete information already received by an AI provider.</p>
+<h2>Connection information</h2>
+<p>Apple Core stores its settings, service choices, connection credentials, and OAuth client authorization records on your Mac. The hosted service stores installation credential hashes and temporary invitation records to authenticate your connection. Treat invitation codes and connection tokens as secrets.</p>
+<p>The Mac App Store edition uses separate sandbox storage. Shared folder access uses macOS permission bookmarks. Removing a folder from Apple Core removes its configured access without deleting the folder’s contents.</p>
+<h2>Purchases and support</h2>
+<p>Direct purchases and license validation use Gumroad. Apple Core does not process your payment-card details. Mac App Store downloads and any purchases offered there use Apple’s systems. Those providers apply their own privacy policies.</p>
+<p>If you contact support, the information you provide is used to investigate and respond. Do not post connection tokens, private files, or personal tool results in public support reports.</p>
+<h2>Control and contact</h2>
+<p>You can revoke macOS permissions in System Settings and disconnect authorized clients in Apple Core. For hosted enrollment removal or privacy questions, contact Oliver Ames through <a href="https://github.com/oliverames/apple-core/issues">Apple Core support</a>. A public report should contain only a general description of your request.</p>
+<p>This policy may be updated as Apple Core changes. The effective date above identifies this version.</p>
+</main>
+<footer class="wrap"><p><a href="/">Back to Apple Core</a></p></footer>
+</body>
+</html>
