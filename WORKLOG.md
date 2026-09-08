@@ -848,3 +848,30 @@ Utilities probes passed then; they do not replace home-server acceptance.
 The live privacy policy is https://applecore.app/privacy. Latest site deployment
 is 809c5a37-894c-497a-ab9a-96a9096d87d8. ChatGPT Work still reports no callable
 actions, and home-server Mail still needs its application issue resolved.
+
+### Session closeout, September 8, 2026
+
+**What changed**: Resolved ChatGPT initialization in `5201a91`. Two targeted
+regression tests passed. Signed and notarized direct build 32 passed receiving-host
+checks and is installed on Home Server. ChatGPT discovered 128 tools and passed
+eleven of twelve read-only service checks. Claude had the same service coverage
+on build 31. Codex confirms Mail still fails. Public Beta 1 notes now distinguish
+the older build 28 download from installed build 32. Source was pushed through
+`27a514b` before this closeout. Earlier uncommitted and no-actions statements above
+are historical and superseded.
+
+**Decisions made**: Direct hosted beta remains invitation-only. App Store work is
+deferred. Both editions should share the main UI, with shared changes merged
+downstream. Apple Core runtime stays on Home Server.
+
+**Left off at**: NEW follow-ups are issues [#5](https://github.com/oliverames/apple-core/issues/5)
+through [#8](https://github.com/oliverames/apple-core/issues/8): Mail recovery, full
+acceptance coverage, final beta distribution, and eventual upstream SDK cleanup.
+Still open: existing issues #1–#4 were preserved. Resolved this session: ChatGPT
+discovery and duplicate installed Claude/ChatGPT connectors.
+
+**Open questions**: No repeat permission request is needed for Mail restart.
+Oliver granted it, but the local Mac lock prevented SSH credential signing.
+Unlock and reconnect before restarting Mail on Home Server. No restart occurred.
+The untracked `.playwright-cli/` directory is preserved. App Store issues #1–#3
+track its deferred work in the separate repository.

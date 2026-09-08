@@ -83,8 +83,12 @@ The subsequent actual ChatGPT Work test identified Home Server and passed eleven
 of the twelve service checks. Mail returned `INVALID_ARGUMENT`, a different
 reported code from earlier client checks, and requires further diagnosis.
 The Work test is https://chatgpt.com/c/6aa07723-2794-83ea-99ba-ceada9d8bcfd.
-Mail's stale Home Server process needs a restart; approval was
-requested because unsaved state could be lost.
+Oliver granted permission to terminate Mail's stale Home Server process and
+reopen Mail. The restart has not occurred. The subsequent SSH attempt failed
+because the local Mac was locked and its credential agent could not sign.
+Do not ask again for the already granted restart permission. Resume after
+unlocking the local Mac and restoring SSH authorization. Track the remaining
+work in https://github.com/oliverames/apple-core/issues/5.
 
 Oliver sidelined App Store development and submission to focus on the main
 shipping app and hosted beta. The Store test app is closed, with its repository,
