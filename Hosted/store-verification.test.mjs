@@ -100,13 +100,30 @@ test("purchase verification rejects unsigned, forged, oversized, and local-test 
   await assert.rejects(verifyStoreNotification(forged, "Production"), { code: "invalid_purchase" });
 });
 
-test("Apple verifier executes in Workers and rejects forged trust chains", async t => {
+test("Worker ownership is exclusive and Apple verification rejects forged trust chains", async t => {
   const runtime = new Miniflare(convertV4MiniflareOptions({ workers: [{
     name: "apple-core-verification-tests", modules: true,
     scriptPath: fileURLToPath(new URL("tests/build-verification/store-verification.worker.js", import.meta.url)),
     compatibilityDate: "2026-09-08", compatibilityFlags: ["nodejs_compat"],
+    durableObjects: { OWNERSHIP: { className: "StoreOwnership", useSQLite: true } },
   }] }));
   t.after(() => runtime.dispose());
+  const claim = (owner, environment = "Production", originalTransactionID = "1000001") =>
+    runtime.dispatchFetch("https://verification.test/", {
+      method: "POST", body: JSON.stringify({ claim: true, environment, originalTransactionID, accountToken: owner }),
+    });
+  const owners = [accountToken, "08000000-1234-4567-89ab-000000000002"];
+  const raced = await Promise.all(owners.map(owner => claim(owner)));
+  assert.deepEqual(raced.map(r => r.status).sort(), [200, 400]);
+  const winner = owners[raced.findIndex(r => r.status === 200)];
+  const loser = owners.find(owner => owner !== winner);
+  assert.equal((await claim(winner.toUpperCase())).status, 200);
+  assert.equal((await claim(loser)).status, 400);
+  assert.equal((await claim(loser, "Sandbox")).status, 200);
+  assert.equal((await claim(loser, "Production", "1000002")).status, 200);
+  assert.equal((await claim(winner, "Xcode")).status, 400);
+  assert.equal((await claim("invalid-account", "Production", "1000003")).status, 400);
+  assert.equal((await claim(winner, "Production", "1000003")).status, 200);
   for (const [environment, reconcile] of [
     ["Production", false], ["Sandbox", false], ["Xcode", false],
     ["Production", true], ["Sandbox", true], ["Xcode", true],

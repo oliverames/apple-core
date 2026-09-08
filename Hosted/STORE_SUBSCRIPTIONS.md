@@ -1,6 +1,6 @@
 # Store hosting subscription implementation
 
-Status: September 8, 2026. Verification foundation implemented and tested with
+Status: September 8, 2026. Verification and ownership foundations implemented and tested with
 isolated fixtures. No purchase endpoint, billing enforcement, or subscription
 provisioning has been deployed. The existing invitation-only relay is unchanged.
 
@@ -54,6 +54,21 @@ original transaction to the authenticated hosting account. Never call the pure
 `recordFromVerifiedTransaction` or `entitlementFromVerifiedStatus` policies with
 unverified data. The reconciliation function is implemented but has not yet been
 validated with a real Apple purchase or exposed through a deployed endpoint.
+
+`store-ownership.mjs` provides the internal SQLite-backed `StoreOwnership`
+Durable Object for that binding. Route each object using `ownershipKey`, which
+includes the server-selected Apple environment and original transaction ID.
+Only invoke `claim` after cryptographic verification and an authenticated-account
+match. The method validates identity shape, not Apple signatures or login.
+It stores only the subscription identity and normalized account UUID, in a
+synchronous transaction. Concurrent claims cannot transfer ownership; retries
+by the same account succeed. Ownership alone never grants hosted access.
+
+The class is currently exported and bound only in the isolated test Worker.
+Production wiring, account authentication, reconciliation, and provisioning are
+still pending. Tests cover concurrent competing claims, duplicate retries,
+account UUID normalization, environment separation, and invalid input without
+poisoning a later valid claim. No Mac-count policy is encoded in this ledger.
 
 ## Current evidence and remaining tests
 
