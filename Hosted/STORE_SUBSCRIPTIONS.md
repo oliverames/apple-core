@@ -75,6 +75,21 @@ server key through 1Password and Worker secrets. Implement the StoreKit client,
 transaction updates, restore and management UI, server enrollment, revocation,
 and reconciliation before allowing purchases or submitting the app for review.
 
+## Server credential setup, September 8, 2026
+
+The In-App Purchase key HR3WG2L3B6 is stored as the document
+"Apple Core Hosting In-App Purchase Key" in 1Password's Development vault.
+The stored document was verified byte-for-byte against the downloaded key.
+The hosted Worker now has `APPLE_IAP_PRIVATE_KEY`, `APPLE_IAP_KEY_ID`, and
+`APPLE_IAP_ISSUER_ID` secrets. Existing secrets were preserved. No private key
+is checked into either repository.
+
+A read-only notification-history request authenticated successfully against
+Apple's Sandbox API and returned zero notifications. The equivalent Production
+request returned HTTP 401. Its cause remains unresolved. This does not prove
+purchase delivery or production readiness. After the secret installation,
+anonymous MCP access returned 401 and public OAuth metadata returned 200.
+
 The fixture Worker in `tests/` exists only for local tests. It must never be used
 as a production route or deployed as the billing service.
 
