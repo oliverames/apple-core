@@ -816,3 +816,35 @@ disabled only for applecore.app to preserve its restrictive content policy.
 Current site deployment: 8f18df44-30b7-48b1-8049-bc7e4325dd16. Gumroad retains
 its standard product page. Source changes in both repositories remain pending
 verification and commits. Full release acceptance remains open.
+
+## September 8 scope and status update
+
+Oliver specified that Apple Core must run only on home-server, not his
+MacBook Pro. All further runtime, service permission, and MCP connection tests
+must target home-server. Local editing, builds, and isolated unit tests remain
+appropriate. The MacBook Pro process list confirmed no Apple Core app process
+running after this instruction. The earlier local Reminders permission request
+is withdrawn. Preserve local app data and permissions rather than deleting them.
+
+The Store download must match Gumroad's price. The current public Gumroad
+product metadata reports USD 15.00. Oliver also authorized a USD 2.99 monthly
+in-app subscription for hosted access in the Store edition. This expands the
+Store release scope to StoreKit purchasing, restore and subscription management,
+server-verified enrollment, and renewal/expiration/refund handling. The direct
+2.0 hosted beta remains invitation-only. App Store Connect now reports the
+download price as USD 15.00. Subscription group 22369395 contains monthly
+product com.oliverames.applecore.appstore.hosting.monthly (6809903305), with
+ONE_MONTH duration and a verified effective US price of USD 2.99. The product
+remains MISSING_METADATA and is not available for purchase. StoreKit and
+server verification implementation, subscription metadata, availability,
+purchase testing, and review remain outstanding.
+
+Earlier commit status above is superseded: main changes are pushed through
+bed916c, and the downstream Store changes through a77eaa5. Apple processed Store
+build 29 as VALID and attached it to the 2.0.0 draft. No App Review submission
+has occurred. The revised Store sidebar UI was built and inspected before the
+home-server-only instruction. Local read-only Calendar, Contacts, Maps, and
+Utilities probes passed then; they do not replace home-server acceptance.
+The live privacy policy is https://applecore.app/privacy. Latest site deployment
+is 809c5a37-894c-497a-ab9a-96a9096d87d8. ChatGPT Work still reports no callable
+actions, and home-server Mail still needs its application issue resolved.
