@@ -46,6 +46,7 @@ public struct AppleCoreServingConfig: Codable, Sendable, Equatable {
     public var allowQueryTokenAuth: Bool?
     public var serviceSettings: [String: ServingServiceSettings]?
     public var cloudflare: CloudflareSettings?
+    public var hosted: HostedSettings?
     /// Folders the filesystem surface may touch. Absent or empty means the
     /// surface can reach nothing, which is the default: unlike every other
     /// surface, the filesystem has no macOS privacy grant bounding it, so the
@@ -82,6 +83,7 @@ public struct AppleCoreServingConfig: Codable, Sendable, Equatable {
     /// Configurations without a Cloudflare block may still supply another
     /// externally managed public URL.
     public var effectivePublicBaseURL: String? {
+        if hosted?.enabled == true { return HostedSettings.origin }
         if cloudflare?.enabled == false {
             return nil
         }

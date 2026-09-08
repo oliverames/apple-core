@@ -918,6 +918,7 @@ actor ServerNetworkManager {
             isRunningState = false
             return false
         }
+        await HostedRelay.shared.start(config: servingConfig)
         return true
     }
 
@@ -983,6 +984,7 @@ actor ServerNetworkManager {
 
     func stop() async {
         log.info("Stopping network manager")
+        await HostedRelay.shared.stop()
         isRunningState = false
 
         for (id, connectionManager) in connections {

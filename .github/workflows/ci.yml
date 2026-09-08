@@ -22,6 +22,8 @@ jobs:
               with:
                   node-version: '22'
             - run: node --test Distribution/worker.test.mjs
+            - run: npm ci --prefix Hosted
+            - run: npm test --prefix Hosted
             - name: Reject packaged application files in source
               shell: bash
               run: |

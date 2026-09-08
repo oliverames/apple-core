@@ -55,7 +55,7 @@ struct OnboardingView: View {
                 OnboardingDoneStep(
                     address: isRemoteConfigured
                         ? "\(model.clientBaseURL)/mcp" : "\(model.localBaseURL)/mcp",
-                    token: model.token
+                    token: model.remoteConnectionToken
                 )
             }
         }
@@ -72,7 +72,7 @@ struct OnboardingView: View {
             )
         }
         .task {
-            wantsRemote = model.cloudflare.enabled
+            wantsRemote = model.cloudflare.enabled || model.hostedEnabled
             await model.refreshCloudflareStatus()
         }
     }
@@ -92,7 +92,7 @@ struct OnboardingView: View {
     }
 
     private var isRemoteConfigured: Bool {
-        model.cloudflareStatus?.state == .running
+        model.cloudflareStatus?.state == .running || model.hostedEnabled
     }
 
     private var isAccessActionInProgress: Bool {
@@ -108,15 +108,16 @@ struct OnboardingView: View {
             isChangingRemoteAccess = true
             Task {
                 defer { isChangingRemoteAccess = false }
-                await model.setUpRemoteAccess()
+                await model.setUpSelectedRemoteAccess()
             }
-        case .access where !wantsRemote && model.cloudflare.enabled:
+        case .access where !wantsRemote && (model.cloudflare.enabled || model.hostedEnabled):
             isChangingRemoteAccess = true
             Task {
                 defer { isChangingRemoteAccess = false }
-                await model.stopCloudflareTunnel()
+                if model.hostedEnabled { await model.stopHostedAccess() }
+                if model.cloudflare.enabled { await model.stopCloudflareTunnel() }
                 guard step == .access else { return }
-                guard !model.cloudflare.enabled else {
+                guard !model.cloudflare.enabled && !model.hostedEnabled else {
                     wantsRemote = true
                     return
                 }
@@ -236,7 +237,8 @@ private struct OnboardingAccessStep: View {
                     OnboardingChoiceRow(
                         icon: "globe",
                         title: "Reachable from anywhere",
-                        detail: "Also Claude's web and mobile clients. Requires a domain managed by Cloudflare.",
+                        detail:
+                            "ChatGPT, Codex and other remote clients. Choose Apple Core hosting or your own Cloudflare account.",
                         isSelected: wantsRemote
                     ) {
                         wantsRemote = true
@@ -245,7 +247,7 @@ private struct OnboardingAccessStep: View {
 
                 if wantsRemote {
                     Section {
-                        RemoteAccessProgress(model: model)
+                        RemoteAccessSetup(model: model)
                     }
                 }
             }

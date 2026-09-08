@@ -741,3 +741,78 @@ Both will require the IPC swap (Bonjour → NSXPCConnection over `com.oliverames
 **Carried forward — none.** This is the first entry.
 
 ---
+
+
+## 2026-09-08 — Apple Core 2.0 Beta 1 hosted access (release acceptance pending)
+
+Implemented the hosted Worker in `Hosted/`, with one Durable Object per Mac,
+30-minute single-use invitations, separate relay credentials, outbound WSS,
+strict forwarding routes/headers, request/response/concurrency bounds, and
+operator revocation. OAuth authorization remains on the Mac; the Worker wraps
+codes and tokens for routing and serves signed client metadata for DCR clients.
+Hosted and own-Cloudflare choices are in onboarding/settings. Existing app
+licensing remains; there is no hosted paywall. The beta is version 2.0.0, build
+28, displayed as 2.0.0-beta.1, with the stable updater disabled for this beta.
+
+Deployed `apple-core-hosted` at `mcp.applecore.app`. Current deployment ID:
+`2e49dbff-2d7f-4299-8a96-60155a95aeb5`. Operator secrets are stored in the
+Development vault item “Apple Core Hosted Beta”. Anonymous MCP returns 401;
+OAuth discovery and custom icons return 200.
+
+After explicit user approval, notarization was accepted (submission
+`b41fd63c-c3ea-4162-bf2b-8c5447a27cab`), stapled, and Gatekeeper verified.
+Installed Beta 1 on home-server and enrolled it in hosted access. With explicit
+approval following auto-review, disabled its old Cloudflare tunnel while
+preserving its configuration. Authenticated hosted initialization returns
+Apple Core 2.0.0-beta.1 and tools/list enumerates 128 tools.
+
+Read-only service probes passed for Calendar, Capture window listing, Contacts,
+Filesystem roots, Location, Notes accounts, Messages chats, Reminders,
+Shortcuts folders, and Utilities system information. Mail returned
+APP_NOT_RUNNING; opening Mail separately returned LaunchServices -600.
+Maps also passed. The actual Codex OAuth client completed the same read-only
+checks with 11 services passing and Mail failing. ChatGPT Work testing remains
+incomplete. No personal content was included in the diagnostic report.
+
+Validation: Debug build and full Mac suite (208 passing test-case records),
+seven hosted tests including Miniflare runtime integration, eight distribution
+tests, Swift formatting, diff whitespace, and changed-file Gitleaks passed.
+Dependency audit reported zero vulnerabilities. The Developer ID ZIP checksum:
+`087eb4565e4d2f2049482ac16fd7221490d97df309ec7e19d3ddbc42e0bcba7d`.
+Stable appcast and Gumroad download remain unchanged. Source is uncommitted.
+
+Created a branded replacement developer connector, Apple Core Hosted Beta
+(`asdk_app_6aa03b1d75c4819192fa421f2502b506`), with the Apple Core icon.
+Safari completed its OAuth authorization, and ChatGPT confirms it connected.
+The first ChatGPT Work test reported no advertised tools and continued checking
+its connection catalog. Home-server subsequently logged multiple successful
+128-tool responses. This does not yet prove ChatGPT Work service execution.
+The original unconnected Apple Core Beta connector remains untouched.
+
+Codex entry `apple-core-beta` completed OAuth after the user approved Safari's
+local callback warning. Actual Codex read-only execution passed 11 services.
+Mail remains blocked by LaunchServices -600 despite its running process. Normal
+termination was unsuccessful. No force quit or message changes were performed.
+Use Safari or Chrome for all Apple Core Connection ID and OAuth UI.
+
+The separate Store repository is https://github.com/oliverames/apple-core-app-store,
+local path `../apple-core-app-store`, branch `codex/app-store`, with the main
+repository configured as upstream. Shared changes land in the main repository
+first and merge downstream. Its current implementation compiles and exposes ten
+services with sandbox settings, security-scoped folder bookmarks, explicit
+login consent, and client revocation UI. Messages and Shortcuts still require
+migration. Store runtime testing remains outstanding. App Store Connect record
+6809879931 and both distribution certificates exist. Signing keys are saved in
+1Password. The signed universal archive passed macOS signature and entitlement checks.
+The signed installer uploaded successfully as build 28, version 2.0.0, with
+upload ID f8adc356-50ec-4dd7-ae2b-526cfb487263 reporting COMPLETE. No review
+submission has occurred. The draft version uses manual release. The Store repository's APP_STORE.md tracks its distribution-specific status.
+
+The applecore.app landing page is live with standard Gumroad purchase links,
+two onboarding options, setup instructions, canonical/social metadata, valid
+SoftwareApplication structured data, robots.txt, sitemap, and favicon. Desktop
+and 390-pixel mobile checks passed. Cloudflare automatic analytics injection is
+disabled only for applecore.app to preserve its restrictive content policy.
+Current site deployment: 8f18df44-30b7-48b1-8049-bc7e4325dd16. Gumroad retains
+its standard product page. Source changes in both repositories remain pending
+verification and commits. Full release acceptance remains open.

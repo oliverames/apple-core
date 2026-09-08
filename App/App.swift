@@ -377,7 +377,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, SPUUpd
             // Mirror ping-warden: keep the item clickable while no update
             // session is running; a startup failure is surfaced on click.
             let sessionInProgress = updaterController?.updater.sessionInProgress ?? false
-            updatesItem.isEnabled = !sessionInProgress
+            updatesItem.isEnabled = !sessionInProgress && !Bundle.main.isPrerelease
+            if Bundle.main.isPrerelease { updatesItem.title = "Beta updates are installed manually" }
         }
     }
 
@@ -469,6 +470,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, SPUUpd
 
     @discardableResult
     private func startUpdaterIfNeeded() -> Bool {
+        guard !Bundle.main.isPrerelease else { return false }
         guard let updater = updaterController?.updater else {
             return false
         }

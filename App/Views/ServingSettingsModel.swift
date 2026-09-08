@@ -12,6 +12,14 @@ import OSLog
 import ServiceManagement
 import SwiftUI
 
+private enum HostedSetupError: LocalizedError {
+    case message(String)
+    var errorDescription: String? {
+        if case .message(let value) = self { return value }
+        return nil
+    }
+}
+
 @MainActor
 final class ServingSettingsModel: ObservableObject {
     private enum PersistedField: Hashable {
@@ -142,6 +150,88 @@ final class ServingSettingsModel: ObservableObject {
     @Published var remoteSetupStage: String?
     /// Set when the address could not be derived and has to be typed after all.
     @Published var needsManualHostname = false
+    @Published var useHostedAccess = true
+    @Published var hostedSetupCode = ""
+    @Published var hostedStatus = "Hosted access is off"
+
+    var hostedEnabled: Bool { config.hosted?.enabled == true }
+    var remoteConnectionToken: String {
+        guard hostedEnabled, let id = config.hosted?.tenantID else { return token }
+        return "\(id)~\(token)"
+    }
+
+    func setUpSelectedRemoteAccess() async {
+        if useHostedAccess { await setUpHostedAccess() } else { await setUpRemoteAccess() }
+    }
+
+    func setUpHostedAccess() async {
+        guard !isConfiguringRemoteAccess else { return }
+        guard !cloudflare.enabled else {
+            cloudflareSetupError = "Turn off your existing Cloudflare connection before switching to hosted access."
+            return
+        }
+        isConfiguringRemoteAccess = true
+        cloudflareSetupError = nil
+        defer { isConfiguringRemoteAccess = false }
+        do {
+            var hosted = config.hosted
+            if hosted == nil {
+                let code = hostedSetupCode.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard code.range(of: "^[a-f0-9]{32}~[A-Za-z0-9_-]{43}$", options: .regularExpression) != nil else {
+                    throw HostedSetupError.message("Enter the complete setup code from your beta invitation.")
+                }
+                remoteSetupStage = "Connecting this Mac…"
+                var request = URLRequest(url: URL(string: "\(HostedSettings.origin)/pair")!)
+                request.httpMethod = "POST"
+                request.timeoutInterval = 30
+                request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                request.httpBody = try JSONSerialization.data(withJSONObject: ["setup_code": code])
+                let (data, response) = try await URLSession.shared.data(for: request)
+                guard (response as? HTTPURLResponse)?.statusCode == 200,
+                    let result = try JSONSerialization.jsonObject(with: data) as? [String: String],
+                    let id = result["tenant_id"], id == String(code.prefix(32)),
+                    let credential = result["relay_credential"],
+                    credential.range(of: "^[A-Za-z0-9_-]{43}$", options: .regularExpression) != nil
+                else {
+                    throw HostedSetupError.message(
+                        "The invitation is invalid, expired, or already used. Request a new setup code."
+                    )
+                }
+                hosted = HostedSettings(
+                    enabled: true,
+                    tenantID: id,
+                    relayCredential: credential,
+                    ownerMachineID: MachineIdentity.currentID()
+                )
+            }
+            guard var hosted, hosted.belongsToThisMac else {
+                throw HostedSetupError.message(
+                    "This hosted connection belongs to another Mac. Use a new invitation on this Mac."
+                )
+            }
+            hosted.enabled = true
+            guard let result = ServingConfigManager.update({ latest in latest.hosted = hosted }) else {
+                throw HostedSetupError.message(
+                    "Could not save hosted setup. Request a new invitation if you have just enrolled."
+                )
+            }
+            config = result.after
+            hostedSetupCode = ""
+            await serverController?.restartForConfigChange()
+            hostedStatus = await HostedRelay.shared.status
+        } catch { cloudflareSetupError = error.localizedDescription }
+        remoteSetupStage = nil
+    }
+
+    func stopHostedAccess() async {
+        guard let result = ServingConfigManager.update({ $0.hosted?.enabled = false }) else {
+            cloudflareSetupError = "Could not save the change."
+            return
+        }
+        config = result.after
+        await serverController?.restartForConfigChange()
+        hostedStatus = await HostedRelay.shared.status
+    }
 
     // MARK: - Cloudflare Access over the authorization page
     //
@@ -213,6 +303,7 @@ final class ServingSettingsModel: ObservableObject {
         self.bindHost = loaded.bindHost ?? "127.0.0.1"
         self.allowedOriginsText = (loaded.allowedOrigins ?? []).joined(separator: "\n")
         self.accessEmailsText = (loaded.cloudflare?.accessAllowedEmails ?? []).joined(separator: ", ")
+        self.useHostedAccess = loaded.hosted != nil || loaded.cloudflare?.enabled != true
         refreshAppLaunchAgentStatus()
         refreshOpenAtLoginStatus()
     }
@@ -534,6 +625,10 @@ final class ServingSettingsModel: ObservableObject {
     /// all consequences of one decision, which is whether to have remote
     /// access at all. So the sequence runs, and only its progress is shown.
     func setUpRemoteAccess() async {
+        guard !hostedEnabled else {
+            cloudflareSetupError = "Turn off hosted access before switching to your Cloudflare account."
+            return
+        }
         isConfiguringRemoteAccess = true
         defer {
             isConfiguringRemoteAccess = false

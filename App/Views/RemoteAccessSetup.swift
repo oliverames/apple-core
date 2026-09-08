@@ -21,7 +21,29 @@ struct RemoteAccessSetup: View {
     @ObservedObject var model: ServingSettingsModel
 
     var body: some View {
-        if model.cloudflareStatus?.state == .running {
+        if model.hostedEnabled {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Hosted by Apple Core").font(.headline)
+                Text(model.hostedStatus).foregroundStyle(.secondary)
+                Text("\(HostedSettings.origin)/mcp").textSelection(.enabled)
+                Text("Connection ID: \(model.config.hosted?.tenantID ?? "")").textSelection(.enabled)
+                Text(
+                    "Keep this Mac running and connected. Sign in to your MCP client with this Connection ID and your Apple Core token."
+                )
+                .font(.caption).foregroundStyle(.secondary)
+                HStack {
+                    RemoteCopyButton(title: "Copy Address", systemImage: "link") { "\(HostedSettings.origin)/mcp" }
+                    RemoteCopyButton(title: "Copy Token", systemImage: "key") { model.remoteConnectionToken }
+                    Button("Turn Off") { Task { await model.stopHostedAccess() } }
+                }
+            }
+            .task {
+                while !Task.isCancelled {
+                    model.hostedStatus = await HostedRelay.shared.status
+                    try? await Task.sleep(for: .seconds(2))
+                }
+            }
+        } else if model.cloudflareStatus?.state == .running {
             RemoteAccessActive(
                 address: "\(model.clientBaseURL)/mcp",
                 token: model.token,
@@ -49,14 +71,31 @@ private struct RemoteAccessOffer: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
+            Picker("Remote access", selection: $model.useHostedAccess) {
+                Text("Hosted by Apple Core").tag(true)
+                Text("My Cloudflare account").tag(false)
+            }
+            .pickerStyle(.segmented)
+            .disabled(model.isConfiguringRemoteAccess)
             Text(
-                "Apple Core can publish one web address for this Mac using your own Cloudflare account, so cloud "
-                    + "clients can reach it. You need a domain with DNS managed by Cloudflare. You will sign in once in your browser."
+                model.useHostedAccess
+                    ? "Connect through Apple Core hosting. No Cloudflare account or domain needed. Your Mac must stay running and connected. Hosting is in private beta; no hosting payment is collected during setup."
+                    : "Apple Core can publish one web address for this Mac using your own Cloudflare account, so cloud "
+                        + "clients can reach it. You need a domain with DNS managed by Cloudflare. You will sign in once in your browser."
             )
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
 
-            if model.needsManualHostname {
+            if model.useHostedAccess && model.config.hosted == nil {
+                SecureField("Beta invitation setup code", text: $model.hostedSetupCode)
+                    .textFieldStyle(.roundedBorder)
+                Text(
+                    "Your enabled services pass through Apple Core hosting and Cloudflare when requested by an authorized client."
+                )
+                .font(.caption).foregroundStyle(.secondary)
+            }
+
+            if !model.useHostedAccess && model.needsManualHostname {
                 RemoteAccessAddressField(model: model)
             }
 
@@ -69,7 +108,7 @@ private struct RemoteAccessOffer: View {
                 }
             } else {
                 Button {
-                    Task { await model.setUpRemoteAccess() }
+                    Task { await model.setUpSelectedRemoteAccess() }
                 } label: {
                     Text("Set Up Remote Access")
                 }

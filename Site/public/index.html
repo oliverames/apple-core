@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Apple Core — macOS MCP Server for Your AI Tools</title>
+  <meta name="description" content="Connect your Mac to AI tools with Apple Core, a native macOS MCP server. Share the services you choose, with hosted beta access or your own Cloudflare account.">
+  <link rel="canonical" href="https://applecore.app/">
+  <meta name="robots" content="index,follow,max-image-preview:large">
+  <meta name="theme-color" content="#ffffff">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="Apple Core">
+  <meta property="og:title" content="Apple Core — Your Mac. Connected to AI.">
+  <meta property="og:description" content="A native macOS MCP server for your AI tools. Choose what to share and how to connect.">
+  <meta property="og:url" content="https://applecore.app/">
+  <meta property="og:image" content="https://applecore.app/app-icon.png">
+  <meta property="og:image:alt" content="Apple Core app icon">
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="Apple Core — Your Mac. Connected to AI.">
+  <meta name="twitter:description" content="Connect your AI tools to the Mac services you choose, through MCP.">
+  <meta name="twitter:image" content="https://applecore.app/app-icon.png">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="stylesheet" href="/styles.css">
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"SoftwareApplication","name":"Apple Core","url":"https://applecore.app/","applicationCategory":"UtilitiesApplication","operatingSystem":"macOS 15.1 or later","description":"A native macOS Model Context Protocol server that connects compatible AI tools to the Mac services the user chooses to share.","image":"https://applecore.app/app-icon.png","downloadUrl":"https://amesconsulting.gumroad.com/l/applecore","softwareHelp":{"@type":"WebPage","url":"https://applecore.app/#setup"}}</script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="wrap"><a class="brand" href="/">Apple Core</a><nav aria-label="Main"><a href="#setup">Setup</a></nav></header>
+<main id="main" class="wrap">
+  <section class="hero" aria-labelledby="headline">
+    <h1 id="headline">Your Mac.<br>Connected to AI.</h1>
+    <p class="intro">Apple Core lets your AI tools access the Mac services you choose through the Model Context Protocol (MCP).</p>
+    <a class="button" href="https://amesconsulting.gumroad.com/l/applecore">Get Apple Core on Gumroad <span aria-hidden="true">→</span></a>
+    <p class="subtle">Native macOS app. You choose what to share.</p>
+  </section>
+  <section class="options" aria-label="Two ways to connect remotely">
+    <article><h2>Hosted by Apple Core</h2><p class="lead">Try the invitation beta.</p><p>Connect through Apple Core’s hosted service without setting up your own Cloudflare account. Your Mac runs the app and handles requests.</p><p>Hosted access requires <strong>2.0 Beta 1 and an invitation code</strong>. It is not included automatically with a Gumroad download.</p></article>
+    <article><h2>Your own Cloudflare</h2><p class="lead">Use your own account.</p><p>Apple Core continues to support a Cloudflare connection you manage. Sign in to your Cloudflare account in the app and follow the remote-access setup.</p><p>Already connected this way? You can keep using your existing setup.</p></article>
+  </section>
+  <section id="setup" class="setup" aria-labelledby="setup-heading">
+    <h2 id="setup-heading">Setup</h2><p class="lead">From your Mac to your AI tools.</p>
+    <ol>
+      <li><h3>Install and activate</h3><p>Get Apple Core from Gumroad, download it from your purchase receipt, and move it to Applications. Open the app and activate it with your license key. Requires macOS 15.1 or later.</p></li>
+      <li><h3>Choose what to share</h3><p>Open Apple Core’s Settings and enable the services you want to use, such as Calendar, Notes, Reminders, Contacts, Mail, or Messages. Grant the macOS permissions each service requests. For file access, explicitly select the folders you want to share.</p><p>In the beta, choose <strong>Hosted by Apple Core</strong> and enter your invitation code, or choose <strong>Your own Cloudflare</strong> and complete sign-in.</p></li>
+      <li><h3>Connect your AI tool</h3><p>For hosted access, add this MCP server URL in a compatible AI client:</p><pre><code>https://mcp.applecore.app/mcp</code></pre><p>Choose OAuth when available. Enter the Connection ID from Apple Core, then its connection token on the Apple Core authorization page. Enable ongoing trust only for clients you want to recognize automatically.</p><p>For your own Cloudflare connection, use the MCP address shown in the app. For a client on the same Mac, the default local address is <code>http://127.0.0.1:8756/mcp</code>. Keep your connection token private.</p></li>
+    </ol>
+    <div class="client-guide"><h3>ChatGPT Work and Codex</h3><p>In ChatGPT Work, open the plugin directory and choose <strong>Create app</strong> with developer mode enabled. Add the MCP URL, select OAuth, and connect. Custom MCP availability depends on your account and workspace settings.</p><p>For the Codex command line, add the hosted connection with:</p><pre><code>codex mcp add apple-core --url https://mcp.applecore.app/mcp</code></pre><p>Complete the browser authorization. Start with a read-only request, such as listing your calendars, to check the connection before asking for changes.</p></div>
+  </section>
+</main>
+<footer class="wrap"><h2>Your Mac stays on. You stay in control.</h2><p>Keep Apple Core running on an awake, connected Mac. Hosted requests pass through Cloudflare to your Mac; the AI provider receives the data returned by the tools you use.</p><p>Apple Core · macOS MCP app · <a href="https://amesconsulting.gumroad.com/l/applecore">Gumroad</a> · <a href="https://github.com/oliverames/apple-core">Source &amp; support</a></p></footer>
+</body>
+</html>
