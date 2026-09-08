@@ -63,7 +63,7 @@ public actor SSETransport: Transport {
 
     /// Called by the HTTP layer when a client POSTs a JSON-RPC message body.
     public func feedInbound(_ data: Data) {
-        inboundContinuation?.yield(data)
+        inboundContinuation?.yield(MCPInitializeCompatibility.adapt(data))
     }
 
     /// Called once by the owning `MCPSSESession` so outbound server messages

@@ -1,4 +1,34 @@
+import Foundation
 import Testing
+
+@Suite("MCP initialization compatibility")
+struct MCPInitializeCompatibilityTests {
+    @Test("Structured experimental capabilities preserve the rest of initialization")
+    func structuredCapabilities() throws {
+        let input = Data(#"{"jsonrpc":"2.0","id":"init-1","method":"initialize","params":{"protocolVersion":"2025-11-25","clientInfo":{"name":"openai-mcp","version":"1.0.0"},"capabilities":{"experimental":{"openai/visibility":{"enabled":true},"legacy":"value"},"extensions":{"io.modelcontextprotocol/ui":{"mimeTypes":["text/html;profile=mcp-app"]}},"roots":{"listChanged":true}}}}"#.utf8)
+        var original = try #require(JSONSerialization.jsonObject(with: input) as? [String: Any])
+        var params = try #require(original["params"] as? [String: Any])
+        var capabilities = try #require(params["capabilities"] as? [String: Any])
+        capabilities["experimental"] = ["legacy": "value"]
+        params["capabilities"] = capabilities
+        original["params"] = params
+        let actual = try JSONSerialization.jsonObject(with: MCPInitializeCompatibility.adapt(input))
+        #expect(NSDictionary(dictionary: original).isEqual(actual))
+    }
+
+    @Test("Other requests and malformed capabilities are untouched")
+    func unrelatedRequests() {
+        for input in [
+            #"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"capabilities":{"experimental":{"nested":{}}}}}"#,
+            #"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{"experimental":{"legacy":"value"}}}}"#,
+            #"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{"experimental":42}}}"#,
+            "not json",
+        ] {
+            let data = Data(input.utf8)
+            #expect(MCPInitializeCompatibility.adapt(data) == data)
+        }
+    }
+}
 
 @Suite("JSON-RPC request keys")
 struct JSONRPCRequestKeyTests {

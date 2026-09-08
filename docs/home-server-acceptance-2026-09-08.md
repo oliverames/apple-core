@@ -2,7 +2,7 @@
 
 Author: Oliver Ames
 
-The direct-distribution Apple Core 2.0.0 build 31 is installed at
+The direct-distribution Apple Core 2.0.0 build 32 is installed at
 `/Applications/Apple Core.app` on Home Server. Its signed, stapled bundle passed
 Gatekeeper on that host. Hosted mode is enabled, and own-Cloudflare mode is
 disabled. The intended connector address is `https://mcp.applecore.app/mcp`.
@@ -56,12 +56,33 @@ https://claude.ai/chat/86ce6881-c398-422d-89b4-eaf7c906978f.
 
 ChatGPT's disconnected Apple Core Beta duplicate was uninstalled. Only Apple
 Core Hosted Beta remains installed. Its developer definition is retained.
-The hosted entry remains connected but exposes no actions after refresh.
+Before build 32, the hosted entry remained connected but exposed no actions after refresh.
 A fresh Work test launched from its Try in chat button explicitly selected
 that plugin and requested only System Information. Work reported its tools
 unavailable and did not execute the call. Evidence:
 https://chatgpt.com/c/6aa073a4-67f0-83e9-9ebf-024866afcb15.
 This is a failed Work acceptance check, not a successful Home Server read.
+The same test in Chat mode also exposed no callable tools:
+https://chatgpt.com/c/6aa07449-98d4-83ea-b1ae-282d65e92ac3.
+Inspection of the actual Refresh request found HTTP 424 with JSON-RPC error
+`-32603`: “The data couldn’t be read because it isn’t in the correct format.”
+The pinned Swift MCP SDK decodes experimental client capabilities as strings,
+whereas ChatGPT supplies a structured value. This matches upstream issue
+https://github.com/modelcontextprotocol/swift-sdk/issues/262.
+The compatibility adapter now filters unsupported experimental values only
+during initialization. Two isolated regression tests passed, covering preservation
+of other initialization fields and unchanged unrelated or malformed requests.
+Build 32 was signed and notarized under submission
+`4d1ae31c-fc97-4e07-8cea-1246e9a952fc`, which Apple accepted. Its transferred ZIP
+SHA-256 is `65fddf2b2a291935f5da23333ef2059165c6975c33f5558ba3df30678df2a759`.
+The checksum, signature, Gatekeeper assessment, and stapled ticket passed on
+Home Server. The installed bundle reports build 32 and its direct app is running.
+ChatGPT Refresh then successfully discovered all 128 tools. This verifies that
+the adapter resolves the discovery failure against the actual installed app.
+The subsequent actual ChatGPT Work test identified Home Server and passed eleven
+of the twelve service checks. Mail returned `INVALID_ARGUMENT`, a different
+reported code from earlier client checks, and requires further diagnosis.
+The Work test is https://chatgpt.com/c/6aa07723-2794-83ea-99ba-ceada9d8bcfd.
 Mail's stale Home Server process needs a restart; approval was
 requested because unsaved state could be lost.
 

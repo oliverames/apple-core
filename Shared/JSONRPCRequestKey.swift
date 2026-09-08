@@ -3,6 +3,28 @@
 import CoreFoundation
 import Foundation
 
+/// swift-sdk currently decodes experimental client capabilities as strings.
+/// Apple Core does not consume these extensions, so ignore unsupported values
+/// rather than rejecting a valid initialize handshake. Remove when upstream
+/// modelcontextprotocol/swift-sdk#262 is fixed in our pinned dependency.
+enum MCPInitializeCompatibility {
+    static func adapt(_ data: Data) -> Data {
+        guard var request = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            request["jsonrpc"] as? String == "2.0",
+            request["method"] as? String == "initialize",
+            var params = request["params"] as? [String: Any],
+            var capabilities = params["capabilities"] as? [String: Any],
+            let experimental = capabilities["experimental"] as? [String: Any],
+            experimental.values.contains(where: { !($0 is String) })
+        else { return data }
+
+        capabilities["experimental"] = experimental.filter { $0.value is String }
+        params["capabilities"] = capabilities
+        request["params"] = params
+        return (try? JSONSerialization.data(withJSONObject: request)) ?? data
+    }
+}
+
 enum JSONRPCInboundMessage: Equatable {
     case request(requestKey: String, method: String)
     case notificationOrResponse
