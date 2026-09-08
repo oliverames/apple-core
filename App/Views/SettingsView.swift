@@ -180,15 +180,15 @@ private struct ServiceToggleRow: View {
                 .accessibilityHidden(true)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(config.name)
+                Text(config.displayName)
                     .fontWeight(.medium)
                 if let activationError {
                     Text(activationError)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
-                } else if !config.permissionRequirements.isEmpty {
-                    Text("Needs \(config.permissionRequirements.sentenceDescription)")
+                } else {
+                    Text(config.purposeDescription)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -211,7 +211,7 @@ private struct ServiceToggleRow: View {
                 .toggleStyle(.switch)
                 .controlSize(.small)
                 .disabled(isActivating)
-                .accessibilityLabel("Enable \(config.name)")
+                .accessibilityLabel("Enable \(config.displayName)")
         }
         .padding(.vertical, 4)
     }
