@@ -3,3 +3,4 @@ build/
 .wrangler/
 .dev.vars
 worker-configuration.d.ts
+build-verification/

@@ -16,8 +16,10 @@ approval, token revocation, session ownership, and enabled-service controls.
 Routing identifiers alone must never authorize a request. The relay credential
 must be separate from the token that grants access to Apple data.
 
-Beta enrollment uses expiring, single-use invitations. Hosting
-billing is outside this release's scope. Existing app licensing is separate.
+Beta enrollment uses expiring, single-use invitations. Direct-distribution
+hosting billing remains deferred. The separate Store release now includes a
+USD 2.99 monthly subscription milestone; see STORE_SUBSCRIPTIONS.md. Existing
+direct app licensing remains separate.
 
 The operator and Cloudflare process traffic in transit; this is not an
 end-to-end encrypted channel between the MCP client and the Mac. Do not retain
