@@ -54,9 +54,15 @@ so it was repeated with `com.oliverames.applecore`; the corrected call matched
 one Apple Core window. No media was captured. The test conversation is
 https://claude.ai/chat/86ce6881-c398-422d-89b4-eaf7c906978f.
 
-ChatGPT remains connected but exposes no actions after its latest refresh.
-Its older Apple Core entries still need replacement and successful read-only
-acceptance. Mail's stale Home Server process needs a restart; approval was
+ChatGPT's disconnected Apple Core Beta duplicate was uninstalled. Only Apple
+Core Hosted Beta remains installed. Its developer definition is retained.
+The hosted entry remains connected but exposes no actions after refresh.
+A fresh Work test launched from its Try in chat button explicitly selected
+that plugin and requested only System Information. Work reported its tools
+unavailable and did not execute the call. Evidence:
+https://chatgpt.com/c/6aa073a4-67f0-83e9-9ebf-024866afcb15.
+This is a failed Work acceptance check, not a successful Home Server read.
+Mail's stale Home Server process needs a restart; approval was
 requested because unsaved state could be lost.
 
 Oliver sidelined App Store development and submission to focus on the main
