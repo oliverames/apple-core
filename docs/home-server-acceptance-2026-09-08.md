@@ -40,9 +40,24 @@ reports build 31, and only the direct app process is running. Screen Sharing
 confirmed the updated settings interface. A fresh Codex system-information
 call again identified Home Server after the update.
 
-ChatGPT previously connected but exposed no actions. Successful ChatGPT Work
-and Claude.ai connector operations remain required and unverified. Claude.ai
-is signed out in Home Server Safari, and the user has been asked to sign in.
+Claude.ai's old Apple Core connector at `https://applecore.amesvt.com/mcp`
+was removed at Oliver's request. Its replacement, Apple Core Hosted Beta,
+uses `https://mcp.applecore.app/mcp`, required OAuth, and Anthropic's hosted
+client metadata. Authorization identified Home Server. After refreshing the
+tools list, Claude exposed 73 read-only and 55 write/delete tools. Existing
+default approval requirements were preserved.
+
+The actual Claude chat verified Home Server's identity and repeated the twelve
+service checks above against build 31. Eleven passed; Mail again returned
+`APP_NOT_RUNNING`. The first capture check used an incorrect bundle identifier,
+so it was repeated with `com.oliverames.applecore`; the corrected call matched
+one Apple Core window. No media was captured. The test conversation is
+https://claude.ai/chat/86ce6881-c398-422d-89b4-eaf7c906978f.
+
+ChatGPT remains connected but exposes no actions after its latest refresh.
+Its older Apple Core entries still need replacement and successful read-only
+acceptance. Mail's stale Home Server process needs a restart; approval was
+requested because unsaved state could be lost.
 
 Oliver sidelined App Store development and submission to focus on the main
 shipping app and hosted beta. The Store test app is closed, with its repository,
