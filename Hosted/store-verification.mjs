@@ -82,6 +82,12 @@ export function recordFromVerifiedTransaction(transaction, environment, now = Da
  * bind the original transaction to the authenticated hosting account.
  */
 export async function verifyStorePurchase(jws, { environment, accountToken }) {
+  const record = await verifyOwnedTransaction(jws, { environment, accountToken });
+  if (!record.active) throw new StoreVerificationError("subscription_inactive");
+  return record;
+}
+
+async function verifyOwnedTransaction(jws, { environment, accountToken }) {
   return verified(async () => {
     environmentChecked(environment);
     if (typeof accountToken !== "string" || !UUID.test(accountToken)) throw new StoreVerificationError();
@@ -89,8 +95,75 @@ export async function verifyStorePurchase(jws, { environment, accountToken }) {
     const transaction = await (await verifier(environment)).verifyAndDecodeTransaction(jws);
     const record = recordFromVerifiedTransaction(transaction, environment);
     if (record.accountToken !== accountToken.toLowerCase()) throw new StoreVerificationError("account_mismatch");
-    if (!record.active) throw new StoreVerificationError("subscription_inactive");
     return record;
+  });
+}
+
+/** Pure policy for a current Apple API result whose transaction and renewal
+ * signatures have ALREADY been verified. Never pass client-decoded payloads.
+ */
+export function entitlementFromVerifiedStatus(transaction, renewal, status, expected, now = Date.now()) {
+  const record = recordFromVerifiedTransaction(transaction, expected.environment, now);
+  if (record.originalTransactionID !== expected.originalTransactionID ||
+      record.accountToken !== expected.accountToken) throw new StoreVerificationError("account_mismatch");
+  if (![1, 2, 3, 4, 5].includes(status) || !renewal ||
+      renewal.environment !== expected.environment || renewal.productId !== HOSTING_PRODUCT_ID ||
+      renewal.originalTransactionId !== record.originalTransactionID ||
+      !Number.isSafeInteger(renewal.signedDate) || renewal.signedDate <= 0 || renewal.signedDate > now + 60000 ||
+      (renewal.appAccountToken != null && (typeof renewal.appAccountToken !== "string" ||
+        renewal.appAccountToken.toLowerCase() !== record.accountToken))) throw new StoreVerificationError();
+  let accessUntil = record.expiresAt;
+  if (status === 4) {
+    if (!Number.isSafeInteger(renewal.gracePeriodExpiresDate) || renewal.gracePeriodExpiresDate <= 0) {
+      throw new StoreVerificationError();
+    }
+    accessUntil = renewal.gracePeriodExpiresDate;
+  }
+  return {
+    ...record, status, checkedAt: now, accessUntil,
+    active: (status === 1 || status === 4) && accessUntil > now && record.revokedAt === null && !record.upgraded,
+  };
+}
+
+/** Verify ownership before querying Apple. An older signed receipt can identify
+ * a subscription that subsequently renewed or entered billing grace. Its old
+ * expiry never grants access: only the fresh API result determines entitlement.
+ * Callers must still bind the original transaction atomically to their account.
+ */
+export async function reconcileStorePurchase(jws, { environment, accountToken, credentials }) {
+  const expected = await verifyOwnedTransaction(jws, { environment, accountToken });
+  if (!credentials || typeof credentials.privateKey !== "string" ||
+      !/^[A-Z0-9]{10}$/.test(credentials.keyID ?? "") || !UUID.test(credentials.issuerID ?? "")) {
+    throw new StoreVerificationError("verification_unavailable");
+  }
+  const { AppStoreServerAPIClient } = await import("@apple/app-store-server-library");
+  let response;
+  try {
+    const client = new AppStoreServerAPIClient(credentials.privateKey, credentials.keyID,
+      credentials.issuerID, STORE_BUNDLE_ID, environmentChecked(environment));
+    // Include inactive states so a refund or expiration cannot be hidden by a filter.
+    response = await client.getAllSubscriptionStatuses(expected.originalTransactionID);
+  } catch {
+    // Authentication, throttling, and network failures are not cancellation.
+    // Do not persist an inactive entitlement on a failed status refresh.
+    throw new StoreVerificationError("verification_unavailable");
+  }
+  return verified(async () => {
+    if (response.environment !== environment || response.bundleId !== STORE_BUNDLE_ID ||
+        (response.appAppleId != null && response.appAppleId !== STORE_APP_ID) || !Array.isArray(response.data)) {
+      throw new StoreVerificationError();
+    }
+    const matches = response.data.flatMap(group => Array.isArray(group.lastTransactions) ? group.lastTransactions : [])
+      .filter(item => item.originalTransactionId === expected.originalTransactionID);
+    // Do not arbitrarily pick one of conflicting records or silently grant access.
+    if (matches.length !== 1) throw new StoreVerificationError();
+    const item = matches[0];
+    checkJWS(item.signedTransactionInfo);
+    checkJWS(item.signedRenewalInfo);
+    const check = await verifier(environment);
+    const transaction = await check.verifyAndDecodeTransaction(item.signedTransactionInfo);
+    const renewal = await check.verifyAndDecodeRenewalInfo(item.signedRenewalInfo);
+    return entitlementFromVerifiedStatus(transaction, renewal, item.status, expected);
   });
 }
 

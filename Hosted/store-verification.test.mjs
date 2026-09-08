@@ -4,7 +4,7 @@ import { createHash, X509Certificate } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { Miniflare, convertV4MiniflareOptions } from "miniflare";
 import { APPLE_ROOTS_BASE64 } from "./apple-roots.mjs";
-import { STORE_BUNDLE_ID, HOSTING_PRODUCT_ID, recordFromVerifiedTransaction, verifyStorePurchase, verifyStoreNotification } from "./store-verification.mjs";
+import { STORE_BUNDLE_ID, HOSTING_PRODUCT_ID, recordFromVerifiedTransaction, verifyStorePurchase, verifyStoreNotification, entitlementFromVerifiedStatus, reconcileStorePurchase } from "./store-verification.mjs";
 
 const now = 1788890000000;
 const accountToken = "08000000-1234-4567-89ab-000000000001";
@@ -15,6 +15,47 @@ const transaction = {
 };
 const encoded = value => Buffer.from(JSON.stringify(value)).toString("base64url");
 const forged = `${encoded({ alg: "ES256", x5c: Array(3).fill(APPLE_ROOTS_BASE64[2]) })}.${encoded(transaction)}.ZmFrZQ`;
+const expected = { environment: "Production", originalTransactionID: transaction.originalTransactionId, accountToken };
+const renewal = { environment: "Production", productId: HOSTING_PRODUCT_ID,
+  originalTransactionId: transaction.originalTransactionId, signedDate: now - 1000, autoRenewStatus: 0 };
+
+test("current subscription state retains paid access after cancellation and removes inactive states", () => {
+  assert.equal(entitlementFromVerifiedStatus(transaction, renewal, 1, expected, now).active, true);
+  for (const status of [2, 3, 5]) {
+    assert.equal(entitlementFromVerifiedStatus(transaction, renewal, status, expected, now).active, false);
+  }
+  assert.equal(entitlementFromVerifiedStatus({ ...transaction, expiresDate: now }, renewal, 1, expected, now).active, false);
+});
+
+test("billing grace uses Apple's signed deadline but cannot override refunds or upgrades", () => {
+  const expired = { ...transaction, expiresDate: now - 1000 };
+  const grace = { ...renewal, gracePeriodExpiresDate: now + 60000 };
+  const result = entitlementFromVerifiedStatus(expired, grace, 4, expected, now);
+  assert.equal(result.active, true);
+  assert.equal(result.accessUntil, grace.gracePeriodExpiresDate);
+  for (const change of [{ revocationDate: now }, { isUpgraded: true }]) {
+    assert.equal(entitlementFromVerifiedStatus({ ...expired, ...change }, grace, 4, expected, now).active, false);
+  }
+  assert.equal(entitlementFromVerifiedStatus(expired, { ...grace, gracePeriodExpiresDate: now }, 4, expected, now).active, false);
+  for (const gracePeriodExpiresDate of [undefined, "9999999999999", -1]) {
+    assert.throws(() => entitlementFromVerifiedStatus(expired, { ...grace, gracePeriodExpiresDate }, 4, expected, now));
+  }
+});
+
+test("status reconciliation rejects cross-account, cross-subscription, and mismatched renewal data", () => {
+  for (const change of [{ accountToken: "08000000-1234-4567-89ab-000000000002" }, { originalTransactionID: "456" }]) {
+    assert.throws(() => entitlementFromVerifiedStatus(transaction, renewal, 1, { ...expected, ...change }, now), { code: "account_mismatch" });
+  }
+  for (const change of [{ environment: "Sandbox" }, { productId: "other" }, { originalTransactionId: "456" },
+    { signedDate: now + 60001 }, { signedDate: "invalid" }, { appAccountToken: "other" }]) {
+    assert.throws(() => entitlementFromVerifiedStatus(transaction, { ...renewal, ...change }, 1, expected, now));
+  }
+  assert.throws(() => entitlementFromVerifiedStatus(transaction, renewal, 6, expected, now));
+});
+
+test("reconciliation rejects forged ownership before requesting Apple status", async () => {
+  await assert.rejects(reconcileStorePurchase(forged, { environment: "Production", accountToken }), { code: "invalid_purchase" });
+});
 
 test("Apple trust anchors match the retrieved public certificates", () => {
   const expected = [
@@ -66,9 +107,12 @@ test("Apple verifier executes in Workers and rejects forged trust chains", async
     compatibilityDate: "2026-09-08", compatibilityFlags: ["nodejs_compat"],
   }] }));
   t.after(() => runtime.dispose());
-  for (const environment of ["Production", "Sandbox", "Xcode"]) {
+  for (const [environment, reconcile] of [
+    ["Production", false], ["Sandbox", false], ["Xcode", false],
+    ["Production", true], ["Sandbox", true], ["Xcode", true],
+  ]) {
     const response = await runtime.dispatchFetch("https://verification.test/", {
-      method: "POST", body: JSON.stringify({ jws: forged, environment, accountToken }),
+      method: "POST", body: JSON.stringify({ jws: forged, environment, accountToken, reconcile }),
     });
     assert.equal(response.status, 400);
     assert.deepEqual(await response.json(), { error: environment === "Xcode" ? "invalid_environment" : "invalid_purchase" });

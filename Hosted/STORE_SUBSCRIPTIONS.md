@@ -33,16 +33,27 @@ from production when provisioning and reconciling hosting access.
 
 Verified transactions must match the bundle, hosting product, subscription type,
 original/current transaction identifiers, account token, and valid timestamps.
-Enrollment rejects expired, revoked, or upgraded transactions. Notification
+Snapshot purchase checks reject expired, revoked, or upgraded transactions. Notification
 verification preserves inactive records so subsequent access reconciliation can
 process refunds and expiration. Verification failures return sanitized error
 codes. Retryable certificate-check failures remain distinguishable from invalid
 purchases. Never log signed transactions or notifications.
 
-This module verifies a signed snapshot. It does not by itself establish current
-subscription status or grant hosting. Before enrollment, reconcile with Apple's
-Server API and atomically bind the original transaction to the hosting account.
-Do not call the pure `recordFromVerifiedTransaction` policy with unverified data.
+`verifyStorePurchase` checks a signed snapshot, not current subscription status.
+`reconcileStorePurchase` additionally queries Apple's Get All Subscription
+Statuses API and verifies its signed transaction and renewal data. It requires
+matching account, original transaction, product, and environment. An old receipt
+may identify a renewed subscription, but cannot grant access on its own. Active
+paid periods and Apple's signed billing grace deadline can grant access.
+Expired, revoked, and billing-retry-only states cannot. Turning auto-renew off
+does not end a paid period. API failures return `verification_unavailable` and
+must not be persisted as a cancellation. Ambiguous or missing results fail closed.
+
+This module does not provision hosting. Before enrollment, atomically bind the
+original transaction to the authenticated hosting account. Never call the pure
+`recordFromVerifiedTransaction` or `entitlementFromVerifiedStatus` policies with
+unverified data. The reconciliation function is implemented but has not yet been
+validated with a real Apple purchase or exposed through a deployed endpoint.
 
 ## Current evidence and remaining tests
 
@@ -51,7 +62,9 @@ account-token requirements, expired/refunded/upgraded records, timestamp bounds,
 unsigned and oversized input, and forged signatures. A real Miniflare Worker
 loads the Apple verifier and rejects forged certificate chains in Production and
 Sandbox, and rejects Xcode mode. These are isolated backend tests, not app runtime
-tests on the MacBook Pro.
+tests on the MacBook Pro. Additional policy tests cover current inactive states,
+cancellation through the paid period, signed grace deadlines, refunds during
+grace, and mismatched account and renewal data.
 
 A genuine sandbox purchase and Apple-signed notification have not yet passed
 through this implementation. Before release, prove successful verification,
