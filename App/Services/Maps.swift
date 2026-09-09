@@ -12,16 +12,11 @@ private let defaultMapImageSize: CGSize = CGSize(width: 1024, height: 1024)
 private let maximumMapImageDimension = 4096
 
 final class MapsService: NSObject, Service {
-    private let searchCompleter = MKLocalSearchCompleter()
-    private var searchResults: [MKLocalSearchCompletion] = []
-    private var searchContinuation: CheckedContinuation<[MKLocalSearchCompletion], Error>?
-
     static let shared = MapsService()
 
     override init() {
         log.debug("Initializing maps service")
         super.init()
-        self.searchCompleter.delegate = self
     }
 
     var isActivated: Bool {
@@ -827,18 +822,4 @@ final class MapsService: NSObject, Service {
         return .object(result)
     }
 
-}
-
-// MARK: - MKLocalSearchCompleterDelegate
-extension MapsService: MKLocalSearchCompleterDelegate {
-    func completerDidUpdateResults(_ completer: MKLocalSearchCompleter) {
-        self.searchResults = completer.results
-        self.searchContinuation?.resume(returning: completer.results)
-        self.searchContinuation = nil
-    }
-
-    func completer(_ completer: MKLocalSearchCompleter, didFailWithError error: Error) {
-        self.searchContinuation?.resume(throwing: error)
-        self.searchContinuation = nil
-    }
 }
