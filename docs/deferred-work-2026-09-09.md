@@ -17,7 +17,7 @@ Validation:
 - Full Debug app and CLI compilation passed with signing disabled.
 - Changed Swift files passed strict formatting checks. The Xcode project passed property-list validation and the diff passed whitespace checks.
 
-These are source and isolated-test results. Apple Core was neither installed nor launched on the MacBook. Home Server still needs the updated build and designated disposable-note acceptance under issue #6. Attachment guards and append protection remain separately tracked in issue #4. This change does not claim attachment safety.
+These are source and isolated-test results. Apple Core was neither installed nor launched on the MacBook. At the time of those tests, Home Server still needed the updated build and designated disposable-note acceptance under issue #6. The installation is recorded below. Attachment guards and append protection remain separately tracked in issue #4. This change does not claim attachment safety.
 
 ## SDK compatibility adapter, issue #8
 
@@ -32,3 +32,19 @@ The adapter and dependency remain unchanged. Removal still depends on a released
 - Attachment and append safety: https://github.com/oliverames/apple-core/issues/4
 - SDK release prerequisite: https://github.com/oliverames/apple-core/issues/8
 - Upstream issue: https://github.com/modelcontextprotocol/swift-sdk/issues/262
+
+## Home Server build 33 installation
+
+Installed over SSH on September 9, 2026, from source commit `3fd9042`. The Developer ID-signed direct app reports version 2.0.0, build 33, at `/Applications/Apple Core.app`. The old build 32 app was moved to Trash.
+
+Apple accepted notarization submission `6112d9da-361b-4b01-bbca-6caa69637388`. The ticket was stapled before packaging. The final ZIP SHA-256 is `fe569fc21c0724a8a78807290482ce78cbfc29daadc2d29f41ab1bbdea878c4d`. The receiving host verified that checksum, the strict signature, Gatekeeper acceptance, and the stapled ticket before installation.
+
+Post-installation checks:
+
+- A running process uses the installed app path, and the bundle reports build 33.
+- A freshly initialized local MCP session advertises `notes_update.expected_hash`.
+- Both the direct-beta connector and ChatGPT Work hosted connector identify Home Server and pass Notes health checks.
+- OAuth client registrations, OAuth tokens, and mail templates match their pre-installation file digests.
+- `config.json` was rewritten during restart. Its original field values were not separately retained, so byte-for-byte or complete semantic equality is not claimed. Hosted service remains enabled and existing authenticated connections work.
+
+No personal Notes write or disposable-note live mutation test was performed. That acceptance remains under issue #6. No public binary, storefront, or stable updater feed was changed.
