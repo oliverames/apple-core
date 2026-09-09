@@ -95,3 +95,22 @@ shipping app and hosted beta. The Store test app is closed, with its repository,
 installed files, and data preserved. Store work is deferred, not completed.
 The active acceptance work remains incomplete until Mail and the outstanding
 client connection checks pass.
+
+## Mail recovery follow-through, September 8 at 10:11 p.m. Eastern
+
+The previously approved recovery was performed through Screen Sharing. The
+server reported that Mail was not open anymore despite listing its process in
+Force Quit Applications. Mail was selected and Force Quit was confirmed.
+Subsequent connector calls succeeded, establishing recovery without a reboot.
+
+Fresh `mail_list_accounts` calls passed through the direct Codex connector,
+the ChatGPT Work connector, and the existing Claude.ai verification chat linked
+above. Each returned two accounts. One is enabled and one disabled, which is
+configuration evidence rather than a reason to change account settings. No
+messages were read or sent, and no account setting was changed.
+
+This resolves the Mail service-access failure. It does not expand the earlier
+smoke checks into exhaustive testing. The independent SSH attempt still failed
+at credential-agent signing after the workstation was unlocked. SSH is a
+separate administration limitation, not a remaining Mail connector failure.
+Other client/enrollment acceptance remains tracked in the repository issues.
