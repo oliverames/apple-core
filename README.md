@@ -14,8 +14,9 @@ A personal macOS MCP (Model Context Protocol) server that exposes local Apple se
 existing self-hosted flow). Both require the Mac to remain running and connected.
 There is no new hosted payment check. See [hosted setup and beta limits](Hosted/README.md)
 and the [Mac App Store feasibility investigation](docs/mac-app-store-feasibility.md).
-Home-server installation and real-client acceptance testing are still pending;
-this beta has not replaced the stable download.
+Home Server runs signed, notarized direct build 33. Full real-client acceptance
+remains open. See the [installation record](docs/deferred-work-2026-09-09.md).
+This beta has not replaced the stable download.
 
 **Status:** Apple Core 1.0 is the first public release. The app serves MCP locally and through an optional authenticated Cloudflare Tunnel, with 128 tools in the standard build. Apple Core began as a hard-fork of [`mattt/iMCP`](https://github.com/mattt/iMCP); it now runs those per-surface implementations plus expanded Notes and Mail surfaces behind the HTTP/SSE serving shell ported from [Bridgeport](https://github.com/oliverames/bridgeport), replacing the original Bonjour transport. The architecture pivot is recorded in [`docs/planning/BUILD_PLAN.md` §0a](docs/planning/BUILD_PLAN.md).
 

@@ -1,8 +1,10 @@
 # Apple Core hosted access
 
-Private beta implementation for Apple Core 2.0. Home Server direct build 32
-has passed service smoke checks through the requested clients. Full operation
-and onboarding acceptance remains open. See ../docs/read-only-acceptance-2026-09-09.md.
+Private beta implementation for Apple Core 2.0. Home Server runs signed,
+notarized direct build 33. Both existing connector routes pass Notes health
+checks. See the [installation record](../docs/deferred-work-2026-09-09.md). Full
+operation and onboarding acceptance remains open in the
+[coverage matrix](../docs/read-only-acceptance-2026-09-09.md).
 Do not advertise general availability until acceptance passes.
 
 ## Security boundary
@@ -26,6 +28,11 @@ The operator and Cloudflare process traffic in transit; this is not an
 end-to-end encrypted channel between the MCP client and the Mac. Do not retain
 request bodies, response bodies, authorization headers, authorization codes,
 or setup codes in logs or persistent relay storage.
+
+For hosted OAuth clients that omit `resource`, authorization and token requests
+default to the single advertised resource above. Explicit values still undergo
+the Mac's exact resource validation. Connection ID and approval checks remain
+unchanged. See the [Muse diagnosis](../docs/muse-oauth-diagnosis-2026-09-09.md).
 
 ## Operation
 

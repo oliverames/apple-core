@@ -1,5 +1,19 @@
 # Apple Core worklog
 
+## 2026-09-09 - Muse OAuth compatibility and Home Server build 33
+
+**What changed**: Resolved Muse's omitted OAuth resource through fixed hosted defaults in `9338257`, deployed as Worker `ca81b82a-7f3d-4f06-a781-9faaf9681bef`. Added optional Notes update concurrency checks in `c19971b`. Prepared build 33 in `3fd9042`, notarized it, installed it over SSH on Home Server, and recorded receiving-host evidence in `65faf5f`.
+
+**Decisions made**: Preserve Connection ID UX, approval/PKCE/resource checks, existing callers without expected_hash, invitation-only beta access, and the stable distribution channel. Keep the SDK adapter because upstream has no newer released fix. No personal note mutation was used for testing.
+
+**Verified**: All 20 hosted tests, seven isolated Notes regression tests, full app compilation, and implementation/build CI passed. Live OAuth discovery, DCR, authorization, and negative validation passed. Home Server build 33 passed checksum, signature, Gatekeeper and staple checks. Its live schema includes expected_hash, and direct/Work connectors pass Notes health. OAuth client/token files and mail templates were unchanged. config.json was rewritten during restart, so complete configuration equality is not claimed.
+
+**Left off at**: Resolved this session: [Notes concurrency #1](https://github.com/oliverames/apple-core/issues/1). Still open: [Muse interactive consent and optional probe cleanup #11](https://github.com/oliverames/apple-core/issues/11), [live disposable-note and broader acceptance #6](https://github.com/oliverames/apple-core/issues/6), [attachment/append safety #4](https://github.com/oliverames/apple-core/issues/4), and [upstream SDK prerequisite #8](https://github.com/oliverames/apple-core/issues/8). Historical Worker telemetry returned HTTP 403, code 10000, Authentication error. Diagnosis instead used the supplied URL and a controlled live reproduction.
+
+**Open questions**: Carried forward without expansion: [Mail search #3](https://github.com/oliverames/apple-core/issues/3), [private delivery and first-run/payment acceptance #7](https://github.com/oliverames/apple-core/issues/7), [Contacts account/device verification #9](https://github.com/oliverames/apple-core/issues/9), and [aggregate hosted controls #10](https://github.com/oliverames/apple-core/issues/10). Prior Mail smoke recovery remains complete. The existing .playwright-cli artifacts are preserved. Updated README/hosted guidance and the iCloud Home Server and MCP Endpoints references. No agent configuration, marketplace installation, memory file, public binary or stable feed changed.
+
+---
+
 ## 2026-09-09 - Direct beta containment and multi-client reconciliation
 
 **What changed**: Published the tester-interest Google Form and restricted earlier public beta access in `a64f3d8`. Recovered Home Server Mail and recorded acceptance in `c664968`. Shipped per-installation usage counters, pause controls and CPU bounds in `2fb5a90`; deployment evidence is `03619cb`. Receiving Worker `b4f657e6-9922-4cc0-81ab-cd68bfeb882c` reports the approved 2,000 daily and 20,000 monthly forwarding limits and 50 ms CPU limit.
