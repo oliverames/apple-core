@@ -3,11 +3,12 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "pretest": "npm run build && npm run build:verification-test",
-    "test": "node --test protocol.test.mjs integration.test.mjs store-verification.test.mjs",
+    "pretest": "npm run build && npm run build:verification-test && npm run build:relay-expiry-test",
+    "test": "node --test protocol.test.mjs integration.test.mjs store-verification.test.mjs relay-expiry.test.mjs",
     "build": "wrangler deploy --dry-run --outdir build",
     "types": "wrangler types",
-    "build:verification-test": "wrangler deploy --dry-run --config tests/wrangler.verification.jsonc --outdir build-verification"
+    "build:verification-test": "wrangler deploy --dry-run --config tests/wrangler.verification.jsonc --outdir build-verification",
+    "build:relay-expiry-test": "wrangler deploy --dry-run --config tests/wrangler.relay-expiry.jsonc --outdir \"$PWD/build-relay-expiry\""
   },
   "devDependencies": {
     "miniflare": "5.20260907.0-alpha",

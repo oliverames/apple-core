@@ -13,7 +13,7 @@ test("hosted enrollment and isolated device relays", async t => {
     compatibilityDate: "2026-09-08",
     compatibilityFlags: ["nodejs_compat"],
     durableObjects: { MACS: { className: "MacRelay", useSQLite: true } },
-    bindings: { ADMIN_SECRET: "test-admin-credential-only", METADATA_SECRET: "test-metadata-signing-credential-only" },
+    bindings: { HOSTED_DAILY_LIMIT: "2000", HOSTED_MONTHLY_LIMIT: "20000", ADMIN_SECRET: "test-admin-credential-only", METADATA_SECRET: "test-metadata-signing-credential-only" },
     ratelimits: { REQUEST_LIMITER: { namespace_id: "1001", simple: { limit: 1000, period: 60 } } },
     }],
   }));
@@ -31,6 +31,8 @@ test("hosted enrollment and isolated device relays", async t => {
   assert.equal(anonymous.status, 401);
   assert.match(anonymous.headers.get("www-authenticate"), /oauth-protected-resource\/mcp/);
   const code = await invite();
+  assert.equal((await pair("not-a-routed-setup-code")).status, 400);
+  assert.equal((await pair(`${code.split("~")[0]}~wrong-secret`)).status, 400);
   const attempts = await Promise.all([pair(code), pair(code)]);
   assert.deepEqual(attempts.map(r => r.status).sort(), [200, 400]);
   const first = await attempts.find(r => r.status === 200).json();
@@ -67,6 +69,19 @@ test("hosted enrollment and isolated device relays", async t => {
   assert.equal(other.status, 503);
   assert.equal(seen.length, 1);
 
+  const adminHeaders = { authorization: "Bearer test-admin-credential-only" };
+  const usagePath = `/admin/tenants/${first.tenant_id}/usage`;
+  assert.equal((await call(usagePath)).status, 401);
+  assert.equal((await (await call(usagePath, { headers: adminHeaders })).json()).dayCount, 1);
+  const pausePath = `/admin/tenants/${first.tenant_id}/pause`;
+  assert.equal((await call(pausePath, { method: "POST", headers: adminHeaders, body: JSON.stringify({ paused: true }) })).status, 200);
+  assert.equal((await call("/mcp", { method: "POST", headers: { authorization: `Bearer ${first.tenant_id}~inner-token` }, body: "{}" })).status, 503);
+  assert.equal(seen.length, 1);
+  assert.equal((await call("/oauth/revoke", { method: "POST", body: new URLSearchParams({ token: `${first.tenant_id}~inner-token` }).toString() })).status, 200);
+  assert.equal(seen.at(-1).path, "/oauth/revoke");
+  assert.equal((await (await call(usagePath, { headers: adminHeaders })).json()).dayCount, 1);
+  assert.equal((await call(pausePath, { method: "POST", headers: adminHeaders, body: JSON.stringify({ paused: false }) })).status, 200);
+
   const registration = await call("/oauth/register", { method: "POST", body: JSON.stringify({ client_name: "Test client", redirect_uris: ["http://127.0.0.1:12345/callback"] }) });
   assert.equal(registration.status, 201);
   const client = await registration.json();
@@ -95,4 +110,25 @@ test("hosted enrollment and isolated device relays", async t => {
   assert.equal(new URLSearchParams(Buffer.from(seen.at(-1).body, "base64").toString()).get("refresh_token"), "inner-refresh");
   assert.equal((await call(`/admin/tenants/${first.tenant_id}`, { method: "DELETE", headers: { authorization: "Bearer test-admin-credential-only" } })).status, 204);
   assert.equal((await connect(first)).status, 401);
+});
+
+test("global pause blocks new work while discovery and administrator authentication remain available", async t => {
+  const runtime = new Miniflare(convertV4MiniflareOptions({ workers: [{
+    name: "apple-core-paused-test", modules: true,
+    scriptPath: fileURLToPath(new URL("build/worker.js", import.meta.url)),
+    compatibilityDate: "2026-09-08", compatibilityFlags: ["nodejs_compat"],
+    durableObjects: { MACS: { className: "MacRelay", useSQLite: true } },
+    bindings: { HOSTED_PAUSED: "true", ADMIN_SECRET: "test-admin-credential-only" },
+    ratelimits: { REQUEST_LIMITER: { namespace_id: "1002", simple: { limit: 1000, period: 60 } } },
+  }] }));
+  t.after(() => runtime.dispose());
+  for (const path of ["/mcp", "/pair", "/oauth/token", "/oauth/authorize", "/bridge/" + "a".repeat(32)]) {
+    assert.equal((await runtime.dispatchFetch(`${ORIGIN}${path}`, { method: "POST" })).status, 503);
+  }
+  assert.equal((await runtime.dispatchFetch(`${ORIGIN}/oauth/revoke`, { method: "POST", body: "token=invalid" })).status, 400);
+  assert.equal((await runtime.dispatchFetch(`${ORIGIN}/.well-known/oauth-authorization-server`)).status, 200);
+  assert.equal((await runtime.dispatchFetch(`${ORIGIN}/admin/tenants/${"a".repeat(32)}/usage`)).status, 401);
+  assert.equal((await runtime.dispatchFetch(`${ORIGIN}/admin/tenants/${"a".repeat(32)}/usage`, {
+    headers: { authorization: "Bearer test-admin-credential-only" },
+  })).status, 200);
 });

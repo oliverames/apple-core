@@ -4,3 +4,4 @@ build/
 .dev.vars
 worker-configuration.d.ts
 build-verification/
+build-relay-expiry/

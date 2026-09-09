@@ -52,6 +52,9 @@ async function handle(request, env) {
   if (path.startsWith("/.well-known/oauth-protected-resource") && request.method === "GET" && ["/.well-known/oauth-protected-resource", "/.well-known/oauth-protected-resource/mcp"].includes(path)) return json({ resource: RESOURCE, resource_name: "Apple Core", authorization_servers: [ORIGIN], bearer_methods_supported: ["header"], scopes_supported: ["mcp"] });
   if (path === "/.well-known/oauth-authorization-server" && request.method === "GET") return json({ issuer: ORIGIN, authorization_endpoint: `${ORIGIN}/oauth/authorize`, token_endpoint: `${ORIGIN}/oauth/token`, registration_endpoint: `${ORIGIN}/oauth/register`, revocation_endpoint: `${ORIGIN}/oauth/revoke`, response_types_supported: ["code"], grant_types_supported: ["authorization_code", "refresh_token"], code_challenge_methods_supported: ["S256"], token_endpoint_auth_methods_supported: ["none"], client_id_metadata_document_supported: true, scopes_supported: ["mcp"] });
 
+  // Emergency stop leaves authenticated administration and discovery available.
+  if (env.HOSTED_PAUSED === "true" && !path.startsWith("/admin/") && !(path === "/oauth/revoke" && request.method === "POST")) return error("hosting_paused", 503);
+
   // The rate limiter is applied before storage/RPC/cryptographic work. Never log keys.
   const ip = request.headers.get("cf-connecting-ip") ?? "unknown";
   const mcpRoute = path === "/mcp" ? routed(request.headers.get("authorization")?.replace(/^Bearer /, "")) : null;
@@ -64,6 +67,18 @@ async function handle(request, env) {
       const id = crypto.randomUUID().replaceAll("-", "");
       const code = await env.MACS.getByName(id).invite();
       return json({ setup_code: wrap(id, code), expires_in: 1800 }, 201);
+    }
+    const usageRoute = /^\/admin\/tenants\/([a-f0-9]{32})\/(usage|pause)$/.exec(path);
+    if (usageRoute) {
+      const relay = env.MACS.getByName(usageRoute[1]);
+      if (usageRoute[2] === "usage" && request.method === "GET") return json(await relay.usageStatus());
+      if (usageRoute[2] === "pause" && request.method === "POST") {
+        const input = JSON.parse(text(await readBounded(request, 128)));
+        if (typeof input.paused !== "boolean") return error("invalid_pause");
+        await relay.setPaused(input.paused);
+        return json({ paused: input.paused });
+      }
+      return error("not_found", 404);
     }
     const id = path.slice("/admin/tenants/".length);
     if (path.startsWith("/admin/tenants/") && TENANT.test(id) && request.method === "DELETE") { await env.MACS.getByName(id).revoke(); return new Response(null, { status: 204 }); }

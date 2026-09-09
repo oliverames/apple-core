@@ -1,8 +1,9 @@
 # Apple Core hosted access
 
-Private beta implementation for Apple Core 2.0 Beta 1 (build 28). The hosted
-Worker is deployed, but the home-server and real-client acceptance checks are
-still pending. Do not advertise general availability until those checks pass.
+Private beta implementation for Apple Core 2.0. Home Server direct build 32
+has passed service smoke checks through the requested clients. Full operation
+and onboarding acceptance remains open. See ../docs/read-only-acceptance-2026-09-09.md.
+Do not advertise general availability until acceptance passes.
 
 ## Security boundary
 
@@ -101,3 +102,43 @@ does not bypass the destination Mac's token or session checks.
 - Run read-only checks for each enabled service and report unavailable
   permissions separately from failures. Never invoke write tools as probes.
 - Keep the beta out of the stable Sparkle feed and Gumroad download.
+
+## Usage containment
+
+The configured beta policy allows each installation 2,000 admitted forwarding
+attempts per UTC day and 20,000 per UTC month. MCP and OAuth forwarding share
+these atomic counters. Failures after admission still count. Day and month
+windows reset independently. This is a per-installation allowance, not an
+aggregate account limit, authenticated-success counter or dollar cap.
+
+`node admin.mjs usage TENANT_ID` returns only UTC windows, counts, limits and
+pause state. `pause TENANT_ID` stops new ordinary forwarded work, and
+`resume TENANT_ID` restores it without clearing counters. Administrator commands
+use the existing secret-manager environment variable. Usage and pause state
+persist across Worker deployments. Missing or invalid quota configuration
+rejects ordinary forwarded work with 503. Exhaustion returns 429.
+
+Set the Worker variable `HOSTED_PAUSED` to `true` and deploy to stop new public
+pairing, relay connection and ordinary forwarding work before object access.
+Discovery and authenticated administration remain available. Previously
+admitted work may finish. Per-installation pause also leaves its socket open
+and hibernatable. Neither kind of pause deletes records or resets credentials.
+
+OAuth grant revocation remains available while paused or exhausted, under the
+existing edge rate, request size, concurrency and deadline bounds. Revocation
+does not consume ordinary forwarding quota. This deliberate recovery exception,
+bridge traffic, rejected incoming requests, Durable Object storage and other
+Cloudflare services can still incur costs. The explicit 50 ms Worker CPU limit
+caps per-request CPU, not monthly spending or relay wall time.
+
+Only one operator-managed tester is currently intended. Before issuing further
+invitations, add aggregate admission/tenant limits and verify actual metered
+usage. Do not multiply this installation allowance across new testers and
+claim the same budget. The chosen operating budget and account billing figures
+are recorded privately. The public Google Form never provisions access.
+
+The tests cover atomic concurrent admission, tenant independence, UTC rollover,
+pause/resume without counter reset, missing configuration, invalid/expired
+invitations, global pause and revocation recovery. Test-only expiry/storage
+controls are confined to a separate entry point and absent from the production
+bundle. Passing fixtures are not evidence of a deployed quota.

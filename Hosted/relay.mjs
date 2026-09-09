@@ -40,6 +40,44 @@ export class MacRelay extends DurableObject {
     if (invitation && invitation.expires <= Date.now()) await this.ctx.storage.delete("invitation");
   }
 
+  usageLimits() {
+    const day = Number(this.env.HOSTED_DAILY_LIMIT);
+    const month = Number(this.env.HOSTED_MONTHLY_LIMIT);
+    if (![day, month].every(value => Number.isSafeInteger(value) && value > 0 && value <= 1_000_000)) return null;
+    return { day, month };
+  }
+
+  currentUsage(stored) {
+    const day = new Date().toISOString().slice(0, 10);
+    const month = day.slice(0, 7);
+    return { day, month, dayCount: stored?.day === day ? stored.dayCount : 0,
+      monthCount: stored?.month === month ? stored.monthCount : 0 };
+  }
+
+  async usageStatus() {
+    return { ...this.currentUsage(await this.ctx.storage.get("usage")),
+      limits: this.usageLimits(), paused: !!(await this.ctx.storage.get("paused")) };
+  }
+
+  async setPaused(paused) {
+    if (typeof paused !== "boolean") throw new Error("Invalid pause state");
+    await this.ctx.storage.put("paused", paused);
+  }
+
+  async admit() {
+    const limits = this.usageLimits();
+    if (!limits) return 503;
+    return this.ctx.storage.transaction(async txn => {
+      if (await txn.get("paused")) return 503;
+      const usage = this.currentUsage(await txn.get("usage"));
+      if (usage.dayCount >= limits.day || usage.monthCount >= limits.month) return 429;
+      usage.dayCount += 1;
+      usage.monthCount += 1;
+      await txn.put("usage", usage);
+      return 200;
+    });
+  }
+
   async fetch(request) {
     const credential = request.headers.get("authorization")?.replace(/^Bearer /, "") ?? "";
     if (!(await matchesSecret(credential, await this.ctx.storage.get("credential")))) return new Response(null, { status: 401 });
@@ -57,6 +95,11 @@ export class MacRelay extends DurableObject {
     if (!relayPathAllowed(message.method, message.path)) return { status: 400, headers: {}, body: "" };
     const sockets = this.ctx.getWebSockets();
     if (sockets.length !== 1) return { status: 503, headers: {}, body: "" };
+    if (this.pending.size >= 4) return { status: 429, headers: {}, body: "" };
+    // Keep grant revocation available even while ordinary work is suspended.
+    const admission = message.path === "/oauth/revoke" && message.method === "POST" ? 200 : await this.admit();
+    if (admission !== 200) return { status: admission, headers: {}, body: "" };
+    // Storage admission yields; recheck concurrency before opening another request.
     if (this.pending.size >= 4) return { status: 429, headers: {}, body: "" };
     const id = crypto.randomUUID();
     return new Promise(resolve => {
