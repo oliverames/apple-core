@@ -18,7 +18,7 @@ Some read-only annotations describe absence of record mutation, not absence of r
 | `capture_take_screenshot` | [Capture.swift](../App/Services/Capture.swift#L472) | Held: observable side effect | Screen capture requires approved target and can expose private UI. |
 | `capture_list_windows` | [Capture.swift](../App/Services/Capture.swift#L728) | Not executed in this matrix pass | Requires explicit capture fixture and permission. Do not record camera, microphone or screenshots for generic smoke coverage. |
 | `contacts_me` | [Contacts.swift](../App/Services/Contacts.swift#L175) | Not executed in this matrix pass | Synthetic iCloud card/group/photo fixture; confirm account and fields without modifying the original contact. |
-| `contacts_search` | [Contacts.swift](../App/Services/Contacts.swift#L195) | Not executed in this matrix pass | Synthetic iCloud card/group/photo fixture; confirm account and fields without modifying the original contact. |
+| `contacts_search` | [Contacts.swift](../App/Services/Contacts.swift#L195) | PASS bounded smoke, 2026-09-09 06:44 EDT | Synthetic iCloud card/group/photo fixture; confirm account and fields without modifying the original contact. |
 | `contacts_get` | [Contacts.swift](../App/Services/Contacts.swift#L379) | Not executed in this matrix pass | Synthetic iCloud card/group/photo fixture; confirm account and fields without modifying the original contact. |
 | `contacts_groups` | [Contacts.swift](../App/Services/Contacts.swift#L465) | Not executed in this matrix pass | Synthetic iCloud card/group/photo fixture; confirm account and fields without modifying the original contact. |
 | `contacts_group_members` | [Contacts.swift](../App/Services/Contacts.swift#L487) | Not executed in this matrix pass | Synthetic iCloud card/group/photo fixture; confirm account and fields without modifying the original contact. |
@@ -49,7 +49,7 @@ Some read-only annotations describe absence of record mutation, not absence of r
 | `mail_get_template` | [Mail.swift](../App/Services/Mail.swift#L1717) | Not executed in this matrix pass | Dedicated fixture mailbox/messages/attachments/templates with known threading and flags. Do not mark read or fetch new mail. |
 | `maps_search` | [Maps.swift](../App/Services/Maps.swift#L41) | PASS direct beta, 2026-09-09 06:43 EDT | Public place and route fixture, validate result fields and distance/time plausibility. MapKit/network prerequisite. |
 | `maps_directions` | [Maps.swift](../App/Services/Maps.swift#L135) | PASS direct beta, 2026-09-09 06:43 EDT | Public place and route fixture, validate result fields and distance/time plausibility. MapKit/network prerequisite. |
-| `maps_explore` | [Maps.swift](../App/Services/Maps.swift#L305) | Not executed in this matrix pass | Public place and route fixture, validate result fields and distance/time plausibility. MapKit/network prerequisite. |
+| `maps_explore` | [Maps.swift](../App/Services/Maps.swift#L305) | PASS bounded smoke, 2026-09-09 06:44 EDT | Public place and route fixture, validate result fields and distance/time plausibility. MapKit/network prerequisite. |
 | `maps_eta` | [Maps.swift](../App/Services/Maps.swift#L403) | PASS direct beta, 2026-09-09 06:43 EDT | Public place and route fixture, validate result fields and distance/time plausibility. MapKit/network prerequisite. |
 | `maps_generate` | [Maps.swift](../App/Services/Maps.swift#L507) | Not executed in this matrix pass | Public place and route fixture, validate result fields and distance/time plausibility. MapKit/network prerequisite. |
 | `messages_fetch` | [Messages.swift](../App/Services/Messages.swift#L104) | Not executed in this matrix pass | Supplied synthetic chat database/attachment fixture. Do not search personal conversations merely for coverage. |
@@ -58,11 +58,11 @@ Some read-only annotations describe absence of record mutation, not absence of r
 | `messages_unread` | [Messages.swift](../App/Services/Messages.swift#L437) | Not executed in this matrix pass | Supplied synthetic chat database/attachment fixture. Do not search personal conversations merely for coverage. |
 | `notes_list_folders` | [Notes.swift](../App/Services/Notes.swift#L896) | Not executed in this matrix pass | Dedicated fixture folder and note IDs with known HTML, Markdown, checklist and attachments. Verify returned content. |
 | `notes_list` | [Notes.swift](../App/Services/Notes.swift#L916) | Not executed in this matrix pass | Dedicated fixture folder and note IDs with known HTML, Markdown, checklist and attachments. Verify returned content. |
-| `notes_search` | [Notes.swift](../App/Services/Notes.swift#L949) | Not executed in this matrix pass | Dedicated fixture folder and note IDs with known HTML, Markdown, checklist and attachments. Verify returned content. |
+| `notes_search` | [Notes.swift](../App/Services/Notes.swift#L949) | PASS bounded smoke, 2026-09-09 06:44 EDT | Dedicated fixture folder and note IDs with known HTML, Markdown, checklist and attachments. Verify returned content. |
 | `notes_get` | [Notes.swift](../App/Services/Notes.swift#L998) | Not executed in this matrix pass | Dedicated fixture folder and note IDs with known HTML, Markdown, checklist and attachments. Verify returned content. |
 | `notes_selected` | [Notes.swift](../App/Services/Notes.swift#L1202) | Not executed in this matrix pass | Dedicated fixture folder and note IDs with known HTML, Markdown, checklist and attachments. Verify returned content. Selection-dependent UI state must be explicitly prepared. |
 | `notes_list_shared` | [Notes.swift](../App/Services/Notes.swift#L1398) | Not executed in this matrix pass | Dedicated fixture folder and note IDs with known HTML, Markdown, checklist and attachments. Verify returned content. |
-| `notes_health_check` | [Notes.swift](../App/Services/Notes.swift#L1427) | Not executed in this matrix pass | Dedicated fixture folder and note IDs with known HTML, Markdown, checklist and attachments. Verify returned content. |
+| `notes_health_check` | [Notes.swift](../App/Services/Notes.swift#L1427) | PASS bounded smoke, 2026-09-09 06:44 EDT | Dedicated fixture folder and note IDs with known HTML, Markdown, checklist and attachments. Verify returned content. |
 | `notes_doctor` | [Notes.swift](../App/Services/Notes.swift#L1441) | Not executed in this matrix pass | Dedicated fixture folder and note IDs with known HTML, Markdown, checklist and attachments. Verify returned content. |
 | `notes_get_link` | [Notes.swift](../App/Services/Notes.swift#L1455) | Not executed in this matrix pass | Dedicated fixture folder and note IDs with known HTML, Markdown, checklist and attachments. Verify returned content. |
 | `notes_get_metadata` | [Notes.swift](../App/Services/Notes.swift#L1481) | Not executed in this matrix pass | Dedicated fixture folder and note IDs with known HTML, Markdown, checklist and attachments. Verify returned content. |
@@ -78,7 +78,7 @@ Some read-only annotations describe absence of record mutation, not absence of r
 | `reminders_sections` | [Reminders.swift](../App/Services/Reminders.swift#L113) | Not executed in this matrix pass | Synthetic reminder list/section fixture with known dates/completion. Compare fields without completing tasks. |
 | `reminders_fetch` | [Reminders.swift](../App/Services/Reminders.swift#L151) | Not executed in this matrix pass | Synthetic reminder list/section fixture with known dates/completion. Compare fields without completing tasks. |
 | `shortcuts_list` | [Shortcuts.swift](../App/Services/Shortcuts.swift#L21) | Not executed in this matrix pass | Installed harmless fixture shortcut/folder. Inspect metadata only; do not run a shortcut. |
-| `shortcuts_folders` | [Shortcuts.swift](../App/Services/Shortcuts.swift#L50) | Not executed in this matrix pass | Installed harmless fixture shortcut/folder. Inspect metadata only; do not run a shortcut. |
+| `shortcuts_folders` | [Shortcuts.swift](../App/Services/Shortcuts.swift#L50) | PASS bounded smoke, 2026-09-09 06:44 EDT | Installed harmless fixture shortcut/folder. Inspect metadata only; do not run a shortcut. |
 | `shortcuts_view` | [Shortcuts.swift](../App/Services/Shortcuts.swift#L123) | Held: observable side effect | Opens Shortcuts UI. Excluded from unattended read-only pass. |
 | `utilities_beep` | [Utilities.swift](../App/Services/Utilities.swift#L13) | Held: observable side effect | Plays audible sound. Excluded from silent read-only smoke pass. |
 | `utilities_clipboard_read` | [Utilities.swift](../App/Services/Utilities.swift#L92) | Held: sensitive clipboard | Use isolated supplied clipboard fixture. Never dump an arbitrary current clipboard. |
@@ -93,3 +93,18 @@ returned a 583-metre route with a 458-second estimate. ETA returned the same
 458-second interval and preserved both input coordinates. No current device
 location, personal record, camera, microphone or clipboard was read. These five
 checks do not stand in for the remaining 68 rows or other clients.
+
+## Additional bounded live smoke checks
+
+Direct beta: Contacts and Notes title searches for unique nonexistent markers
+returned empty arrays. Notes health reported healthy Apple Events access.
+Shortcuts returned a folder array. Maps exploration returned a public library
+within the allowed 2,000-metre radius. A 3,000-metre request was correctly
+rejected by the documented runtime validation before the valid request.
+These empty-search and metadata checks are narrower than fixture-content tests.
+
+ChatGPT Work separately passed forward/reverse geocoding, State House search,
+Notes health and the empty Contacts search. After deployment of hosted version
+b4f657e6-9922-4cc0-81ab-cd68bfeb882c, both routes again passed Notes health.
+Thus ten distinct direct-beta operations have bounded live results in this
+pass, five also checked through Work. Other rows remain explicitly unexecuted.
