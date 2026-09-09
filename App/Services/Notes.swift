@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-import CryptoKit
 import Foundation
 import JSONSchema
 import OSLog
@@ -613,20 +612,6 @@ private let appendNoteScript = """
     end run
     """
 
-private let updateNoteScript = """
-    on run argv
-        set noteId to item 1 of argv
-        set newBody to item 2 of argv
-        tell application "Notes"
-            set targetNote to note id noteId
-            set body of targetNote to newBody
-            set noteName to name of targetNote
-            set noteFolder to name of container of targetNote
-        end tell
-        return noteId & linefeed & noteName & linefeed & noteFolder
-    end run
-    """
-
 private let deleteNoteScript = """
     on run argv
         set noteId to item 1 of argv
@@ -1125,11 +1110,14 @@ final class NotesService: Service {
         Tool(
             name: "notes_update",
             description:
-                "Replace a note's entire body. WARNING: last-writer-wins; attachments embedded in the old body may be lost. Read the note first with notes_get.",
+                "Replace a note's entire body. Pass expected_hash from notes_get.bodyHash to reject a changed body. Without it, updates are last-writer-wins. Embedded attachments may be lost.",
             inputSchema: .object(
                 properties: [
                     "id": .string(
                         description: "Note id (from notes_list or notes_search)"
+                    ),
+                    "expected_hash": .string(
+                        description: "Exact bodyHash from notes_get. Rejects the update if the body has changed."
                     ),
                     "title": .string(
                         description: "New title (becomes the first heading)"
@@ -1150,12 +1138,6 @@ final class NotesService: Service {
                 openWorldHint: false
             )
         ) { arguments in
-            // TODO(BUILD_PLAN §3.5, v2.0): optimistic concurrency via
-            // expected_hash — read current body, compare SHA-256 against a
-            // caller-supplied hash, and fail with notes_update_conflict on
-            // mismatch. v1 is last-writer-wins like every other AppleScript
-            // Notes tool; notes_get already returns bodyHash so the plumbing
-            // is ready.
             let id = try Self.requiredString("id", from: arguments)
             let title = try Self.requiredString("title", from: arguments)
             let html = Self.composeBodyHTML(
@@ -1163,12 +1145,21 @@ final class NotesService: Service {
                 bodyText: arguments["body"]?.stringValue,
                 bodyHTML: arguments["bodyHTML"]?.stringValue
             )
-            let output = try await scriptedNotesApp.run(
-                .appleScript,
-                script: updateNoteScript,
-                arguments: [id, html]
+            let snapshot = try await NotesUpdateGuard.snapshot(expectedHash: arguments["expected_hash"]?.stringValue) {
+                let content = try await scriptedNotesApp.runJSON(
+                    .jxa,
+                    script: getNoteScript,
+                    arguments: [id],
+                    as: NoteContent.self
+                )
+                return content.bodyHTML
+            }
+            return try await scriptedNotesApp.runJSON(
+                .jxa,
+                script: NotesUpdateGuard.updateScript,
+                arguments: [id, html, snapshot == nil ? "0" : "1", snapshot ?? ""],
+                as: NoteWriteResult.self
             )
-            return try Self.parseWriteResult(output)
         }
 
         Tool(
@@ -2273,8 +2264,7 @@ final class NotesService: Service {
     }
 
     private static func hash(of string: String) -> String {
-        let digest = SHA256.hash(data: Data(string.utf8))
-        return digest.map { String(format: "%02x", $0) }.joined()
+        NotesUpdateGuard.hash(of: string)
     }
 
     /// Write scripts return `id\nname\nfolderName` on stdout.
