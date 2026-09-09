@@ -5,7 +5,10 @@ import Testing
 struct MCPInitializeCompatibilityTests {
     @Test("Structured experimental capabilities preserve the rest of initialization")
     func structuredCapabilities() throws {
-        let input = Data(#"{"jsonrpc":"2.0","id":"init-1","method":"initialize","params":{"protocolVersion":"2025-11-25","clientInfo":{"name":"openai-mcp","version":"1.0.0"},"capabilities":{"experimental":{"openai/visibility":{"enabled":true},"legacy":"value"},"extensions":{"io.modelcontextprotocol/ui":{"mimeTypes":["text/html;profile=mcp-app"]}},"roots":{"listChanged":true}}}}"#.utf8)
+        let input = Data(
+            #"{"jsonrpc":"2.0","id":"init-1","method":"initialize","params":{"protocolVersion":"2025-11-25","clientInfo":{"name":"openai-mcp","version":"1.0.0"},"capabilities":{"experimental":{"openai/visibility":{"enabled":true},"legacy":"value"},"extensions":{"io.modelcontextprotocol/ui":{"mimeTypes":["text/html;profile=mcp-app"]}},"roots":{"listChanged":true}}}}"#
+                .utf8
+        )
         var original = try #require(JSONSerialization.jsonObject(with: input) as? [String: Any])
         var params = try #require(original["params"] as? [String: Any])
         var capabilities = try #require(params["capabilities"] as? [String: Any])
