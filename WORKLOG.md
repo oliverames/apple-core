@@ -1,5 +1,19 @@
 # Apple Core worklog
 
+## 2026-09-09 - Direct beta containment and multi-client reconciliation
+
+**What changed**: Published the tester-interest Google Form and restricted earlier public beta access in `a64f3d8`. Recovered Home Server Mail and recorded acceptance in `c664968`. Shipped per-installation usage counters, pause controls and CPU bounds in `2fb5a90`; deployment evidence is `03619cb`. Receiving Worker `b4f657e6-9922-4cc0-81ab-cd68bfeb882c` reports the approved 2,000 daily and 20,000 monthly forwarding limits and 50 ms CPU limit.
+
+**Decisions made**: Keep direct beta invitation-only, preserve stable delivery, and leave App Store work paused. Per-installation containment is not a total account or dollar cap. No extra testers were enrolled. Preserve the existing browser artifacts.
+
+**Verified**: 20 Hosted tests and 37 isolated Swift tests passed. No Apple Core app was launched on the MacBook. The 73-operation matrix records ten bounded direct-beta smoke results, five cross-checked through Work. Both client routes passed post-deployment Notes health. Public OAuth metadata, favicon and anonymous rejection passed. Mail passed through direct, Work and Claude routes.
+
+**Left off at**: [Acceptance #6](https://github.com/oliverames/apple-core/issues/6), [private delivery #7](https://github.com/oliverames/apple-core/issues/7), [Contacts #9](https://github.com/oliverames/apple-core/issues/9) and [aggregate cost controls #10](https://github.com/oliverames/apple-core/issues/10). The iCloud copy/default are verified, but phone receipt and account-selection behavior remain open. SSH lookup timed out after 20 seconds, leaving private admin counter read unverified.
+
+**Open questions**: Resolved this session: Mail #5. Still open: full operation/approval/onboarding coverage, aggregate limits before more testers, and prior clean first-run and real-payment verification. Those prior acceptance concerns remain part of #6/#7; do not treat this hosted pass as proof they passed. Unrelated earlier feature issues remain unchanged.
+
+---
+
 ## 2026-09-05 - Codex session review, asset removal, and showcase post
 
 **What changed**: A fresh Claude Code session reviewed the Codex rollout for the
