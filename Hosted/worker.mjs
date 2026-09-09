@@ -119,6 +119,9 @@ async function handle(request, env) {
   if (path === "/oauth/authorize" && request.method === "GET") {
     const fields = [...url.searchParams].filter(([name]) => ["response_type", "client_id", "redirect_uri", "code_challenge", "code_challenge_method", "state", "resource", "scope"].includes(name));
     if (url.search.length > 12000) return error("invalid_request");
+    // RFC 8707 permits a fixed default when a client omits the resource.
+    // Preserve explicit values so the Mac still rejects a wrong audience.
+    if (!url.searchParams.has("resource")) fields.push(["resource", RESOURCE]);
     const id = url.searchParams.get("connection");
     if (!id) return html(`<p>Enter the Connection ID shown in Apple Core on your Mac.</p><form method="get" action="/oauth/authorize">${fields.map(([name, value]) => `<input type="hidden" name="${escapeHTML(name)}" value="${escapeHTML(value)}">`).join("")}<label>Connection ID <input name="connection" required pattern="[a-f0-9]{32}" autocomplete="off"></label><button type="submit">Continue</button></form>`);
     if (!TENANT.test(id)) return error("invalid_connection");
@@ -153,6 +156,7 @@ async function handle(request, env) {
   }
   if (["/oauth/token", "/oauth/revoke"].includes(path) && request.method === "POST") {
     const form = new URLSearchParams(text(await readBounded(request, 16384)));
+    if (path === "/oauth/token" && !form.has("resource")) form.set("resource", RESOURCE);
     const field = path === "/oauth/revoke" ? "token" : form.get("grant_type") === "authorization_code" ? "code" : "refresh_token";
     const route = routed(form.get(field));
     if (!route) return error("invalid_grant");

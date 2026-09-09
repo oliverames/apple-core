@@ -89,6 +89,42 @@ test("hosted enrollment and isolated device relays", async t => {
   assert.equal(metadata.status, 200);
   assert.equal((await metadata.json()).client_id, client.client_id);
   assert.equal((await runtime.dispatchFetch(`${client.client_id}tampered`)).status, 404);
+  // Hosted OAuth clients such as Muse can omit the RFC 8707 resource.
+  // The relay must bind that omission to its single advertised audience.
+  const authorization = new URLSearchParams({ response_type: "code", client_id: client.client_id, redirect_uri: "http://127.0.0.1:12345/callback", code_challenge_method: "S256", code_challenge: "test-challenge", state: "preserved-state", scope: "mcp" });
+  const routingForm = await call(`/oauth/authorize?${authorization}`);
+  assert.equal(routingForm.status, 200);
+  const routingHTML = await routingForm.text();
+  assert.match(routingHTML, /Enter the Connection ID shown in Apple Core on your Mac/);
+  assert.ok(routingHTML.includes(`name="resource" value="${ORIGIN}/mcp"`));
+  authorization.set("connection", first.tenant_id);
+  for (const resource of [undefined, `${ORIGIN}/mcp`, "https://other.example/mcp", ""]) {
+    if (resource === undefined) authorization.delete("resource");
+    else authorization.set("resource", resource);
+    assert.equal((await call(`/oauth/authorize?${authorization}`)).status, 200);
+    const forwarded = new URLSearchParams(seen.at(-1).query);
+    assert.equal(forwarded.get("resource"), resource ?? `${ORIGIN}/mcp`);
+    for (const name of ["response_type", "client_id", "redirect_uri", "code_challenge_method", "code_challenge", "state", "scope"]) assert.equal(forwarded.get(name), authorization.get(name));
+    assert.equal(forwarded.has("connection"), false);
+  }
+  const beforeInvalidConnection = seen.length;
+  authorization.set("connection", "invalid");
+  assert.equal((await call(`/oauth/authorize?${authorization}`)).status, 400);
+  assert.equal(seen.length, beforeInvalidConnection);
+  for (const grant_type of ["authorization_code", "refresh_token"]) {
+    for (const resource of [undefined, `${ORIGIN}/mcp`, "https://other.example/mcp", ""]) {
+      const form = new URLSearchParams({ grant_type, client_id: client.client_id, code_verifier: "preserved-verifier", [grant_type === "authorization_code" ? "code" : "refresh_token"]: `${first.tenant_id}~test-grant` });
+      if (resource !== undefined) form.set("resource", resource);
+      assert.equal((await call("/oauth/token", { method: "POST", body: form.toString() })).status, 200);
+      const forwarded = new URLSearchParams(Buffer.from(seen.at(-1).body, "base64").toString());
+      assert.equal(forwarded.get("resource"), resource ?? `${ORIGIN}/mcp`);
+      assert.equal(forwarded.get("code_verifier"), "preserved-verifier");
+      assert.equal(forwarded.get("client_id"), client.client_id);
+    }
+  }
+  // Revocation and approval keep their existing request semantics.
+  assert.equal((await call("/oauth/revoke", { method: "POST", body: new URLSearchParams({ token: `${first.tenant_id}~test-grant` }).toString() })).status, 200);
+  assert.equal(new URLSearchParams(Buffer.from(seen.at(-1).body, "base64").toString()).has("resource"), false);
   assert.equal((await call(`/t/${first.tenant_id}/oauth/authorize`, { method: "POST", headers: { origin: "https://attacker.example" }, body: "" })).status, 403);
   const approved = await call(`/t/${first.tenant_id}/oauth/authorize`, { method: "POST", redirect: "manual", headers: { origin: ORIGIN }, body: new URLSearchParams({ apple_core_token: `${first.tenant_id}~master-token` }).toString() });
   assert.equal(approved.status, 303);
