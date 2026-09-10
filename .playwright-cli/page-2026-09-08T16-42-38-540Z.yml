@@ -1,0 +1,76 @@
+- generic [active] [ref=f1e1]:
+  - link "Skip to content" [ref=f1e2] [cursor=pointer]:
+    - /url: "#main"
+  - banner [ref=f1e3]:
+    - link "Apple Core" [ref=f1e4] [cursor=pointer]:
+      - /url: /
+    - navigation "Main" [ref=f1e5]:
+      - link "Setup" [ref=f1e6] [cursor=pointer]:
+        - /url: "#setup"
+  - main [ref=f1e7]:
+    - region [ref=f1e8]:
+      - heading "Your Mac. Connected to AI." [level=1] [ref=f1e9]: Your Mac.Connected to AI.
+      - paragraph [ref=f1e10]: Apple Core lets your AI tools access the Mac services you choose through the Model Context Protocol (MCP).
+      - link "Get Apple Core on Gumroad" [ref=f1e11] [cursor=pointer]:
+        - /url: https://amesconsulting.gumroad.com/l/applecore
+        - text: Get Apple Core on Gumroad
+        - generic [aria-hidden] [ref=f1e12]: →
+      - paragraph [ref=f1e13]: Native macOS app. You choose what to share.
+    - region "Two ways to connect remotely" [ref=f1e14]:
+      - article [ref=f1e15]:
+        - heading "Hosted by Apple Core" [level=2] [ref=f1e16]
+        - paragraph [ref=f1e17]: Try the invitation beta.
+        - paragraph [ref=f1e18]: Connect through Apple Core’s hosted service without setting up your own Cloudflare account. Your Mac runs the app and handles requests.
+        - paragraph [ref=f1e19]:
+          - text: Hosted access requires
+          - strong [ref=f1e20]: 2.0 Beta 1 and an invitation code
+          - text: . It is not included automatically with a Gumroad download.
+      - article [ref=f1e21]:
+        - heading "Your own Cloudflare" [level=2] [ref=f1e22]
+        - paragraph [ref=f1e23]: Use your own account.
+        - paragraph [ref=f1e24]: Apple Core continues to support a Cloudflare connection you manage. Sign in to your Cloudflare account in the app and follow the remote-access setup.
+        - paragraph [ref=f1e25]: Already connected this way? You can keep using your existing setup.
+    - region [ref=f1e26]:
+      - heading "Setup" [level=2] [ref=f1e27]
+      - paragraph [ref=f1e28]: From your Mac to your AI tools.
+      - list [ref=f1e29]:
+        - listitem [ref=f1e30]:
+          - heading "Install and activate" [level=3] [ref=f1e31]
+          - paragraph [ref=f1e32]: Get Apple Core from Gumroad, download it from your purchase receipt, and move it to Applications. Open the app and activate it with your license key. Requires macOS 15.1 or later.
+        - listitem [ref=f1e33]:
+          - heading "Choose what to share" [level=3] [ref=f1e34]
+          - paragraph [ref=f1e35]: Open Apple Core’s Settings and enable the services you want to use, such as Calendar, Notes, Reminders, Contacts, Mail, or Messages. Grant the macOS permissions each service requests. For file access, explicitly select the folders you want to share.
+          - paragraph [ref=f1e36]:
+            - text: In the beta, choose
+            - strong [ref=f1e37]: Hosted by Apple Core
+            - text: and enter your invitation code, or choose
+            - strong [ref=f1e38]: Your own Cloudflare
+            - text: and complete sign-in.
+        - listitem [ref=f1e39]:
+          - heading "Connect your AI tool" [level=3] [ref=f1e40]
+          - paragraph [ref=f1e41]: "For hosted access, add this MCP server URL in a compatible AI client:"
+          - code [ref=f1e43]: https://mcp.applecore.app/mcp
+          - paragraph [ref=f1e44]: Choose OAuth when available. Enter the Connection ID from Apple Core, then its connection token on the Apple Core authorization page. Enable ongoing trust only for clients you want to recognize automatically.
+          - paragraph [ref=f1e45]:
+            - text: For your own Cloudflare connection, use the MCP address shown in the app. For a client on the same Mac, the default local address is
+            - code [ref=f1e46]: http://127.0.0.1:8756/mcp
+            - text: . Keep your connection token private.
+      - generic [ref=f1e47]:
+        - heading "ChatGPT Work and Codex" [level=3] [ref=f1e48]
+        - paragraph [ref=f1e49]:
+          - text: In ChatGPT Work, open the plugin directory and choose
+          - strong [ref=f1e50]: Create app
+          - text: with developer mode enabled. Add the MCP URL, select OAuth, and connect. Custom MCP availability depends on your account and workspace settings.
+        - paragraph [ref=f1e51]: "For the Codex command line, add the hosted connection with:"
+        - code [ref=f1e53]: codex mcp add apple-core --url https://mcp.applecore.app/mcp
+        - paragraph [ref=f1e54]: Complete the browser authorization. Start with a read-only request, such as listing your calendars, to check the connection before asking for changes.
+  - contentinfo [ref=f1e55]:
+    - heading "Your Mac stays on. You stay in control." [level=2] [ref=f1e56]
+    - paragraph [ref=f1e57]: Keep Apple Core running on an awake, connected Mac. Hosted requests pass through Cloudflare to your Mac; the AI provider receives the data returned by the tools you use.
+    - paragraph [ref=f1e58]:
+      - text: Apple Core · macOS MCP app ·
+      - link "Gumroad" [ref=f1e59] [cursor=pointer]:
+        - /url: https://amesconsulting.gumroad.com/l/applecore
+      - text: ·
+      - link "Source & support" [ref=f1e60] [cursor=pointer]:
+        - /url: https://github.com/oliverames/apple-core
