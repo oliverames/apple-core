@@ -913,3 +913,17 @@ Oliver granted it, but the local Mac lock prevented SSH credential signing.
 Unlock and reconnect before restarting Mail on Home Server. No restart occurred.
 The untracked `.playwright-cli/` directory is preserved. App Store issues #1–#3
 track its deferred work in the separate repository.
+
+### Muse client preservation, September 10, 2026
+
+Oliver approved this repository as the owner of Muse's shared MCP helper.
+Completed: retrieve the actual client, preserve it in `Integrations/Muse`, adapt
+the two isolated session tests for local execution, add CI and installation
+documentation, and verify the running Muse file by checksum and live calls.
+Compilation and tests passed. A mutation check proved the regression test catches
+missing session resend. Muse confirmed 128 tools and healthy Notes.app access.
+The preserved helper matches the running VM copy. No Mac binary, connector
+credentials, or platform credential module changed. See
+`docs/oauth-connection-id-2026-09-10.md` for evidence. Broader client protocol
+support is outside this preservation task. Existing optional client-registration
+expiry remains tracked in issue #13.

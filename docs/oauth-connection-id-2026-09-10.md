@@ -55,3 +55,23 @@ Muse reported these live results through its new connector:
 Muse diagnosed its initial tools/list 400 as its shared client failing to forward the `Mcp-Session-Id` returned during initialization. Muse repaired its local `_shared/bin/mcp.py` and reported two passing isolated tests in `_shared/tests/test_mcp_session.py`. Those files are on the Muse VM, not this checkout. Muse confirmed the directory has no Git repository, so upstream issue filing and repository persistence for that client fix remain blocked by missing ownership. Do not claim this Apple Core commit contains that separate fix.
 
 No personal note bodies were read and no Apple app data writes were used for acceptance. Age-based client expiry remains optional follow-up in https://github.com/oliverames/apple-core/issues/13. This acceptance completes the installation and real Muse OAuth/MCP work from issues #11 and #12.
+
+## Muse client repository ownership resolved
+
+Later on September 10, Oliver approved Apple Core as the repository for the Muse
+integration helper. `Integrations/Muse/bin/mcp.py` now preserves the full client
+exported through Muse, including its session-header fix. The Muse platform's
+credential module remains an external runtime dependency. Installation and
+single-endpoint process constraints are documented alongside the helper.
+
+Python compilation and both isolated regression tests passed locally. Removing
+the resend behavior in an in-memory mutation made the session test fail as
+expected. CI now includes these tests. The final test transport uses a reserved
+`.invalid` endpoint and patches the client's actual transport object.
+
+Muse confirmed its live file matches SHA-256
+`d6c015d1f8eac0e46d29a603684aa8397a8e3e35de7460613017e5c64e49e27d`,
+the checksum of the committed client source. Fresh-process acceptance again
+returned 128 tools and a healthy Notes.app result. The already-installed helper
+matches this source, so no replacement or credential change was necessary.
+This resolves the earlier missing-ownership blocker without a Mac app release.

@@ -12,6 +12,21 @@ permissions:
     contents: read
 
 jobs:
+    muse-client:
+        name: Verify Muse MCP session handling
+        runs-on: ubuntu-latest
+        timeout-minutes: 5
+        defaults:
+            run:
+                working-directory: Integrations/Muse
+        steps:
+            - uses: actions/checkout@v6
+            - uses: actions/setup-python@v6
+              with:
+                  python-version: '3.12'
+            - run: python3 -m py_compile bin/mcp.py
+            - run: python3 -m unittest tests.test_mcp_session -v
+
     distribution:
         name: Verify licensed downloads and source-only repository
         runs-on: ubuntu-latest
