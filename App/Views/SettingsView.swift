@@ -261,7 +261,7 @@ private struct AccessPane: View {
     @ObservedObject var model: ServingSettingsModel
 
     private var isRemoteOn: Bool {
-        model.cloudflareStatus?.state == .running || model.cloudflare.enabled
+        model.hostedEnabled || model.cloudflareStatus?.state == .running || model.cloudflare.enabled
     }
 
     var body: some View {
@@ -300,7 +300,9 @@ private struct AccessPane: View {
                     SectionHeader(title: "Remote Access")
                 }
 
-                AuthorizationPageProtectionSection(model: model)
+                if !model.hostedEnabled {
+                    AuthorizationPageProtectionSection(model: model)
+                }
             }
         }
         .formStyle(.grouped)
@@ -321,7 +323,10 @@ private struct AccessPane: View {
                     model.cloudflare = settings
                     model.save(restartServer: false)
                 } else {
-                    Task { await model.stopCloudflareTunnel() }
+                    Task {
+                        if model.hostedEnabled { await model.stopHostedAccess() }
+                        await model.stopCloudflareTunnel()
+                    }
                 }
             }
         )

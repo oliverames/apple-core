@@ -123,7 +123,7 @@ async function handle(request, env) {
     // Preserve explicit values so the Mac still rejects a wrong audience.
     if (!url.searchParams.has("resource")) fields.push(["resource", RESOURCE]);
     const id = url.searchParams.get("connection");
-    if (!id) return html(`<p>Enter the Connection ID shown in Apple Core on your Mac.</p><form method="get" action="/oauth/authorize">${fields.map(([name, value]) => `<input type="hidden" name="${escapeHTML(name)}" value="${escapeHTML(value)}">`).join("")}<label>Connection ID <input name="connection" required pattern="[a-f0-9]{32}" autocomplete="off"></label><button type="submit">Continue</button></form>`);
+    if (!id) return html(`<p>In Apple Core on your Mac, open Settings &gt; Access &gt; Remote Access and choose Copy Connection ID.</p><p>If you only have a copied token, enter its 32-character prefix before the <code>~</code>. Do not enter the full token here. You will use it on the approval page.</p><form method="get" action="/oauth/authorize">${fields.map(([name, value]) => `<input type="hidden" name="${escapeHTML(name)}" value="${escapeHTML(value)}">`).join("")}<label>Connection ID <input name="connection" required pattern="[a-f0-9]{32}" autocomplete="off"></label><button type="submit">Continue</button></form>`);
     if (!TENANT.test(id)) return error("invalid_connection");
     const response = await relay(env, id, "GET", "/oauth/authorize", new URLSearchParams(fields).toString(), {}, new Uint8Array());
     if (response.headers.get("content-type")?.includes("text/html")) {

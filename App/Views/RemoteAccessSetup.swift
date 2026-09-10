@@ -26,9 +26,16 @@ struct RemoteAccessSetup: View {
                 Text("Hosted by Apple Core").font(.headline)
                 Text(model.hostedStatus).foregroundStyle(.secondary)
                 Text("\(HostedSettings.origin)/mcp").textSelection(.enabled)
-                Text("Connection ID: \(model.config.hosted?.tenantID ?? "")").textSelection(.enabled)
+                LabeledContent("Connection ID") {
+                    Text(model.config.hosted?.tenantID ?? "")
+                        .font(.system(.callout, design: .monospaced))
+                        .textSelection(.enabled)
+                }
+                RemoteCopyButton(title: "Copy Connection ID", systemImage: "doc.on.doc") {
+                    model.config.hosted?.tenantID
+                }
                 Text(
-                    "Keep this Mac running and connected. Sign in to your MCP client with this Connection ID and your Apple Core token."
+                    "Enter the Connection ID on the first sign-in page, then use Copy Token for the approval page. Keep this Mac running and connected."
                 )
                 .font(.caption).foregroundStyle(.secondary)
                 HStack {

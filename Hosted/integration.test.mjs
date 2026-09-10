@@ -95,7 +95,9 @@ test("hosted enrollment and isolated device relays", async t => {
   const routingForm = await call(`/oauth/authorize?${authorization}`);
   assert.equal(routingForm.status, 200);
   const routingHTML = await routingForm.text();
-  assert.match(routingHTML, /Enter the Connection ID shown in Apple Core on your Mac/);
+  assert.match(routingHTML, /Settings &gt; Access &gt; Remote Access and choose Copy Connection ID/);
+  assert.match(routingHTML, /32-character prefix before the <code>~<\/code>/);
+  assert.match(routingHTML, /Do not enter the full token here/);
   assert.ok(routingHTML.includes(`name="resource" value="${ORIGIN}/mcp"`));
   authorization.set("connection", first.tenant_id);
   for (const resource of [undefined, `${ORIGIN}/mcp`, "https://other.example/mcp", ""]) {
@@ -108,8 +110,10 @@ test("hosted enrollment and isolated device relays", async t => {
     assert.equal(forwarded.has("connection"), false);
   }
   const beforeInvalidConnection = seen.length;
-  authorization.set("connection", "invalid");
-  assert.equal((await call(`/oauth/authorize?${authorization}`)).status, 400);
+  for (const connection of ["invalid", `${first.tenant_id}~ames_test-secret`]) {
+    authorization.set("connection", connection);
+    assert.equal((await call(`/oauth/authorize?${authorization}`)).status, 400);
+  }
   assert.equal(seen.length, beforeInvalidConnection);
   for (const grant_type of ["authorization_code", "refresh_token"]) {
     for (const resource of [undefined, `${ORIGIN}/mcp`, "https://other.example/mcp", ""]) {
