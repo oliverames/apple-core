@@ -1,5 +1,15 @@
 # Apple Core worklog
 
+## 2026-09-10 - Home Server build 34 and working Muse connector
+
+Installed Developer ID-signed, notarized build 34 from `f52d095` on Home Server. Receiving-host checksum, signature, Gatekeeper and staple checks passed. Configuration, OAuth state and mail templates matched before new consent. Screen Sharing verified the new Connection ID controls.
+
+Safari completed Muse authorization under `custom.apple-core`. Live Worker tracing confirmed registration, approval, token exchange and authenticated MCP requests. Muse discovered 128 tools, passed Notes health twice including a fresh process, and identified Home Server through system information. Its separate VM client needed a session-header fix, which Muse applied and covered with two isolated tests. That client has no owning repository, so its upstream persistence remains unresolved.
+
+The app test result reports 207 passing tests and 222 executed cases, with no failures or skips. Hosted tests passed all 20 cases. Full evidence is in `docs/oauth-connection-id-2026-09-10.md`. Optional inactive-client expiry is tracked in #13. No stable feed or public binary changed.
+
+---
+
 ## 2026-09-09 - Muse OAuth compatibility and Home Server build 33
 
 **What changed**: Resolved Muse's omitted OAuth resource through fixed hosted defaults in `9338257`, deployed as Worker `ca81b82a-7f3d-4f06-a781-9faaf9681bef`. Added optional Notes update concurrency checks in `c19971b`. Prepared build 33 in `3fd9042`, notarized it, installed it over SSH on Home Server, and recorded receiving-host evidence in `65faf5f`.
