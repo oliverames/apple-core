@@ -30,7 +30,14 @@ make the current shipping binary unsuitable for submission unchanged.
 
 ## Feature viability
 
-- **Calendar, Reminders, Contacts, Maps, Location:** Start the prototype here.
+**Update, September 11, 2026.** Oliver authorized private API use in Apple Core.
+Issue #40 adopts the private ReminderKit framework for native reminder
+hierarchy, sections, tags, and attachments. If that lands, Reminders leaves the
+public-framework set below and cannot ship in a Store build at all, since App
+Review rejects private framework use. The rest of this document is unaffected:
+notarized direct distribution does not inspect for private frameworks.
+
+- **Calendar, Contacts, Maps, Location:** Start the prototype here.
   These implementations use public frameworks. Verify sandbox entitlements,
   privacy prompts, remote invocation, and account access on a clean Mac.
 - **Filesystem:** The existing allowlist is useful policy, but plain paths do

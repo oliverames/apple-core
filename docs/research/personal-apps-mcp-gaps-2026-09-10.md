@@ -51,7 +51,7 @@ Apple Core documents native subtask API exclusions in the source header. FradSer
 
 ## User-requested Reminders CLI comparison
 
-The user called the reference “Remindersctl.” Local provenance points to **remindctl**: the restore-Mac snapshot lists `steipete/tap/remindctl`, and the computer-history skill records `/opt/homebrew/bin/remindctl` on August 27. Search found no separate authoritative project matching the exact spelling. The current repository is [openclaw/remindctl](https://github.com/openclaw/remindctl), formerly referenced through steipete. **viticci/remctl is a different project**, also worth comparison. This identification is an evidence-based inference, not confirmation of the user's intended spelling.
+The user called the reference “Remindersctl.” This review inferred **remindctl** from local provenance: the restore-Mac snapshot lists `steipete/tap/remindctl`, and the computer-history skill records `/opt/homebrew/bin/remindctl` on August 27. Search found no separate authoritative project matching the exact spelling. Oliver confirmed the identification on September 11, 2026. The current repository is [openclaw/remindctl](https://github.com/openclaw/remindctl), formerly referenced through steipete. **viticci/remctl is a different project**, also worth comparison.
 
 | CLI | Current maintenance evidence | Additional Apple Core opportunities | Implementation choice |
 |---|---|---|---|
