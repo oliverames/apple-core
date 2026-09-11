@@ -123,8 +123,34 @@ struct MailIndexStore: Sendable {
     @discardableResult
     func prepare() throws -> Bool {
         var handle = try open()
+        // Write-ahead logging is what makes a long pass observable. Under the
+        // default rollback journal a writer locks the whole file, so
+        // `mail_index_status` blocked on the index for as long as a refresh
+        // ran — exactly the moment a caller most needs to read it. With WAL a
+        // reader sees the last committed state while the pass writes the next.
+        //
+        // The switch lives here and nowhere else on purpose. It is the one
+        // pragma that rewrites the file's header, and two connections racing
+        // to do that to a database one of them has just created is a disk I/O
+        // error in whichever loses. `prepare` is called by the pass before it
+        // writes anything; every other connection inherits the mode off the
+        // file. Once it is WAL this is a no-op, and a filesystem that refuses
+        // WAL (a network share) stays on the rollback journal and still
+        // works, more slowly.
+        sqlite3_exec(handle, "PRAGMA journal_mode=WAL;", nil, nil, nil)
+        sqlite3_exec(handle, "PRAGMA synchronous=NORMAL;", nil, nil, nil)
         var rebuilt = false
         let stored = try? version(on: handle)
+        // The fast path is not an optimisation, it is a correctness fix. Every
+        // status call used to run `CREATE TABLE IF NOT EXISTS`, which asks for
+        // the write lock; during a pass that is the one lock already held, so
+        // asking "is the index usable" blocked until the pass ended. A
+        // database already at this schema version needs no DDL at all, and
+        // proving that is two reads.
+        if stored == Self.schemaVersion, tableExists("messages", on: handle) {
+            sqlite3_close(handle)
+            return false
+        }
         if let stored, stored != Self.schemaVersion {
             sqlite3_close(handle)
             try? FileManager.default.removeItem(at: fileURL)
@@ -203,6 +229,31 @@ struct MailIndexStore: Sendable {
         defer { sqlite3_finalize(statement) }
         let sql = "SELECT 1 FROM sqlite_master WHERE name='messages_fts' LIMIT 1"
         guard sqlite3_prepare_v2(handle, sql, -1, &statement, nil) == SQLITE_OK else { return false }
+        return sqlite3_step(statement) == SQLITE_ROW
+    }
+
+    /// Whether the index is there and at this build's schema, answered
+    /// without creating it, migrating it or writing a byte.
+    ///
+    /// This is what the status block asks. Asking about an index must never
+    /// be the thing that creates one — an empty database conjured by a
+    /// question reads exactly like an empty mailbox — and during a pass it
+    /// must not contend with the writer either.
+    func isPrepared() -> Bool {
+        guard FileManager.default.fileExists(atPath: fileURL.path),
+            let handle = try? open()
+        else { return false }
+        defer { sqlite3_close(handle) }
+        return (try? version(on: handle)) == Self.schemaVersion
+            && tableExists("messages", on: handle)
+    }
+
+    private func tableExists(_ name: String, on handle: OpaquePointer) -> Bool {
+        var statement: OpaquePointer?
+        defer { sqlite3_finalize(statement) }
+        let sql = "SELECT 1 FROM sqlite_master WHERE type='table' AND name = ? LIMIT 1"
+        guard sqlite3_prepare_v2(handle, sql, -1, &statement, nil) == SQLITE_OK else { return false }
+        sqlite3_bind_text(statement, 1, name, -1, sqliteTransient)
         return sqlite3_step(statement) == SQLITE_ROW
     }
 
@@ -370,6 +421,30 @@ struct MailIndexStore: Sendable {
         return Int(sqlite3_column_int64(statement, 0))
     }
 
+    /// How many Message-IDs the index holds more than once.
+    ///
+    /// Counted in SQL rather than by loading every row, because the status
+    /// block is polled while a pass runs over a store with hundreds of
+    /// thousands of messages, and reading them all to count duplicates makes
+    /// the cheap question expensive at exactly the wrong time.
+    func duplicateMessageIDCount() throws -> Int {
+        let handle = try open()
+        defer { sqlite3_close(handle) }
+        var statement: OpaquePointer?
+        defer { sqlite3_finalize(statement) }
+        let sql = """
+            SELECT COUNT(*) FROM (
+                SELECT message_id FROM messages
+                WHERE message_id IS NOT NULL AND message_id <> ''
+                GROUP BY message_id HAVING COUNT(*) > 1
+            )
+            """
+        guard sqlite3_prepare_v2(handle, sql, -1, &statement, nil) == SQLITE_OK,
+            sqlite3_step(statement) == SQLITE_ROW
+        else { return 0 }
+        return Int(sqlite3_column_int64(statement, 0))
+    }
+
     func metadata(_ key: String) throws -> String? {
         let handle = try open()
         defer { sqlite3_close(handle) }
@@ -384,31 +459,75 @@ struct MailIndexStore: Sendable {
 
     // MARK: - Writes
 
-    /// Applies one reconciliation plan as a single transaction.
+    /// Applies one reconciliation plan.
     ///
-    /// Removals and insertions land together, so a moved message is never
-    /// both in two mailboxes and never in none, whatever happens between
-    /// passes. `documents` holds the parse of every inserted and updated
-    /// file, keyed by stable id; a file missing from it is skipped and
-    /// belongs in `issues` instead.
+    /// Removals and the insertions that answer them land in the same
+    /// transaction, so a moved message is never both in two mailboxes and
+    /// never in none, whatever happens between passes. The remaining
+    /// insertions are committed in batches rather than as one transaction
+    /// over the whole store: a first pass over 11 GB of mail holds the write
+    /// lock for minutes, and a batch that commits is a batch a concurrent
+    /// reader can see, which is what lets `mail_index_status` watch the count
+    /// climb instead of watching nothing.
+    ///
+    /// The completeness stamp is written last, in its own transaction. A pass
+    /// killed halfway leaves real rows behind and no claim to have finished,
+    /// which is the honest state: the index says it has never completed a
+    /// pass, and the next refresh carries on from what is there.
+    ///
+    /// `documents` holds the parse of every inserted and updated file, keyed
+    /// by stable id; a file missing from it is skipped and belongs in
+    /// `issues` instead. `progress` is called with the running count of rows
+    /// written after each batch.
     func apply(
         plan: MailIndexPlan,
         documents: [String: MailEmlxDocument],
         issues: [MailIndexIssue],
         scanComplete: Bool,
-        now: Date = Date()
+        now: Date = Date(),
+        batchSize: Int = 500,
+        progress: (Int) -> Void = { _ in }
     ) throws {
         let handle = try open()
         defer { sqlite3_close(handle) }
-        try exec("BEGIN IMMEDIATE;", on: handle)
-        do {
+
+        // A move is a removal plus an insertion under a new stable id. Those
+        // two halves must commit together or the message blinks out of the
+        // index; everything else may be batched freely.
+        let carried = Set(plan.carried.map(\.toStableID))
+        let writes = plan.inserted + plan.updated
+        let paired = writes.filter { carried.contains($0.stableID) }
+        let rest = writes.filter { !carried.contains($0.stableID) }
+        var applied = 0
+
+        try transaction(on: handle) {
             for stableID in plan.removedIDs {
                 try delete(stableID: stableID, on: handle)
             }
-            for file in plan.inserted + plan.updated {
+            for file in paired {
                 guard let document = documents[file.stableID] else { continue }
                 try upsert(file: file, document: document, now: now, on: handle)
+                applied += 1
             }
+        }
+        progress(applied)
+
+        let size = max(1, batchSize)
+        var offset = 0
+        while offset < rest.count {
+            let batch = rest[offset ..< min(offset + size, rest.count)]
+            try transaction(on: handle) {
+                for file in batch {
+                    guard let document = documents[file.stableID] else { continue }
+                    try upsert(file: file, document: document, now: now, on: handle)
+                    applied += 1
+                }
+            }
+            offset += size
+            progress(applied)
+        }
+
+        try transaction(on: handle) {
             try exec("DELETE FROM issues;", on: handle)
             for issue in issues {
                 var statement: OpaquePointer?
@@ -430,6 +549,15 @@ struct MailIndexStore: Sendable {
                 on: handle
             )
             try setMetadata("last_refresh", String(now.timeIntervalSince1970), on: handle)
+        }
+    }
+
+    /// Runs `body` inside one immediate transaction, rolling back on any
+    /// throw so a half-written batch never commits.
+    private func transaction(on handle: OpaquePointer, _ body: () throws -> Void) throws {
+        try exec("BEGIN IMMEDIATE;", on: handle)
+        do {
+            try body()
             try exec("COMMIT;", on: handle)
         } catch {
             try? exec("ROLLBACK;", on: handle)

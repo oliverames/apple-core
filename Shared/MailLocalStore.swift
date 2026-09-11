@@ -169,7 +169,16 @@ struct MailLocalStore: Sendable {
     /// cannot hang a tool call. Hitting it sets `truncated`, and the caller
     /// is expected to report the index as incomplete until a pass finishes
     /// without it.
-    func scan(fileLimit: Int = 200_000) throws -> MailLocalStoreScan {
+    ///
+    /// `progress` is called with the running file count every
+    /// `progressInterval` files. A walk over a real store is minutes long
+    /// with nothing to show for it, so the count is the only evidence a
+    /// caller has that the pass is alive rather than wedged.
+    func scan(
+        fileLimit: Int = 200_000,
+        progressInterval: Int = 500,
+        progress: (Int) -> Void = { _ in }
+    ) throws -> MailLocalStoreScan {
         guard case .available = access, let version = versionDirectory else {
             return MailLocalStoreScan(
                 files: [],
@@ -251,6 +260,9 @@ struct MailLocalStore: Sendable {
                 )
                 mailboxes.insert("\(accountID)/\(mailbox)")
                 sawMessage = true
+                if progressInterval > 0, files.count % progressInterval == 0 {
+                    progress(files.count)
+                }
                 if files.count >= fileLimit {
                     truncated = true
                     break
@@ -259,6 +271,7 @@ struct MailLocalStore: Sendable {
             if sawMessage { accountIDs.append(accountID) }
             if truncated { break }
         }
+        progress(files.count)
 
         return MailLocalStoreScan(
             files: files,

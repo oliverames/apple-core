@@ -26,6 +26,20 @@ struct MailIndexStatus: Sendable, Equatable, Codable {
     /// True only when the index exists, is readable, and its last pass
     /// covered the whole store.
     let usable: Bool
+    /// What to do next, in one word: `no_disk_access`, `no_local_mail`,
+    /// `building` (nothing usable yet and a pass is running), `refreshing`
+    /// (usable or stale, and a pass is running), `empty` (no pass has ever
+    /// completed and none is running), `stale` or `current`.
+    ///
+    /// `building` and `empty` are kept apart on purpose. Both mean the index
+    /// cannot answer a question yet, and they call for opposite actions: one
+    /// says wait and poll, the other says start a pass. Collapsing them is
+    /// how a caller ends up starting a second pass over a store the first is
+    /// still walking.
+    let indexState: String
+    /// The pass running right now, or nil. Read from memory, never from the
+    /// index, so it stays readable while the index is being written.
+    let activeRefresh: MailIndexRefreshActivity?
     /// `available`, `no_local_mail` or `no_disk_access`.
     let access: String
     let accessDetail: String
@@ -92,7 +106,8 @@ enum MailIndex {
         store: MailLocalStore = .default,
         index: MailIndexStore = .default,
         fileLimit: Int = 200_000,
-        now: Date = Date()
+        now: Date = Date(),
+        progress: @escaping @Sendable (MailIndexProgress) -> Void = { _ in }
     ) throws -> MailIndexRefreshReport {
         let started = Date()
         let access = store.access
@@ -101,7 +116,20 @@ enum MailIndex {
         }
         try index.prepare()
 
-        let scan = try store.scan(fileLimit: fileLimit)
+        // Progress is reported from three places because a pass has three
+        // costs and they are not interchangeable: the walk is I/O over
+        // directories, the read is I/O plus parsing over files, and the write
+        // is SQLite. A caller watching one number that stalls cannot tell a
+        // slow pass from a stuck one; a caller watching the phase can.
+        var state = MailIndexProgress()
+        func publish() { progress(state) }
+        publish()
+
+        let scan = try store.scan(fileLimit: fileLimit) { seen in
+            state.filesSeen = seen
+            state.detail = "Walking Mail's message files: \(seen) found so far."
+            publish()
+        }
         let existing = try index.entries()
 
         // Parse first, plan second: move detection needs the Message-ID of
@@ -112,7 +140,16 @@ enum MailIndex {
         var issues = scan.issues
 
         let firstPass = MailIndexReconciler.plan(existing: existing, scanned: scan.files)
-        for file in firstPass.inserted + firstPass.updated {
+        let toParse = firstPass.inserted + firstPass.updated
+        state.phase = .reading
+        state.filesSeen = scan.files.count
+        state.filesToParse = toParse.count
+        state.filesParsed = 0
+        state.detail =
+            "\(scan.files.count) message file(s) found; \(toParse.count) are new or changed and "
+            + "are being read."
+        publish()
+        for (offset, file) in toParse.enumerated() {
             do {
                 let data = try Data(contentsOf: URL(fileURLWithPath: file.path))
                 let document = try MailEmlxParser.parse(data: data, isPartial: file.isPartial)
@@ -125,6 +162,11 @@ enum MailIndex {
                     MailIndexIssue(path: file.path, reason: error.localizedDescription)
                 )
             }
+            if (offset + 1) % 200 == 0 || offset + 1 == toParse.count {
+                state.filesParsed = offset + 1
+                state.detail = "Read \(offset + 1) of \(toParse.count) new or changed file(s)."
+                publish()
+            }
         }
 
         let plan = MailIndexReconciler.plan(
@@ -132,13 +174,26 @@ enum MailIndex {
             scanned: scan.files,
             messageIDs: messageIDs
         )
+        state.phase = .writing
+        state.writesPlanned = plan.inserted.count + plan.updated.count
+        state.writesApplied = 0
+        state.detail = "Writing \(state.writesPlanned ?? 0) row(s) into the index."
+        publish()
         try index.apply(
             plan: plan,
             documents: documents,
             issues: issues,
             scanComplete: !scan.truncated,
             now: now
-        )
+        ) { written in
+            state.writesApplied = written
+            state.detail = "Wrote \(written) of \(state.writesPlanned ?? 0) row(s)."
+            publish()
+        }
+
+        state.phase = .finishing
+        state.detail = "The pass finished; the index is describing itself."
+        publish()
 
         return MailIndexRefreshReport(
             scannedFiles: scan.files.count,
@@ -151,7 +206,12 @@ enum MailIndex {
             unreadable: issues,
             scanComplete: !scan.truncated,
             durationSeconds: Date().timeIntervalSince(started),
-            status: status(store: store, index: index, now: now)
+            // Explicitly no active pass: this status describes the index as
+            // this pass left it, and this pass is over. The job is still
+            // marked running until the coordinator records the result, and
+            // inheriting that here would make a finished report describe
+            // itself as still building.
+            status: status(store: store, index: index, now: now, activePass: nil)
         )
     }
 
@@ -160,7 +220,8 @@ enum MailIndex {
     static func status(
         store: MailLocalStore = .default,
         index: MailIndexStore = .default,
-        now: Date = Date()
+        now: Date = Date(),
+        activePass: MailIndexJobSnapshot? = MailIndexJobCoordinator.shared.activeSnapshot()
     ) -> MailIndexStatus {
         let access = store.access
         let accessCode: String
@@ -170,19 +231,17 @@ enum MailIndex {
         case .accessDenied: accessCode = "no_disk_access"
         }
 
-        // A denied or empty Mac gets no index file created as a side effect
-        // of asking about one.
-        let indexExists = FileManager.default.fileExists(atPath: index.fileURL.path)
-        let prepared = (access.isAvailable || indexExists) && (try? index.prepare()) != nil
+        // No index file is created, migrated or rebuilt as a side effect of
+        // asking about one. An index that is not there yet is reported as a
+        // pass that has never completed, which is exactly what it is.
+        let prepared = index.isPrepared()
         let counts =
             prepared
             ? ((try? index.counts()) ?? (messages: 0, partial: 0, mailboxes: 0, accounts: 0))
             : (messages: 0, partial: 0, mailboxes: 0, accounts: 0)
         let issues = prepared ? ((try? index.issues(limit: 5)) ?? []) : []
         let issueCount = prepared ? ((try? index.issueCount()) ?? 0) : 0
-        let duplicates =
-            prepared
-            ? MailIndexReconciler.duplicateMessageIDs(in: (try? index.entries()) ?? []).count : 0
+        let duplicates = prepared ? ((try? index.duplicateMessageIDCount()) ?? 0) : 0
 
         let completeRefresh =
             prepared
@@ -196,7 +255,16 @@ enum MailIndex {
 
         var warnings: [String] = []
         if !access.isAvailable { warnings.append(access.explanation) }
-        if completeRefresh == nil {
+        if let activePass {
+            warnings.append(
+                "A refresh pass (\(activePass.jobID)) is running now, "
+                    + "\(Int(activePass.elapsedSeconds)) second(s) in: "
+                    + activePass.progress.detail
+                    + " Poll mail_index_status rather than starting another; a second refresh "
+                    + "joins this one instead of running beside it."
+            )
+        }
+        if completeRefresh == nil, activePass == nil {
             warnings.append(
                 "The index has never completed a full pass, so it does not yet describe this "
                     + "Mac's mail. Run mail_index_refresh before relying on it."
@@ -235,9 +303,36 @@ enum MailIndex {
             )
         }
 
+        // The state word and the paragraph are written together so they can
+        // never disagree. A running pass takes precedence in both, because it
+        // is the only fact that changes what the caller should do next.
+        let indexState: String
+        if !access.isAvailable {
+            indexState = accessCode
+        } else if activePass != nil {
+            indexState = completeRefresh == nil ? "building" : "refreshing"
+        } else if completeRefresh == nil {
+            indexState = "empty"
+        } else {
+            indexState = stale ? "stale" : "current"
+        }
+
+        let passLine =
+            activePass.map {
+                " A refresh pass (\($0.jobID)) has been running for "
+                    + "\(Int($0.elapsedSeconds)) second(s): \($0.progress.detail) "
+                    + "Poll mail_index_status until it reports a completed pass."
+            } ?? ""
+
         let completeness: String
         if !access.isAvailable {
             completeness = access.explanation
+        } else if completeRefresh == nil, activePass != nil {
+            completeness =
+                "BUILDING: the index holds no completed pass yet, and one is running now."
+                + passLine
+                + " Treat every answer from the index as unavailable rather than as absent until "
+                + "it finishes."
         } else if completeRefresh == nil {
             completeness =
                 "EMPTY: the index holds no completed pass over Mail's local store. Treat every "
@@ -246,17 +341,20 @@ enum MailIndex {
             completeness =
                 "STALE: the index covers \(counts.messages) message(s) in \(counts.mailboxes) "
                 + "mailbox(es) as of the last complete refresh, \(age ?? 0) second(s) ago. "
-                + "Anything that changed since is missing."
+                + "Anything that changed since is missing." + passLine
         } else {
             completeness =
                 "CURRENT: the index covers \(counts.messages) message(s) in \(counts.mailboxes) "
                 + "mailbox(es) across \(counts.accounts) account(s), refreshed \(age ?? 0) "
                 + "second(s) ago. \(counts.partial) of those have bodies that are not fully "
                 + "readable on this Mac, and \(issueCount) file(s) could not be read at all."
+                + passLine
         }
 
         return MailIndexStatus(
             usable: usable,
+            indexState: indexState,
+            activeRefresh: activePass?.activity,
             access: accessCode,
             accessDetail: access.explanation,
             indexPath: index.fileURL.path,

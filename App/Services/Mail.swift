@@ -32,6 +32,15 @@ private let maximumInlineAttachmentBytes = 256 * 1024
 /// early is reported as an incomplete scan rather than as a finished one.
 private let maximumIndexFileLimit = 200_000
 
+/// How long a tool call may block waiting for an index pass.
+///
+/// The ceiling is set by the shortest client timeout seen in the field, which
+/// is 60 seconds, minus room for the rest of the call. Nothing here waits
+/// longer; a pass that needs more time is polled, not waited on.
+private let maximumRefreshWaitSeconds = 45
+private let defaultRefreshWaitSeconds = 5
+private let defaultSearchRefreshWaitSeconds = 10
+
 /// How many messages `mail_get_thread` will read headers from. Reading `all
 /// headers` is one Apple Event per message, so this is the real cost ceiling
 /// on threading.
@@ -241,6 +250,34 @@ private struct MailIndexMessagePage: Codable, Sendable {
     let status: MailIndexStatus
 }
 
+/// What `mail_index_refresh` returns now that a pass is a job rather than a
+/// blocking call.
+///
+/// The fields are ordered the way a caller has to think: which job, whether
+/// this call started it, where it got to, and only then the finished report
+/// if there is one. `guidance` is the sentence a client can relay without
+/// having to infer anything from the rest.
+private struct MailIndexRefreshJob: Codable, Sendable {
+    let jobId: String
+    /// False when a pass was already running and this call joined it.
+    let started: Bool
+    /// `running`, `succeeded` or `failed`.
+    let state: String
+    let startedAt: String
+    let finishedAt: String?
+    let elapsedSeconds: Double
+    let fileLimit: Int
+    /// How long this call waited before answering.
+    let waitedSeconds: Double
+    let progress: MailIndexProgress
+    /// Present only when the pass failed, in the words it used.
+    let failure: String?
+    /// Present only when the pass finished inside the wait.
+    let report: MailIndexRefreshReport?
+    let guidance: String
+    let status: MailIndexStatus
+}
+
 /// What the search did about staleness before answering, said out loud.
 ///
 /// The index tools never refresh implicitly, and search is the one place
@@ -262,6 +299,13 @@ private struct MailSearchRefreshNote: Codable, Sendable {
     /// False when the refresh stopped at its file limit, which leaves the
     /// index usable but incomplete.
     let scanComplete: Bool?
+    /// The pass this search started or joined, when it did either. A search
+    /// never waits for a pass indefinitely, so this is how a caller finds the
+    /// one that is still running after the answer came back.
+    let jobId: String?
+    /// True when a pass was still running when the search answered, which
+    /// means the answer came from the index as it stood.
+    let stillRunning: Bool?
 }
 
 /// One page of search results, with the index's own account of itself
@@ -2124,7 +2168,7 @@ final class MailService: Service {
         Tool(
             name: "mail_index_status",
             description:
-                "Report Apple Core's read-only local mail index: whether it can be read at all, how stale it is, how many messages and mailboxes it covers, how many bodies are not downloaded, and which files could not be read. Ask this before trusting any index-backed read.",
+                "Report Apple Core's read-only local mail index: index_state (no_disk_access, no_local_mail, building, refreshing, empty, stale or current), the progress of a refresh pass running right now, how stale it is, how many messages and mailboxes it covers, how many bodies are not downloaded, and which files could not be read. Readable while a pass is running, so this is how you poll one. Ask this before trusting any index-backed read.",
             inputSchema: .object(
                 properties: [:],
                 additionalProperties: false
@@ -2141,14 +2185,19 @@ final class MailService: Service {
         Tool(
             name: "mail_index_refresh",
             description:
-                "Rebuild or update the local mail index from Mail's own files on disk. Reads Mail's storage read-only and writes only Apple Core's index under ~/.config/apple-core. Reports what was added, changed, moved between mailboxes, finished downloading, removed, and what could not be read. Needs Full Disk Access.",
+                "Start a pass over Mail's own files on disk to build or update the local mail index, and return a job id rather than blocking until it finishes. A first pass over a large mail store takes many minutes, far longer than a client will wait. Waits a few seconds for a quick pass, then returns whatever state the pass is in; poll mail_index_status with the job id to watch it, which stays readable while the pass runs. Only one pass runs at a time: calling this while one is running joins that pass and returns started=false, it never starts a second. Reads Mail's storage read-only and writes only Apple Core's index under ~/.config/apple-core. Needs Full Disk Access.",
             inputSchema: .object(
                 properties: [
                     "file_limit": .integer(
                         description:
                             "Maximum message files to walk in one pass; a pass that stops here is reported as incomplete",
                         default: .int(maximumIndexFileLimit)
-                    )
+                    ),
+                    "wait_seconds": .integer(
+                        description:
+                            "Seconds to wait for the pass to finish before answering (0 to \(maximumRefreshWaitSeconds)). An incremental pass usually finishes inside the default; a first pass over a large store will not, and the answer says so rather than timing out",
+                        default: .int(defaultRefreshWaitSeconds)
+                    ),
                 ],
                 additionalProperties: false
             ),
@@ -2160,10 +2209,7 @@ final class MailService: Service {
                 openWorldHint: false
             )
         ) { arguments in
-            let requested = arguments["file_limit"]?.intValue ?? maximumIndexFileLimit
-            return try MailIndex.refresh(
-                fileLimit: min(max(requested, 1), maximumIndexFileLimit)
-            )
+            try Self.startIndexRefresh(arguments: arguments)
         }
 
         Tool(
@@ -2249,9 +2295,14 @@ final class MailService: Service {
                     ),
                     "refresh": .string(
                         description:
-                            "What to do about a stale index: 'auto' refreshes only when it is stale or has never completed a pass, 'never' refuses to search a stale index, 'always' refreshes first. The answer says which happened",
+                            "What to do about a stale index: 'auto' starts a bounded refresh when the index is stale and answers from the index as it stands if that refresh is still running, 'never' refuses to search a stale index, 'always' starts one whatever the age. None of them blocks past refresh_wait_seconds. An index that has never completed a pass is never searched: the call starts a pass and refuses, so poll mail_index_status instead. The answer says which happened",
                         default: "auto",
                         enum: ["auto", "never", "always"]
+                    ),
+                    "refresh_wait_seconds": .integer(
+                        description:
+                            "Seconds to wait for a refresh this search started before answering from the index as it stands (0 to \(maximumRefreshWaitSeconds))",
+                        default: .int(defaultSearchRefreshWaitSeconds)
                     ),
                 ],
                 additionalProperties: false
@@ -2270,6 +2321,95 @@ final class MailService: Service {
 
     // MARK: - Helpers
 
+    /// Why an index-backed read refused, told apart by whether a pass is
+    /// running. "Run a refresh" and "wait for the refresh already running"
+    /// are different instructions, and a caller given the first when the
+    /// second is true starts work that will only be joined anyway.
+    private static func emptyIndexExplanation(_ status: MailIndexStatus) -> String {
+        if let active = status.activeRefresh {
+            return
+                "INDEX_BUILDING: the local mail index has never completed a full pass, and one "
+                + "(\(active.jobID)) has been running for \(Int(active.elapsedSeconds)) "
+                + "second(s): \(active.detail) Poll mail_index_status until index_state is no "
+                + "longer building, then ask again. Do not start another pass."
+        }
+        return
+            "INDEX_EMPTY: the local mail index has never completed a full pass, so it cannot "
+            + "say what is or is not in your mail. Run mail_index_refresh first; it returns a "
+            + "job id immediately and mail_index_status reports its progress."
+    }
+
+    /// Starts an index pass, or joins the one already running, and answers
+    /// with where it got to.
+    ///
+    /// The old shape of this tool was a blocking call over the whole store.
+    /// On an 11 GB ~/Library/Mail it ran for many minutes while the client
+    /// gave up at sixty seconds, which produced the worst possible report: a
+    /// failure to the caller, an indexing process still running on the Mac,
+    /// and a retry that would have started a second pass over the same files.
+    /// A job id and a bounded wait replace all three.
+    private static func startIndexRefresh(arguments: [String: Value]) throws
+        -> MailIndexRefreshJob
+    {
+        let requestedLimit = arguments["file_limit"]?.intValue ?? maximumIndexFileLimit
+        let fileLimit = min(max(requestedLimit, 1), maximumIndexFileLimit)
+        let wait = Double(
+            min(
+                max(arguments["wait_seconds"]?.intValue ?? defaultRefreshWaitSeconds, 0),
+                maximumRefreshWaitSeconds
+            )
+        )
+        let coordinator = MailIndexJobCoordinator.shared
+        // The access check runs here, on this call's thread, so a Mac without
+        // Full Disk Access is told so in the answer to the call that asked
+        // rather than in a job that fails out of sight.
+        let outcome = try coordinator.startRefresh(fileLimit: fileLimit)
+        let waitStarted = Date()
+        var snapshot = outcome.snapshot
+        if wait > 0, snapshot.isRunning {
+            snapshot = coordinator.wait(upTo: wait) ?? snapshot
+        }
+        let waited = Date().timeIntervalSince(waitStarted)
+
+        let guidance: String
+        switch snapshot.state {
+        case "running":
+            guidance =
+                (outcome.started
+                    ? "A pass started and is still running after \(Int(waited)) second(s). "
+                    : "A pass was already running and this call joined it rather than starting a "
+                        + "second one. ")
+                + "Nothing is wrong: a first pass over a large mail store takes minutes. Poll "
+                + "mail_index_status until index_state stops being building or refreshing, and "
+                + "do not call mail_index_refresh again to hurry it."
+        case "failed":
+            guidance =
+                "The pass stopped before it finished: \(snapshot.failure ?? "no reason given"). "
+                + "The index is unchanged apart from any rows written before it stopped, and it "
+                + "still reports itself as incomplete."
+        default:
+            guidance =
+                "The pass finished in \(Int(snapshot.elapsedSeconds)) second(s). The report and "
+                + "status below describe the index as it now stands."
+        }
+
+        return MailIndexRefreshJob(
+            jobId: snapshot.jobID,
+            started: outcome.started,
+            state: snapshot.state,
+            startedAt: snapshot.startedAt,
+            finishedAt: snapshot.finishedAt,
+            elapsedSeconds: snapshot.elapsedSeconds,
+            fileLimit: fileLimit,
+            waitedSeconds: waited,
+            progress: snapshot.progress,
+            failure: snapshot.failure,
+            report: snapshot.report,
+            guidance: guidance,
+            status: snapshot.report?.status ?? MailIndex.status()
+        )
+    }
+
     /// Reads a page out of the index, refusing rather than answering with an
     /// empty list when the index cannot be read or has never completed a
     /// pass. An empty page from an unusable index reads exactly like an empty
@@ -2282,10 +2422,7 @@ final class MailService: Service {
             throw Self.error(status.accessDetail)
         }
         guard status.lastCompleteRefresh != nil else {
-            throw Self.error(
-                "INDEX_EMPTY: the local mail index has never completed a full pass, so it cannot "
-                    + "say what is or is not in your mail. Run mail_index_refresh first."
-            )
+            throw Self.error(Self.emptyIndexExplanation(status))
         }
         let mailbox = arguments["mailbox"]?.stringValue.flatMap { $0.isEmpty ? nil : $0 }
         let limit = Self.clampedLimit(arguments["limit"]?.intValue)
@@ -2317,14 +2454,24 @@ final class MailService: Service {
         }
 
         let policy = arguments["refresh"]?.stringValue ?? "auto"
-        let (note, refreshedStatus) = try Self.applyRefreshPolicy(policy, status: status)
+        let wait = Double(
+            min(
+                max(
+                    arguments["refresh_wait_seconds"]?.intValue ?? defaultSearchRefreshWaitSeconds,
+                    0
+                ),
+                maximumRefreshWaitSeconds
+            )
+        )
+        let (note, refreshedStatus) = try Self.applyRefreshPolicy(
+            policy,
+            status: status,
+            waitSeconds: wait
+        )
         status = refreshedStatus
 
         guard status.lastCompleteRefresh != nil else {
-            throw Self.error(
-                "INDEX_EMPTY: the local mail index has never completed a full pass, so it cannot "
-                    + "say what is or is not in your mail. Run mail_index_refresh first."
-            )
+            throw Self.error(Self.emptyIndexExplanation(status))
         }
 
         var warnings: [String] = []
@@ -2449,49 +2596,101 @@ final class MailService: Service {
 
     /// Decides what to do about a stale index, and says what it decided.
     ///
-    /// `auto` is the default because the alternative — refusing until the
-    /// client calls mail_index_refresh — pushes a piece of Apple Core's own
-    /// bookkeeping into every client's prompt, and the failure mode when they
-    /// do not do it is a confidently empty answer. Refreshing is incremental:
-    /// a file whose size and modification date are unchanged is not reparsed,
-    /// so the cost after the first build is a directory walk.
+    /// `auto` survives, but it no longer means "block until the index is
+    /// current". That default was written for an index that refreshes
+    /// incrementally in a second or two, and it was correct for every case
+    /// except the one that matters most: the first one. On a real store the
+    /// first `auto` search started a pass that could not finish inside any
+    /// client timeout, so the feature was unreachable through its own front
+    /// door.
+    ///
+    /// Two rules fix it without giving up the convenience:
+    ///
+    ///   - An index with no completed pass is never searched. The call starts
+    ///     a pass and refuses with the job id, because answering "no results"
+    ///     from an empty index is the dishonesty this whole surface exists to
+    ///     remove, and waiting for it is the timeout.
+    ///   - A stale-but-complete index is refreshed with a wait budget. If the
+    ///     pass finishes inside it the answer is fresh; if it does not, the
+    ///     answer comes from the index as it stands and says a pass is still
+    ///     running. Either way the call returns.
     private static func applyRefreshPolicy(
         _ policy: String,
-        status: MailIndexStatus
+        status: MailIndexStatus,
+        waitSeconds: Double
     ) throws -> (MailSearchRefreshNote, MailIndexStatus) {
         let needsRefresh = status.lastCompleteRefresh == nil || status.stale
-        func refreshed(_ reason: String) throws -> (MailSearchRefreshNote, MailIndexStatus) {
-            let report = try MailIndex.refresh(fileLimit: maximumIndexFileLimit)
+        let coordinator = MailIndexJobCoordinator.shared
+
+        func note(
+            performed: Bool,
+            reason: String,
+            snapshot: MailIndexJobSnapshot? = nil
+        ) -> MailSearchRefreshNote {
+            MailSearchRefreshNote(
+                policy: policy,
+                performed: performed,
+                reason: reason,
+                durationSeconds: snapshot?.report?.durationSeconds,
+                inserted: snapshot?.report?.inserted,
+                updated: snapshot?.report?.updated,
+                removed: snapshot?.report?.removed,
+                scanComplete: snapshot?.report?.scanComplete,
+                jobId: snapshot?.jobID,
+                stillRunning: snapshot.map(\.isRunning)
+            )
+        }
+
+        /// Starts or joins a pass, waits out the budget, and reports from
+        /// wherever it got to.
+        func bounded(_ reason: String) throws -> (MailSearchRefreshNote, MailIndexStatus) {
+            let outcome = try coordinator.startRefresh(fileLimit: maximumIndexFileLimit)
+            var snapshot = outcome.snapshot
+            if waitSeconds > 0, snapshot.isRunning {
+                snapshot = coordinator.wait(upTo: waitSeconds) ?? snapshot
+            }
+            if let report = snapshot.report, !snapshot.isRunning {
+                return (note(performed: true, reason: reason, snapshot: snapshot), report.status)
+            }
+            let stillRunning =
+                reason
+                + (outcome.started
+                    ? " The pass did not finish inside \(Int(waitSeconds)) second(s), so this "
+                    : " A pass was already running, and it did not finish inside "
+                        + "\(Int(waitSeconds)) second(s), so this ")
+                + "answer comes from the index as it stood. Poll mail_index_status with job "
+                + "\(snapshot.jobID) and search again when it reports a completed pass."
             return (
-                MailSearchRefreshNote(
-                    policy: policy,
-                    performed: true,
-                    reason: reason,
-                    durationSeconds: report.durationSeconds,
-                    inserted: report.inserted,
-                    updated: report.updated,
-                    removed: report.removed,
-                    scanComplete: report.scanComplete
-                ),
-                report.status
+                note(performed: false, reason: stillRunning, snapshot: snapshot),
+                MailIndex.status()
+            )
+        }
+
+        /// The index has never completed a pass. Start one, refuse to answer.
+        func refuseAndBuild() throws -> Never {
+            let outcome = try coordinator.startRefresh(fileLimit: maximumIndexFileLimit)
+            throw Self.error(
+                "INDEX_BUILDING: the local mail index has never completed a full pass, so it "
+                    + "cannot say what is or is not in your mail, and building it takes minutes "
+                    + "on a large store rather than the seconds a search can wait. "
+                    + (outcome.started
+                        ? "A pass (\(outcome.snapshot.jobID)) has been started for you. "
+                        : "A pass (\(outcome.snapshot.jobID)) was already running. ")
+                    + "Poll mail_index_status until index_state is no longer building, then "
+                    + "search again."
             )
         }
 
         switch policy {
         case "always":
-            return try refreshed("Refreshed because refresh=always was requested.")
+            if status.lastCompleteRefresh == nil { try refuseAndBuild() }
+            return try bounded("Refreshed because refresh=always was requested.")
         case "never":
             guard needsRefresh else {
                 return (
-                    MailSearchRefreshNote(
-                        policy: policy,
+                    note(
                         performed: false,
-                        reason: "The index was already current, so nothing was refreshed.",
-                        durationSeconds: nil,
-                        inserted: nil,
-                        updated: nil,
-                        removed: nil,
-                        scanComplete: nil
+                        reason: "The index was already current, so nothing was refreshed."
                     ),
                     status
                 )
@@ -2504,26 +2703,19 @@ final class MailService: Service {
         case "auto":
             guard needsRefresh else {
                 return (
-                    MailSearchRefreshNote(
-                        policy: policy,
+                    note(
                         performed: false,
                         reason:
                             "The index was refreshed \(status.ageSeconds ?? 0) second(s) ago, "
-                            + "inside its freshness window, so it was used as it stood.",
-                        durationSeconds: nil,
-                        inserted: nil,
-                        updated: nil,
-                        removed: nil,
-                        scanComplete: nil
+                            + "inside its freshness window, so it was used as it stood."
                     ),
                     status
                 )
             }
-            return try refreshed(
-                status.lastCompleteRefresh == nil
-                    ? "Refreshed because the index had never completed a full pass."
-                    : "Refreshed because the index was \(status.ageSeconds ?? 0) second(s) old, "
-                        + "past its freshness window."
+            if status.lastCompleteRefresh == nil { try refuseAndBuild() }
+            return try bounded(
+                "Refreshed because the index was \(status.ageSeconds ?? 0) second(s) old, past "
+                    + "its freshness window."
             )
         default:
             throw Self.error("refresh must be one of: auto, never, always")
