@@ -27,6 +27,11 @@ private let maximumRecipients = 50
 /// have to learn the other.
 private let maximumInlineAttachmentBytes = 256 * 1024
 
+/// Ceiling on one index pass. A first run against a very large store has to
+/// stop somewhere rather than hold a tool call open indefinitely; stopping
+/// early is reported as an incomplete scan rather than as a finished one.
+private let maximumIndexFileLimit = 200_000
+
 /// How many messages `mail_get_thread` will read headers from. Reading `all
 /// headers` is one Apple Event per message, so this is the real cost ceiling
 /// on threading.
@@ -214,6 +219,22 @@ private struct MailTemplateListResult: Codable, Sendable {
 private struct MailTemplateDeleteResult: Codable, Sendable {
     let status: String
     let name: String
+}
+
+/// One page of index-backed messages, always carrying the index's own
+/// account of how complete it is. The completeness block is not optional
+/// decoration: a caller that cannot tell "not in the mailbox" from "not
+/// indexed yet" is worse off than one that waited for a slow scan.
+private struct MailIndexMessagePage: Codable, Sendable {
+    let messages: [MailIndexedMessage]
+    let mailbox: String?
+    let limit: Int
+    let offset: Int
+    let returned: Int
+    /// The `account/mailbox` keys the index knows, so a caller that guessed
+    /// a mailbox name wrong can see the real vocabulary.
+    let indexedMailboxes: [String]
+    let status: MailIndexStatus
 }
 
 private struct MailMessageDetail: Codable, Sendable {
@@ -1017,10 +1038,12 @@ private let deleteMailboxScript =
 ///   gated behind Mail's `com.apple.mail.compose` access group, so an
 ///   unentitled script reads it as null. Confirmed against Mail's own
 ///   dictionary rather than assumed; there is no unentitled path to it.
-/// - Cross-mailbox and body search: deferred to the disk-first .emlx +
-///   FTS5 index design in docs/planning/BUILD_PLAN.md §3.1, which this
-///   file remains the scaffold for. Per-mailbox subject/sender search is
-///   the AppleScript-feasible ceiling.
+/// - Cross-mailbox and body search: per-mailbox subject/sender search is
+///   the AppleScript-feasible ceiling, so `mail_search` stays there. The
+///   disk-first .emlx index it was waiting on now exists (see Shared/
+///   MailIndex.swift and issue #19) and stores bodies in FTS5, but the
+///   search contract on top of it is issue #3 and is not implemented
+///   here. The index tools below read and reconcile; they do not query.
 final class MailService: Service {
     static let shared = MailService()
 
@@ -2041,9 +2064,117 @@ final class MailService: Service {
         ) { arguments in
             try await Self.useTemplate(arguments: arguments)
         }
+
+        Tool(
+            name: "mail_index_status",
+            description:
+                "Report Apple Core's read-only local mail index: whether it can be read at all, how stale it is, how many messages and mailboxes it covers, how many bodies are not downloaded, and which files could not be read. Ask this before trusting any index-backed read.",
+            inputSchema: .object(
+                properties: [:],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Mail Index Status",
+                readOnlyHint: true,
+                openWorldHint: false
+            )
+        ) { _ in
+            MailIndex.status()
+        }
+
+        Tool(
+            name: "mail_index_refresh",
+            description:
+                "Rebuild or update the local mail index from Mail's own files on disk. Reads Mail's storage read-only and writes only Apple Core's index under ~/.config/apple-core. Reports what was added, changed, moved between mailboxes, finished downloading, removed, and what could not be read. Needs Full Disk Access.",
+            inputSchema: .object(
+                properties: [
+                    "file_limit": .integer(
+                        description:
+                            "Maximum message files to walk in one pass; a pass that stops here is reported as incomplete",
+                        default: .int(maximumIndexFileLimit)
+                    )
+                ],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Refresh Mail Index",
+                readOnlyHint: false,
+                destructiveHint: false,
+                idempotentHint: true,
+                openWorldHint: false
+            )
+        ) { arguments in
+            let requested = arguments["file_limit"]?.intValue ?? maximumIndexFileLimit
+            return try MailIndex.refresh(
+                fileLimit: min(max(requested, 1), maximumIndexFileLimit)
+            )
+        }
+
+        Tool(
+            name: "mail_index_messages",
+            description:
+                "Read messages out of the local index instead of through Mail, which is what makes a large mailbox readable. Returns a bounded page newest first, with the index's staleness, undownloaded-body and unreadable-file counts attached. This is a listing, not a search: it takes no query terms.",
+            inputSchema: .object(
+                properties: [
+                    "mailbox": .string(
+                        description:
+                            "Mailbox to scope to: either an 'account/mailbox' key from indexed_mailboxes, or a mailbox path on its own such as INBOX. Every indexed mailbox if omitted"
+                    ),
+                    "limit": .integer(
+                        description: "Maximum messages to return (max \(maximumMessageLimit))",
+                        default: .int(defaultMessageLimit)
+                    ),
+                    "offset": .integer(
+                        description: "Messages to skip, for paging",
+                        default: .int(0)
+                    ),
+                ],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Read Indexed Messages",
+                readOnlyHint: true,
+                openWorldHint: false
+            )
+        ) { arguments in
+            try Self.indexedMessages(arguments: arguments)
+        }
     }
 
     // MARK: - Helpers
+
+    /// Reads a page out of the index, refusing rather than answering with an
+    /// empty list when the index cannot be read or has never completed a
+    /// pass. An empty page from an unusable index reads exactly like an empty
+    /// mailbox, which is the failure this whole surface exists to avoid.
+    private static func indexedMessages(arguments: [String: Value]) throws
+        -> MailIndexMessagePage
+    {
+        let status = MailIndex.status()
+        guard status.access == "available" else {
+            throw Self.error(status.accessDetail)
+        }
+        guard status.lastCompleteRefresh != nil else {
+            throw Self.error(
+                "INDEX_EMPTY: the local mail index has never completed a full pass, so it cannot "
+                    + "say what is or is not in your mail. Run mail_index_refresh first."
+            )
+        }
+        let mailbox = arguments["mailbox"]?.stringValue.flatMap { $0.isEmpty ? nil : $0 }
+        let limit = Self.clampedLimit(arguments["limit"]?.intValue)
+        let offset = max(arguments["offset"]?.intValue ?? 0, 0)
+        let index = MailIndexStore.default
+        let messages = try index.messages(inMailbox: mailbox, limit: limit, offset: offset)
+        return MailIndexMessagePage(
+            messages: messages,
+            mailbox: mailbox,
+            limit: limit,
+            offset: offset,
+            returned: messages.count,
+            indexedMailboxes: try index.mailboxKeys(),
+            status: status
+        )
+    }
 
     private static func requiredString(
         _ key: String,
