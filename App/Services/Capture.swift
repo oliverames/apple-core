@@ -814,6 +814,278 @@ final class CaptureService: NSObject, Service {
             return Value.object(result)
         }
 
+        Tool(
+            name: "capture_list_targets",
+            description:
+                "List the displays, applications and windows a capture can be aimed at, with only the "
+                + "identifiers and geometry capture_take_screenshot needs. Returns no window contents and no "
+                + "window titles, and never asks for Screen Recording access.",
+            inputSchema: .object(
+                properties: [
+                    "bundleId": .string(
+                        description: "Only list the application and windows belonging to this bundle identifier"
+                    ),
+                    "windowId": .integer(
+                        description:
+                            "Check whether a window identifier from an earlier listing is still valid. One that "
+                            + "has since closed is reported as stale rather than as an error.",
+                        minimum: 0,
+                        maximum: Int(UInt32.max)
+                    ),
+                    "includeOffscreenWindows": .boolean(
+                        description: "Include minimized and other off-screen windows",
+                        default: false
+                    ),
+                ],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "List Capture Targets",
+                readOnlyHint: true,
+                idempotentHint: true,
+                openWorldHint: false
+            )
+        ) { arguments in
+            // Preflight rather than request: a client sizing up the machine
+            // should not be the thing that puts a consent dialog in front of
+            // whoever is sitting at it.
+            guard CGPreflightScreenCaptureAccess() else {
+                throw CaptureTargetError.screenRecordingNotAuthorized
+            }
+
+            let bundleIdentifier = arguments["bundleId"]?.stringValue
+            let windowIdentifier = try Self.captureIdentifier(arguments["windowId"], named: "windowId")
+            let includeOffscreen = arguments["includeOffscreenWindows"]?.boolValue ?? false
+
+            let snapshot = try await Self.currentTargetSnapshot()
+            // The lookup runs against the whole snapshot on purpose: a window
+            // the caller filtered out is still a live window, and calling it
+            // stale would send them chasing an identifier that never changed.
+            let lookup = CaptureTargetInventory.lookup(windowID: windowIdentifier, in: snapshot)
+            let targets = CaptureTargetInventory.filtered(
+                snapshot,
+                bundleIdentifier: bundleIdentifier,
+                includeOffscreenWindows: includeOffscreen
+            )
+            let screenStatus = CaptureReadiness.screenStatus(
+                isAuthorized: true,
+                isGUISessionActive: GUISession.isActive,
+                displayCount: snapshot.displays.count
+            )
+
+            return Self.value(for: targets, screenStatus: screenStatus, lookup: lookup)
+        }
+
+        Tool(
+            name: "capture_readiness",
+            description:
+                "Report whether the camera, microphone and screen are each usable on this Mac, telling missing "
+                + "hardware, denied permission and a locked screen apart. Captures nothing and never triggers a "
+                + "permission prompt.",
+            inputSchema: .object(properties: [:], additionalProperties: false),
+            annotations: .init(
+                title: "Capture Readiness",
+                readOnlyHint: true,
+                idempotentHint: true,
+                openWorldHint: false
+            )
+        ) { _ in
+            let guiSessionActive = GUISession.isActive
+            let cameraPermission = CapturePermissionState(
+                AVCaptureDevice.authorizationStatus(for: .video)
+            )
+            let microphonePermission = CapturePermissionState(
+                AVCaptureDevice.authorizationStatus(for: .audio)
+            )
+            let cameraCount = Self.deviceCount(for: .video)
+            let microphoneCount = Self.deviceCount(for: .audio)
+            let screenAuthorized = CGPreflightScreenCaptureAccess()
+
+            // The display list is only asked for when there is a session to ask
+            // about. On a locked Mac it comes back empty, and a zero here would
+            // read as "no screens attached" rather than "nobody is looking".
+            var displayCount = 0
+            if screenAuthorized && guiSessionActive {
+                displayCount = (try? await Self.currentTargetSnapshot().displays.count) ?? 0
+            }
+
+            let camera = CaptureReadiness.deviceStatus(
+                permission: cameraPermission,
+                hasDevice: cameraCount > 0
+            )
+            let microphone = CaptureReadiness.deviceStatus(
+                permission: microphonePermission,
+                hasDevice: microphoneCount > 0
+            )
+            let screen = CaptureReadiness.screenStatus(
+                isAuthorized: screenAuthorized,
+                isGUISessionActive: guiSessionActive,
+                displayCount: displayCount
+            )
+
+            return Value.object([
+                "camera": .object([
+                    "status": .string(camera.rawValue),
+                    "detail": .string(CaptureReadiness.detail(for: camera, modality: .camera)),
+                    "permission": .string(cameraPermission.rawValue),
+                    "deviceCount": .int(cameraCount),
+                ]),
+                "microphone": .object([
+                    "status": .string(microphone.rawValue),
+                    "detail": .string(
+                        CaptureReadiness.detail(for: microphone, modality: .microphone)
+                    ),
+                    "permission": .string(microphonePermission.rawValue),
+                    "deviceCount": .int(microphoneCount),
+                ]),
+                "screen": .object([
+                    "status": .string(screen.rawValue),
+                    "detail": .string(CaptureReadiness.detail(for: screen, modality: .screen)),
+                    "permission": .string(screenAuthorized ? "authorized" : "notAuthorized"),
+                    "displayCount": .int(displayCount),
+                ]),
+                "guiSessionActive": .bool(guiSessionActive),
+            ])
+        }
+    }
+}
+
+// MARK: - Capture Target Discovery Support
+
+extension CaptureService {
+    /// Live capture targets, flattened into the snapshot the discovery and
+    /// readiness rules work on.
+    ///
+    /// Off-screen windows are collected rather than filtered out at the source
+    /// so the caller's own argument, not this call, decides whether minimized
+    /// windows appear. Desktop windows are always excluded: nobody asks for a
+    /// picture of the wallpaper, and they bury the real windows.
+    static func currentTargetSnapshot() async throws -> CaptureTargetSnapshot {
+        let content = try await SCShareableContent.excludingDesktopWindows(
+            true,
+            onScreenWindowsOnly: false
+        )
+        return CaptureTargetSnapshot(
+            displays: content.displays.map {
+                .init(id: $0.displayID, width: $0.width, height: $0.height)
+            },
+            applications: content.applications.map {
+                .init(
+                    bundleIdentifier: $0.bundleIdentifier,
+                    name: $0.applicationName,
+                    processIdentifier: Int($0.processID)
+                )
+            },
+            windows: content.windows.map { window in
+                .init(
+                    id: window.windowID,
+                    ownerBundleIdentifier: window.owningApplication?.bundleIdentifier,
+                    ownerName: window.owningApplication?.applicationName,
+                    x: Int(window.frame.origin.x),
+                    y: Int(window.frame.origin.y),
+                    width: Int(window.frame.width),
+                    height: Int(window.frame.height),
+                    isOnScreen: window.isOnScreen,
+                    isActive: window.isActive,
+                    hasTitle: !(window.title ?? "").isEmpty
+                )
+            }
+        )
+    }
+
+    /// Prompt-free count of the capture devices for one media type. Device
+    /// discovery is not gated by consent, which is what makes it safe for a
+    /// readiness check that must not put a dialog on screen.
+    static func deviceCount(for mediaType: AVMediaType) -> Int {
+        let deviceTypes: [AVCaptureDevice.DeviceType] =
+            mediaType == .video
+            ? [.builtInWideAngleCamera, .external, .continuityCamera, .deskViewCamera]
+            : [.microphone, .external]
+        return AVCaptureDevice.DiscoverySession(
+            deviceTypes: deviceTypes,
+            mediaType: mediaType,
+            position: .unspecified
+        ).devices.count
+    }
+
+    static func value(
+        for snapshot: CaptureTargetSnapshot,
+        screenStatus: CaptureModalityStatus,
+        lookup: CaptureTargetInventory.WindowLookup
+    ) -> Value {
+        let displays: [Value] = snapshot.displays.map { display in
+            .object([
+                "displayId": .int(Int(display.id)),
+                "width": .int(display.width),
+                "height": .int(display.height),
+            ])
+        }
+
+        let applications: [Value] = snapshot.applications.map { application in
+            .object([
+                "bundleId": .string(application.bundleIdentifier),
+                "name": .string(application.name),
+                "processId": .int(application.processIdentifier),
+            ])
+        }
+
+        let windows: [Value] = snapshot.windows.map { window in
+            var entry: [String: Value] = [
+                "windowId": .int(Int(window.id)),
+                "x": .int(window.x),
+                "y": .int(window.y),
+                "width": .int(window.width),
+                "height": .int(window.height),
+                "isOnScreen": .bool(window.isOnScreen),
+                "isActive": .bool(window.isActive),
+                "hasTitle": .bool(window.hasTitle),
+            ]
+            if let bundleIdentifier = window.ownerBundleIdentifier {
+                entry["bundleId"] = .string(bundleIdentifier)
+            }
+            if let name = window.ownerName {
+                entry["application"] = .string(name)
+            }
+            return .object(entry)
+        }
+
+        var result: [String: Value] = [
+            "displays": .array(displays),
+            "applications": .array(applications),
+            "windows": .array(windows),
+            "screenStatus": .string(screenStatus.rawValue),
+        ]
+        if screenStatus != .ready {
+            result["note"] = .string(CaptureReadiness.detail(for: screenStatus, modality: .screen))
+        }
+        switch lookup {
+        case .notRequested:
+            break
+        case let .live(windowID):
+            result["requestedWindow"] = .object([
+                "windowId": .int(Int(windowID)),
+                "status": .string("live"),
+            ])
+        case let .stale(windowID):
+            result["requestedWindow"] = .object([
+                "windowId": .int(Int(windowID)),
+                "status": .string("stale"),
+                "detail": .string(CaptureTargetInventory.staleWindowAdvice(for: windowID)),
+            ])
+        }
+        return .object(result)
+    }
+}
+
+enum CaptureTargetError: LocalizedError {
+    case screenRecordingNotAuthorized
+
+    var errorDescription: String? {
+        switch self {
+        case .screenRecordingNotAuthorized:
+            return "Screen Recording access is not granted for Apple Core, so there is nothing to list. "
+                + "Grant it in System Settings, or call capture_take_screenshot to be asked for it."
+        }
     }
 }
 
