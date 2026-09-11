@@ -6,7 +6,45 @@ source tooling, separate from the Mac application and hosted OAuth server.
 `bin/mcp.py` was retrieved from Muse's live `_shared/bin/mcp.py` on September 10,
 2026. It preserves the working session-header fix: capture `Mcp-Session-Id`
 from the response and resend it on subsequent requests in the same process.
-The response parsing and credential handling match the retrieved file.
+The credential handling matches the retrieved file.
+
+## Session lifecycle
+
+Servers that issue a session on `initialize` cap how many can be open at once.
+Apple Core allows 64 and reaps idle sessions only after 600 seconds, so a
+wrapper that initializes and exits without closing its session leaves it held
+for the full idle window. Repeated invocations then exhaust the cap and
+`initialize` starts returning HTTP 503 `Too many active sessions`, which is what
+the September 10 acceptance sweep hit ([issue #14][issue14]).
+
+This client sends an HTTP DELETE for the session it opened, from `main`'s
+`finally` block on the success path, the initialize-error path, and an
+exception path, and again from an `atexit` hook for callers that import the
+module and use `post` directly. `close_session` clears its state before it
+sends, so the delete is never retried or repeated.
+
+Only sessions this process created are deleted. The id is marked owned solely
+when it arrives on this process's own `initialize` response, and it is tracked
+with the endpoint and credential it was issued for, so it is neither resent nor
+deleted for another server. A session id a server volunteers on some other
+response is used for later calls but never deleted: that session may belong to
+another client's live connection.
+
+A DELETE that fails is logged to stderr and otherwise ignored. Cleanup must not
+turn a successful tool call into a failure.
+
+`initialize` runs once per process and the session is reused for the call that
+follows, so the session is not created per call within a process. Sessions are
+not shared across processes, because Muse starts a fresh process per invocation
+and a persisted session id would be unsafe to reuse blind. Cleanup at exit, not
+cross-process reuse, is the fix for the leak.
+
+Streamable HTTP responses may be SSE framed (`event:` / `data:` lines). This
+client is a raw-HTTP client, so `post` unwraps the last `data:` line before
+parsing JSON. That applies to `tools/call` responses, which Apple Core frames
+as SSE.
+
+[issue14]: https://github.com/oliverames/apple-core/issues/14
 
 ## Runtime and scope
 
@@ -29,9 +67,13 @@ python3 -m py_compile bin/mcp.py
 python3 -m unittest tests.test_mcp_session -v
 ```
 
-The two tests stub network transport and the Muse platform module. They verify
-session capture/resend and a server that omits the session header. No network
-or stored credentials are used. CI runs these tests on changes to the repository.
+The tests stub network transport and the Muse platform module. They verify
+session capture and resend, a server that omits the session header, deletion on
+the success, initialize-error, and exception paths, the `atexit` registration,
+that an unowned session is never deleted, that a failed delete does not fail the
+caller and is not retried, that a session is not sent to another endpoint, and
+that an SSE-framed `tools/call` response is unwrapped. No network or stored
+credentials are used. CI runs these tests on changes to the repository.
 
 ## Install in Muse
 
