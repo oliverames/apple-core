@@ -31,48 +31,94 @@ final class CalendarService: Service {
         }
     }
 
+    /// One resolved event, with how its occurrence was matched.
+    struct ResolvedEvent {
+        let event: EKEvent
+        /// "series" when the identifier was looked up on its own,
+        /// "exact" or "nearest" when an occurrence date was given.
+        let match: String
+        /// Seconds between the requested occurrence and the one returned,
+        /// present only for a nearest match.
+        let offset: TimeInterval?
+    }
+
     /// Resolves an event by identifier, optionally disambiguating a specific
     /// occurrence of a recurring event by its occurrence date.
-    private func resolveEvent(withIdentifier id: String, occurrenceDate: Date?) throws -> EKEvent {
+    ///
+    /// The window and the choice among candidates live in
+    /// `CalendarEventLookup` so they can be tested without a live store.
+    private func locateEvent(
+        withIdentifier id: String,
+        occurrenceDate: Date?
+    ) throws -> ResolvedEvent {
         if let occurrenceDate = occurrenceDate {
             // `event(withIdentifier:)` returns the first occurrence of a recurring
             // event, so search a window around the occurrence date instead and
             // match on the identifier.
-            let windowStart = occurrenceDate.addingTimeInterval(-86400)
-            let windowEnd = occurrenceDate.addingTimeInterval(2 * 86400)
+            let window = CalendarEventLookup.window(around: occurrenceDate)
             let predicate = eventStore.predicateForEvents(
-                withStart: windowStart,
-                end: windowEnd,
+                withStart: window.start,
+                end: window.end,
                 calendars: nil
             )
-            let occurrences = eventStore.events(matching: predicate)
-                .filter { $0.eventIdentifier == id }
-            guard
-                let match = occurrences.min(by: {
-                    abs($0.startDate.timeIntervalSince(occurrenceDate))
-                        < abs($1.startDate.timeIntervalSince(occurrenceDate))
-                })
-            else {
-                throw NSError(
-                    domain: "CalendarError",
-                    code: 4,
-                    userInfo: [
-                        NSLocalizedDescriptionKey:
-                            "No occurrence of event \(id) found near the given occurrence date"
-                    ]
-                )
+            let events = eventStore.events(matching: predicate)
+            let candidates = events.compactMap { event -> CalendarOccurrenceCandidate? in
+                guard let identifier = event.eventIdentifier else { return nil }
+                return CalendarOccurrenceCandidate(identifier: identifier, start: event.startDate)
             }
-            return match
+            let selection = CalendarEventLookup.selectOccurrence(
+                from: candidates,
+                identifier: id,
+                occurrenceDate: occurrenceDate
+            )
+
+            func event(for candidate: CalendarOccurrenceCandidate) -> EKEvent? {
+                events.first {
+                    $0.eventIdentifier == candidate.identifier && $0.startDate == candidate.start
+                }
+            }
+
+            switch selection {
+            case .exact(let candidate):
+                if let match = event(for: candidate) {
+                    return ResolvedEvent(event: match, match: "exact", offset: nil)
+                }
+            case .nearest(let candidate, let offset):
+                if let match = event(for: candidate) {
+                    return ResolvedEvent(event: match, match: "nearest", offset: offset)
+                }
+            case .none:
+                break
+            }
+
+            throw NSError(
+                domain: "CalendarError",
+                code: 4,
+                userInfo: [
+                    NSLocalizedDescriptionKey:
+                        CalendarEventLookup.notFoundMessage(
+                            identifier: id,
+                            occurrenceDate: occurrenceDate
+                        )
+                ]
+            )
         }
 
         guard let event = eventStore.event(withIdentifier: id) else {
             throw NSError(
                 domain: "CalendarError",
                 code: 4,
-                userInfo: [NSLocalizedDescriptionKey: "No event found with identifier \(id)"]
+                userInfo: [
+                    NSLocalizedDescriptionKey:
+                        CalendarEventLookup.notFoundMessage(identifier: id, occurrenceDate: nil)
+                ]
             )
         }
-        return event
+        return ResolvedEvent(event: event, match: "series", offset: nil)
+    }
+
+    private func resolveEvent(withIdentifier id: String, occurrenceDate: Date?) throws -> EKEvent {
+        try locateEvent(withIdentifier: id, occurrenceDate: occurrenceDate).event
     }
 
     /// Rejects writes to calendars that cannot be modified (birthday calendars,
@@ -484,6 +530,95 @@ final class CalendarService: Service {
                 return event
             }
         }
+        Tool(
+            name: "calendar_events_get",
+            description:
+                "Fetch one calendar event by its exact identifier, without a date range. "
+                + "For a repeating event, pass occurrenceDate to get that occurrence rather than the first "
+                + "one in the series. A stale or deleted identifier is reported as NOT_FOUND rather than as "
+                + "an empty result.",
+            inputSchema: .object(
+                properties: [
+                    "id": .string(
+                        description: "Event identifier (from calendar_events_fetch)"
+                    ),
+                    "occurrenceDate": .string(
+                        description:
+                            "Start date/time of a specific occurrence, for a repeating event. "
+                            + "The nearest occurrence within a day either side is returned, and the result says "
+                            + "whether the match was exact.",
+                        format: .dateTime
+                    ),
+                ],
+                required: ["id"],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Get Event",
+                readOnlyHint: true,
+                openWorldHint: false
+            )
+        ) { arguments in
+            guard EKEventStore.authorizationStatus(for: .event) == .fullAccess else {
+                log.error("Calendar access not authorized")
+                throw NSError(
+                    domain: "CalendarError",
+                    code: 1,
+                    userInfo: [NSLocalizedDescriptionKey: "Calendar access not authorized"]
+                )
+            }
+
+            let id = try CalendarEventLookup.normalize(
+                identifier: arguments["id"]?.stringValue
+            )
+
+            var occurrenceDate: Date? = nil
+            if let occurrenceValue = arguments["occurrenceDate"] {
+                guard case .string(let occurrenceInput) = occurrenceValue,
+                    let parsedOccurrence = ISO8601DateFormatter.parsedLenientISO8601Date(
+                        fromISO8601String: occurrenceInput
+                    )
+                else {
+                    throw NSError(
+                        domain: "CalendarError",
+                        code: 2,
+                        userInfo: [
+                            NSLocalizedDescriptionKey:
+                                "occurrenceDate must be a valid ISO 8601 date or date-time."
+                        ]
+                    )
+                }
+                occurrenceDate = parsedOccurrence.date
+            }
+
+            let resolved = try self.locateEvent(withIdentifier: id, occurrenceDate: occurrenceDate)
+            let ekEvent = resolved.event
+
+            var event = Event(ekEvent)
+            event.identifier = ekEvent.eventIdentifier
+
+            var result: [String: Value] = [
+                "event": try Value(event),
+                "identifier": .string(ekEvent.eventIdentifier ?? id),
+                "calendar": .object([
+                    "identifier": .string(ekEvent.calendar.calendarIdentifier),
+                    "title": .string(ekEvent.calendar.title),
+                    "isEditable": .bool(ekEvent.calendar.allowsContentModifications),
+                ]),
+                "isRecurring": .bool(ekEvent.hasRecurrenceRules),
+                "isDetached": .bool(ekEvent.isDetached),
+                "attendeeCount": .int(ekEvent.attendees?.count ?? 0),
+                "occurrenceMatch": .string(resolved.match),
+            ]
+            if let offset = resolved.offset {
+                // Reported rather than hidden: the caller asked for one moment
+                // and got a different one, and how different decides whether
+                // that is the event they meant.
+                result["occurrenceOffsetSeconds"] = .int(Int(offset.rounded()))
+            }
+            return Value.object(result)
+        }
+
         Tool(
             name: "calendar_events_create",
             description: "Create a new calendar event with specified properties",

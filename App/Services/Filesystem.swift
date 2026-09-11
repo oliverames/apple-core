@@ -159,6 +159,127 @@ final class FilesystemService: Service {
         }
 
         Tool(
+            name: "filesystem_tree",
+            description:
+                "Walk a shared folder and everything beneath it, to a bounded depth. "
+                + "Use this to see the shape of a project before reading anything. "
+                + "Depth, entry count and exclusions are all bounded and every bound is reported; "
+                + "when nextCursor comes back, pass it to continue exactly where this page stopped. "
+                + "Symbolic links are listed but never followed.",
+            inputSchema: .object(
+                properties: [
+                    "path": .string(description: "Folder to walk"),
+                    "maxDepth": .integer(
+                        description:
+                            "How many levels below the folder to descend, up to \(FilesystemTree.maximumMaxDepth)",
+                        default: .int(FilesystemTree.defaultMaxDepth)
+                    ),
+                    "maxEntries": .integer(
+                        description:
+                            "Maximum entries in this page, up to \(FilesystemTree.maximumMaxEntries)",
+                        default: .int(FilesystemTree.defaultMaxEntries)
+                    ),
+                    "exclude": .array(
+                        description:
+                            "Shell-style patterns to skip, such as *.log or build/*. A pattern with a slash matches the path relative to the folder; one without matches the entry name.",
+                        items: .string()
+                    ),
+                    "useDefaultExclusions": .boolean(
+                        description:
+                            "Also skip the usual noise: \(FilesystemTree.defaultExclusions.joined(separator: ", "))",
+                        default: .bool(true)
+                    ),
+                    "includeHidden": .boolean(
+                        description: "Include hidden files and folders, such as dotfiles",
+                        default: .bool(true)
+                    ),
+                    "cursor": .string(
+                        description: "Continue a previous walk; pass its nextCursor unchanged"
+                    ),
+                ],
+                required: ["path"],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Walk Folder Tree",
+                readOnlyHint: true,
+                openWorldHint: false
+            )
+        ) { arguments in
+            guard let path = arguments["path"]?.stringValue else {
+                throw FilesystemServiceError.missingArgument("path")
+            }
+            let roots = FilesystemService.shared.roots
+            let url = try FilesystemContent.resolveExisting(requested: path, roots: roots)
+
+            var exclusions = arguments["exclude"]?.arrayValue?.compactMap(\.stringValue) ?? []
+            if arguments["useDefaultExclusions"]?.boolValue ?? true {
+                exclusions.append(contentsOf: FilesystemTree.defaultExclusions)
+            }
+
+            let result = try FilesystemTree.walk(
+                root: url,
+                roots: roots,
+                maxDepth: FilesystemTree.clampedDepth(arguments["maxDepth"]?.intValue),
+                maxEntries: FilesystemTree.clampedEntries(arguments["maxEntries"]?.intValue),
+                exclusions: exclusions,
+                includeHidden: arguments["includeHidden"]?.boolValue ?? true,
+                cursor: arguments["cursor"]?.stringValue
+            )
+
+            let formatter = ISO8601DateFormatter()
+            let entries: [Value] = result.entries.map { entry in
+                var described: [String: Value] = [
+                    "relativePath": .string(entry.relativePath),
+                    "path": .string(entry.path),
+                    "name": .string(entry.name),
+                    "isDirectory": .bool(entry.isDirectory),
+                    "depth": .int(entry.depth),
+                ]
+                if entry.isSymbolicLink { described["isSymbolicLink"] = .bool(true) }
+                if let size = entry.sizeBytes { described["sizeBytes"] = .int(size) }
+                if let modified = entry.modified {
+                    described["modified"] = .string(formatter.string(from: modified))
+                }
+                return .object(described)
+            }
+
+            var response: [String: Value] = [
+                "path": .string(result.root),
+                "entries": .array(entries),
+                "entryCount": .int(entries.count),
+                "reachedDepthLimit": .bool(result.reachedDepthLimit),
+                "reachedEntryLimit": .bool(result.reachedEntryLimit),
+                "excludedCount": .int(result.excludedCount),
+            ]
+            // Named only as a count. A denied child is a path the caller was
+            // never shown, and listing them would turn a tree walk into a way
+            // to map the folders around a shared one.
+            if result.deniedCount > 0 {
+                response["deniedCount"] = .int(result.deniedCount)
+            }
+            if let cursor = result.nextCursor {
+                response["nextCursor"] = .string(cursor)
+            }
+            var notes: [String] = []
+            if result.reachedEntryLimit {
+                notes.append("Stopped at the entry limit. Pass nextCursor to continue.")
+            }
+            if result.reachedDepthLimit {
+                notes.append(
+                    "Some folders were not opened because they sit below maxDepth. Walk one of them directly, or raise maxDepth."
+                )
+            }
+            if result.exhaustedScanBudget {
+                notes.append(
+                    "The walk hit its traversal budget before the entry limit, usually because most of the tree is excluded. Pass nextCursor to continue."
+                )
+            }
+            if !notes.isEmpty { response["note"] = .string(notes.joined(separator: " ")) }
+            return Value.object(response)
+        }
+
+        Tool(
             name: "filesystem_read",
             description:
                 "Read a text file inside a shared folder. Binary files are not returned; their metadata is. Large files come back capped, with nextOffset for reading on from there.",
@@ -766,7 +887,9 @@ final class FilesystemService: Service {
         Tool(
             name: "filesystem_search_content",
             description:
-                "Find files by what is inside them, not just their name, using Spotlight. Reaches inside PDFs, Pages and Word documents and anything else Spotlight indexes. Use filesystem_search when you know part of the file name instead.",
+                "Find files by what is inside them, not just their name, using Spotlight. Reaches inside PDFs, Pages and Word documents and anything else Spotlight indexes. "
+                + "Returns a quoted snippet from each plain-text match, and says why when it cannot quote one. "
+                + "Results page: pass a previous call's nextOffset to continue. Use filesystem_search when you know part of the file name instead.",
             inputSchema: .object(
                 properties: [
                     "path": .string(description: "Directory to search beneath"),
@@ -774,6 +897,20 @@ final class FilesystemService: Service {
                     "limit": .integer(
                         description: "Maximum matches to return",
                         default: .int(defaultPageSize)
+                    ),
+                    "offset": .integer(
+                        description: "Matches to skip; pass a previous call's nextOffset",
+                        default: .int(0)
+                    ),
+                    "snippets": .boolean(
+                        description:
+                            "Quote the matching lines from each plain-text file. Turn off for a faster, name-only answer.",
+                        default: .bool(true)
+                    ),
+                    "snippetsPerFile": .integer(
+                        description:
+                            "Matching lines to quote from each file, up to \(FilesystemContentSearch.maximumSnippetsPerFile)",
+                        default: .int(FilesystemContentSearch.defaultSnippetsPerFile)
                     ),
                 ],
                 required: ["path", "query"],
@@ -798,18 +935,19 @@ final class FilesystemService: Service {
                 requiringWrite: false
             )
             let limit = clampedPageSize(arguments["limit"]?.intValue)
+            let offset = max(0, arguments["offset"]?.intValue ?? 0)
+            let wantsSnippets = arguments["snippets"]?.boolValue ?? true
+            let snippetsPerFile = min(
+                max(1, arguments["snippetsPerFile"]?.intValue ?? FilesystemContentSearch.defaultSnippetsPerFile),
+                FilesystemContentSearch.maximumSnippetsPerFile
+            )
             let expression = "kMDItemTextContent == '*\(Spotlight.quoted(query))*'c"
             let hits = try Spotlight.run(arguments: ["-onlyin", url.path, expression])
 
             // mdfind is told where to look, but it is a separate process with
             // its own view of the disk. Re-check every hit against the
             // allowlist rather than trusting -onlyin to be the access control.
-            // Resolve every hit before taking the page. Comparing raw hits
-            // against returned matches made `truncated` true whenever
-            // Spotlight saw anything outside the shared roots, so a search
-            // that had in fact returned everything the caller was allowed to
-            // see told them to narrow it.
-            var permitted: [Value] = []
+            var permitted: [URL] = []
             for hit in hits {
                 guard
                     let resolved = try? FilesystemAccess.resolve(
@@ -818,17 +956,72 @@ final class FilesystemService: Service {
                         requiringWrite: false
                     )
                 else { continue }
-                permitted.append(FilesystemService.describe(resolved))
+                permitted.append(resolved)
             }
-            let matches = Array(permitted.prefix(limit))
-            return Value.object([
+            // Spotlight's order is not stable between calls, so paging over it
+            // raw would repeat and skip files. Sorting gives the offsets
+            // something that means the same thing on the next call.
+            permitted.sort { $0.path < $1.path }
+            let page = Array(permitted.dropFirst(offset).prefix(limit))
+
+            let matches: [Value] = page.map { hit in
+                guard case .object(var described) = FilesystemService.describe(hit) else {
+                    return .object(["path": .string(hit.path)])
+                }
+                let availability = FilesystemCloudAvailability.of(hit)
+                if availability != .local {
+                    described["cloudAvailability"] = .string(availability.rawValue)
+                }
+                guard wantsSnippets else { return .object(described) }
+                let outcome = FilesystemService.snippets(
+                    for: hit,
+                    query: query,
+                    maximum: snippetsPerFile,
+                    availability: availability
+                )
+                if let snippets = outcome.snippets, !snippets.isEmpty {
+                    described["snippets"] = .array(
+                        snippets.map { snippet in
+                            .object([
+                                "line": .int(snippet.line),
+                                "text": .string(snippet.text),
+                            ])
+                        }
+                    )
+                } else if let absence = outcome.absence {
+                    described["snippetUnavailable"] = .string(absence.rawValue)
+                    described["snippetNote"] = .string(absence.explanation)
+                }
+                return .object(described)
+            }
+
+            var result: [String: Value] = [
                 "path": .string(url.path),
                 "query": .string(query),
                 "matches": .array(matches),
-                "truncated": .bool(
-                    FilesystemContent.isTruncated(permittedCount: permitted.count, limit: limit)
-                ),
-            ])
+                "totalMatched": .int(permitted.count),
+                // Kept for callers that already branch on it, and now it means
+                // what it says: there is another page, and nextOffset reaches
+                // it. It used to mean "some results were dropped, good luck".
+                "truncated": .bool(offset + page.count < permitted.count),
+            ]
+            if offset + page.count < permitted.count {
+                result["nextOffset"] = .int(offset + page.count)
+            }
+            // An empty result has three possible causes and they have
+            // different fixes, so it is worth one process spawn to say which.
+            if permitted.isEmpty {
+                let state = SpotlightIndexState.query(path: url.path)
+                result["spotlightIndexing"] = .string(state.rawValue)
+                if let explanation = state.explanation {
+                    result["note"] = .string(explanation)
+                } else {
+                    result["note"] = .string(
+                        "Spotlight is indexing this volume and found nothing containing that text. Files stored in iCloud whose contents are not on this Mac are not searchable by content."
+                    )
+                }
+            }
+            return Value.object(result)
         }
 
         Tool(
@@ -1151,6 +1344,36 @@ final class FilesystemService: Service {
             ])
         }
     }
+    /// Reads one hit far enough to quote from it.
+    ///
+    /// Spotlight matched an index, which knows about content this process
+    /// cannot cheaply re-read: PDF text layers, Pages documents, mail. Rather
+    /// than drop those hits or pretend to quote them, every file that cannot
+    /// be quoted comes back with the reason, so a caller can tell "no snippet"
+    /// from "no match".
+    static func snippets(
+        for url: URL,
+        query: String,
+        maximum: Int,
+        availability: FilesystemCloudAvailability
+    ) -> (snippets: [FilesystemSnippet]?, absence: FilesystemSnippetAbsence?) {
+        guard availability.isReadable else { return (nil, .contentNotDownloaded) }
+        let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+        guard size <= FilesystemContentSearch.maximumSnippetFileBytes else {
+            return (nil, .tooLarge)
+        }
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return (nil, .unreadable) }
+        defer { try? handle.close() }
+        guard
+            let data = try? handle.read(
+                upToCount: FilesystemContentSearch.maximumSnippetFileBytes
+            ),
+            let text = String(data: data, encoding: .utf8)
+        else { return (nil, .notPlainText) }
+        let found = FilesystemContentSearch.snippets(in: text, query: query, maximum: maximum)
+        return found.isEmpty ? (nil, .noLiteralMatch) : (found, nil)
+    }
+
     private static func describe(_ url: URL) -> Value {
         let values = try? url.resourceValues(
             forKeys: [.isDirectoryKey, .fileSizeKey, .contentModificationDateKey]

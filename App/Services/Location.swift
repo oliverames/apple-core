@@ -138,7 +138,8 @@ final class LocationService: NSObject, Service, CLLocationManagerDelegate {
     var tools: [Tool] {
         Tool(
             name: "location_current",
-            description: "Get the user's current location",
+            description:
+                "Get the user's current location, with when the fix was taken, how accurate it is, and whether it came from the cached fix",
             inputSchema: .object(
                 properties: [:],
                 additionalProperties: false
@@ -150,7 +151,7 @@ final class LocationService: NSObject, Service, CLLocationManagerDelegate {
             )
         ) { _ in
             return try await withCheckedThrowingContinuation {
-                (continuation: CheckedContinuation<GeoCoordinates, Error>) in
+                (continuation: CheckedContinuation<Value, Error>) in
                 Task {
                     let status = self.locationManager.authorizationStatus
 
@@ -173,7 +174,7 @@ final class LocationService: NSObject, Service, CLLocationManagerDelegate {
                         Self.isUsableCachedLocation(location)
                     {
                         continuation.resume(
-                            returning: GeoCoordinates(location)
+                            returning: Self.describe(location, cached: true)
                         )
                         return
                     }
@@ -213,7 +214,7 @@ final class LocationService: NSObject, Service, CLLocationManagerDelegate {
 
                     if let location = location {
                         continuation.resume(
-                            returning: GeoCoordinates(location)
+                            returning: Self.describe(location, cached: false)
                         )
                     } else {
                         continuation.resume(
@@ -426,6 +427,281 @@ final class LocationService: NSObject, Service, CLLocationManagerDelegate {
                 }
             }
         }
+
+        Tool(
+            name: "location_geocode_batch",
+            description:
+                "Turn up to \(GeocodeBatch.maximumAddresses) addresses into coordinates in one call. "
+                + "Results come back in the order the addresses were given, with the index attached, and each address carries its own outcome: "
+                + "one that cannot be resolved returns an error for that entry rather than failing the call. "
+                + "An ambiguous address reports how many places matched and lists the alternatives instead of picking one. "
+                + "The device's own location is never substituted for an address that fails.",
+            inputSchema: .object(
+                properties: [
+                    "addresses": .array(
+                        description: "Addresses to geocode, in the order you want them back",
+                        items: .string()
+                    )
+                ],
+                required: ["addresses"],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Geocode Several Addresses",
+                readOnlyHint: true,
+                openWorldHint: true
+            )
+        ) { arguments in
+            guard let raw = arguments["addresses"]?.arrayValue else {
+                throw NSError(
+                    domain: "LocationServiceError",
+                    code: 3,
+                    userInfo: [NSLocalizedDescriptionKey: "addresses is required"]
+                )
+            }
+            let addresses = try GeocodeBatch.prepare(raw.compactMap(\.stringValue))
+
+            var results: [Value] = []
+            var succeeded = 0
+            var failed = 0
+            var ambiguous = 0
+            for (index, address) in addresses.enumerated() {
+                var entry: [String: Value] = [
+                    "index": .int(index),
+                    "address": .string(address),
+                ]
+                if let rejection = GeocodeBatch.rejection(for: address) {
+                    entry["ok"] = .bool(false)
+                    entry["error"] = .string(rejection)
+                    failed += 1
+                    results.append(.object(entry))
+                    continue
+                }
+                // Sequential, spaced out. CLGeocoder is rate limited by Apple
+                // and starts refusing when a batch is fired at it at once,
+                // which would turn a bounded feature into a flaky one.
+                if index > 0 {
+                    try? await Task.sleep(
+                        nanoseconds: UInt64(GeocodeBatch.requestInterval * 1_000_000_000)
+                    )
+                }
+                do {
+                    let placemarks = try await LocationService.geocode(address)
+                    guard let first = placemarks.first, let location = first.location else {
+                        entry["ok"] = .bool(false)
+                        entry["error"] = .string("No location found for this address.")
+                        failed += 1
+                        results.append(.object(entry))
+                        continue
+                    }
+                    succeeded += 1
+                    entry["ok"] = .bool(true)
+                    entry["candidateCount"] = .int(placemarks.count)
+                    entry["place"] = LocationService.describe(
+                        first,
+                        latitude: location.coordinate.latitude,
+                        longitude: location.coordinate.longitude
+                    )
+                    if let note = GeocodeBatch.ambiguityNote(candidateCount: placemarks.count) {
+                        ambiguous += 1
+                        entry["ambiguous"] = .bool(true)
+                        entry["note"] = .string(note)
+                        entry["candidates"] = .array(
+                            placemarks
+                                .dropFirst()
+                                .prefix(GeocodeBatch.maximumCandidates - 1)
+                                .compactMap { placemark in
+                                    guard let coordinate = placemark.location?.coordinate else {
+                                        return nil
+                                    }
+                                    return LocationService.describe(
+                                        placemark,
+                                        latitude: coordinate.latitude,
+                                        longitude: coordinate.longitude
+                                    )
+                                }
+                        )
+                    }
+                } catch {
+                    entry["ok"] = .bool(false)
+                    entry["error"] = .string(error.localizedDescription)
+                    failed += 1
+                }
+                results.append(.object(entry))
+            }
+
+            return Value.object([
+                "results": .array(results),
+                "requested": .int(addresses.count),
+                "succeeded": .int(succeeded),
+                "failed": .int(failed),
+                "ambiguous": .int(ambiguous),
+            ])
+        }
+
+        Tool(
+            name: "location_resolve_map_url",
+            description:
+                "Read a shared Apple Maps link: the place, coordinates, or the trip it describes. "
+                + "Apple Maps links only, on \(AppleMapsURL.allowedHosts.sorted().joined(separator: " or ")), over https. "
+                + "This is not a web fetcher: an ordinary link is read offline from the link itself, and a short link is followed "
+                + "at most \(AppleMapsURL.maximumRedirects) times, never off those hosts, with no page content ever read.",
+            inputSchema: .object(
+                properties: [
+                    "url": .string(description: "The Apple Maps link to read"),
+                    "followShortLink": .boolean(
+                        description:
+                            "Follow a maps.apple.com short link to the place it points at. Requires a network request; everything else is offline.",
+                        default: .bool(true)
+                    ),
+                ],
+                required: ["url"],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Read Apple Maps Link",
+                readOnlyHint: true,
+                openWorldHint: true
+            )
+        ) { arguments in
+            guard let raw = arguments["url"]?.stringValue else {
+                throw NSError(
+                    domain: "LocationServiceError",
+                    code: 9,
+                    userInfo: [NSLocalizedDescriptionKey: "url is required"]
+                )
+            }
+            var link = try AppleMapsURL.parse(raw)
+            var resolvedFrom: String?
+            if link.needsRedirect {
+                guard arguments["followShortLink"]?.boolValue ?? true else {
+                    throw AppleMapsURLError.noUsableParameters(raw)
+                }
+                let expanded = try await LocationService.expandShortLink(raw)
+                link = try AppleMapsURL.parse(expanded)
+                resolvedFrom = raw
+            }
+
+            var result: [String: Value] = [
+                "kind": .string(link.kind.rawValue),
+                "url": .string(raw),
+            ]
+            if let resolvedFrom {
+                result["resolvedFromShortLink"] = .string(resolvedFrom)
+            }
+            if let latitude = link.latitude, let longitude = link.longitude {
+                result["geo"] = .object([
+                    "@type": .string("GeoCoordinates"),
+                    "latitude": .double(latitude),
+                    "longitude": .double(longitude),
+                ])
+            }
+            if let query = link.query { result["query"] = .string(query) }
+            if let address = link.address { result["address"] = .string(address) }
+            if let identifier = link.placeIdentifier { result["placeIdentifier"] = .string(identifier) }
+            if let origin = link.origin { result["origin"] = .string(origin) }
+            if let destination = link.destination { result["destination"] = .string(destination) }
+            if let transportType = link.transportType {
+                result["transportType"] = .string(transportType)
+            }
+            result["note"] = .string(
+                link.kind == .directions
+                    ? "A directions link. Pass origin and destination to maps_directions for the route itself."
+                    : "Read from the link. Use maps_search or location_geocode to confirm what is actually at that point."
+            )
+            return Value.object(result)
+        }
+    }
+
+    // MARK: - Shaping
+
+    /// One fix, described with the freshness and precision the bare
+    /// `GeoCoordinates` encoding leaves out.
+    ///
+    /// Every key `GeoCoordinates` used to encode is still here, spelled the
+    /// same way: this adds fields beside them rather than reshaping the
+    /// answer, so nothing a client already reads moves.
+    static func describe(_ location: CLLocation, cached: Bool) -> Value {
+        let freshness = LocationFreshness.make(
+            timestamp: location.timestamp,
+            horizontalAccuracy: location.horizontalAccuracy,
+            verticalAccuracy: location.verticalAccuracy,
+            cached: cached
+        )
+        var result: [String: Value] = [
+            "@context": .string("https://schema.org"),
+            "@type": .string("GeoCoordinates"),
+            "latitude": .double(location.coordinate.latitude),
+            "longitude": .double(location.coordinate.longitude),
+            "elevation": .double(location.altitude),
+            "observedAt": .string(ISO8601DateFormatter().string(from: freshness.observedAt)),
+            "ageSeconds": .int(freshness.ageSeconds),
+            "cached": .bool(freshness.cached),
+            "precision": .string(freshness.precision),
+            "note": .string(freshness.note),
+        ]
+        if let horizontal = freshness.horizontalAccuracyMeters {
+            result["horizontalAccuracyMeters"] = .double(horizontal)
+        }
+        if let vertical = freshness.verticalAccuracyMeters {
+            result["verticalAccuracyMeters"] = .double(vertical)
+        }
+        return .object(result)
+    }
+
+    /// A placemark as a schema.org Place. Extracted from the two geocoding
+    /// tools, which had the same twenty lines twice; the batch form would have
+    /// made it three times.
+    static func describe(_ placemark: CLPlacemark, latitude: Double, longitude: Double) -> Value {
+        var result: [String: Value] = [
+            "@context": .string("https://schema.org"),
+            "@type": .string("Place"),
+            "geo": .object([
+                "@type": .string("GeoCoordinates"),
+                "latitude": .double(latitude),
+                "longitude": .double(longitude),
+            ]),
+        ]
+        if let name = placemark.name { result["name"] = .string(name) }
+
+        var addressComponents: [String: Value] = ["@type": .string("PostalAddress")]
+        if let thoroughfare = placemark.thoroughfare {
+            addressComponents["streetAddress"] = .string(thoroughfare)
+        }
+        if let locality = placemark.locality {
+            addressComponents["addressLocality"] = .string(locality)
+        }
+        if let administrativeArea = placemark.administrativeArea {
+            addressComponents["addressRegion"] = .string(administrativeArea)
+        }
+        if let postalCode = placemark.postalCode {
+            addressComponents["postalCode"] = .string(postalCode)
+        }
+        if let country = placemark.country {
+            addressComponents["addressCountry"] = .string(country)
+        }
+        if addressComponents.count > 1 {
+            result["address"] = .object(addressComponents)
+        }
+        return .object(result)
+    }
+
+    /// Geocodes one address and returns every candidate the geocoder offered.
+    ///
+    /// Returning the candidates rather than the first one is the whole
+    /// ambiguity contract: "Springfield" has a dozen answers and a batch that
+    /// picked one silently would be confidently wrong twelve times out of
+    /// thirteen.
+    static func geocode(_ address: String) async throws -> [CLPlacemark] {
+        try await withCheckedThrowingContinuation { continuation in
+            CLGeocoder().geocodeAddressString(address) { placemarks, error in
+                if let error {
+                    continuation.resume(throwing: error)
+                    return
+                }
+                continuation.resume(returning: placemarks ?? [])
+            }
+        }
     }
 
     // MARK: - CLLocationManagerDelegate
@@ -475,5 +751,65 @@ final class LocationService: NSObject, Service, CLLocationManagerDelegate {
             log.error("Unknown location authorization status")
             break
         }
+    }
+}
+
+// MARK: - Apple Maps short links
+
+/// Refuses every redirect so the caller sees each hop and can judge it.
+///
+/// `URLSession` follows redirects by default, which would take a maps.apple.com
+/// link wherever it was pointed, including at something on the user's own
+/// network. Handing the hop back instead is what makes the host check in
+/// `AppleMapsURL` the thing that decides, rather than a check that runs after
+/// the request already went somewhere.
+private final class NoRedirectDelegate: NSObject, URLSessionTaskDelegate {
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping (URLRequest?) -> Void
+    ) {
+        completionHandler(nil)
+    }
+}
+
+extension LocationService {
+    /// Follows an Apple Maps short link to the URL it names, and no further.
+    ///
+    /// Bounded three ways: at most `AppleMapsURL.maximumRedirects` hops, every
+    /// hop re-checked against the Apple Maps host list, and a HEAD request so
+    /// no page body is ever fetched. A link that leaves those hosts is
+    /// abandoned with an error naming where it tried to go.
+    static func expandShortLink(_ raw: String) async throws -> String {
+        var current = try AppleMapsURL.validate(raw)
+        let session = URLSession(
+            configuration: .ephemeral,
+            delegate: NoRedirectDelegate(),
+            delegateQueue: nil
+        )
+        defer { session.finishTasksAndInvalidate() }
+
+        for hop in 1 ... AppleMapsURL.maximumRedirects {
+            guard let url = current.url else { throw AppleMapsURLError.notAURL(raw) }
+            var request = URLRequest(url: url)
+            request.httpMethod = "HEAD"
+            request.timeoutInterval = 10
+            let (_, response) = try await session.data(for: request)
+            guard let http = response as? HTTPURLResponse else {
+                throw AppleMapsURLError.noUsableParameters(raw)
+            }
+            guard (300 ... 399).contains(http.statusCode),
+                let location = http.value(forHTTPHeaderField: "Location"),
+                let next = URL(string: location, relativeTo: url)
+            else {
+                // No redirect left to follow: this is where the link lands.
+                return url.absoluteString
+            }
+            try AppleMapsURL.checkRedirect(to: next.absoluteURL, hop: hop)
+            current = try AppleMapsURL.validate(next.absoluteURL.absoluteString)
+        }
+        throw AppleMapsURLError.tooManyRedirects(limit: AppleMapsURL.maximumRedirects)
     }
 }

@@ -1,4 +1,5 @@
 import Foundation
+import JSONSchema
 import MapKit
 import OSLog
 import Ontology
@@ -581,6 +582,202 @@ final class MapsService: NSObject, Service {
         }
 
         Tool(
+            name: "maps_route_matrix",
+            description:
+                "Travel time and distance for every combination of origins and destinations, in one call. "
+                + "Use it to answer which of several places is closest to which, without asking for each route separately. "
+                + "Bounded to \(MapsRouteMatrix.maximumPairs) pairs, because a matrix is the product of the two lists. "
+                + "Each route reports its own status, so one route that cannot be computed does not lose the others.",
+            inputSchema: .object(
+                properties: [
+                    "origins": .array(
+                        description: "Starting points, each an address or a latitude and longitude",
+                        items: MapsService.pointSchema
+                    ),
+                    "destinations": .array(
+                        description: "End points, each an address or a latitude and longitude",
+                        items: MapsService.pointSchema
+                    ),
+                    "transportType": .string(
+                        description:
+                            "Transport type. Transit times depend on departureDate and are unavailable in many places.",
+                        default: "automobile",
+                        enum: ["automobile", "walking", "transit"]
+                    ),
+                    "departureDate": .string(
+                        description: "When the trips start, as an ISO 8601 date and time"
+                    ),
+                ],
+                required: ["origins", "destinations"],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Route Matrix",
+                readOnlyHint: true,
+                openWorldHint: true
+            )
+        ) { arguments in
+            let origins = try MapsService.points(from: arguments["origins"], named: "origins")
+            let destinations = try MapsService.points(
+                from: arguments["destinations"],
+                named: "destinations"
+            )
+            let pairs = try MapsRouteMatrix.pairs(
+                originCount: origins.count,
+                destinationCount: destinations.count
+            )
+            let transportType = try MapsService.transportType(
+                arguments["transportType"]?.stringValue
+            )
+            let departure = try arguments["departureDate"]?.stringValue.map {
+                try MapsService.parseDate($0, named: "departureDate")
+            }
+
+            let originItems = try await MapsService.resolve(origins)
+            let destinationItems = try await MapsService.resolve(destinations)
+
+            // Bounded concurrency. MapKit routing is a rate-limited network
+            // service, and firing twenty-five requests at once is the reliable
+            // way to have it answer none of them.
+            var outcomes: [MapsRouteOutcome] = []
+            for chunk in stride(from: 0, to: pairs.count, by: MapsRouteMatrix.maximumConcurrency) {
+                let slice = pairs[chunk ..< min(chunk + MapsRouteMatrix.maximumConcurrency, pairs.count)]
+                await withTaskGroup(of: MapsRouteOutcome.self) { group in
+                    for pair in slice {
+                        group.addTask {
+                            await MapsService.travel(
+                                from: originItems[pair.origin],
+                                to: destinationItems[pair.destination],
+                                transportType: transportType,
+                                departure: departure,
+                                originIndex: pair.origin,
+                                destinationIndex: pair.destination
+                            )
+                        }
+                    }
+                    for await outcome in group { outcomes.append(outcome) }
+                }
+            }
+            let ordered = MapsRouteMatrix.ordered(outcomes)
+
+            let nearest = MapsRouteMatrix.nearestByTravelTime(ordered, originCount: origins.count)
+            return Value.object([
+                "transportType": .string(arguments["transportType"]?.stringValue ?? "automobile"),
+                "origins": .array(origins.map { .string($0.label) }),
+                "destinations": .array(destinations.map { .string($0.label) }),
+                "routes": .array(ordered.map { MapsService.describe($0) }),
+                "computed": .int(ordered.filter(\.ok).count),
+                "failed": .int(ordered.filter { !$0.ok }.count),
+                "nearestDestinationByTravelTime": .array(
+                    nearest.map { $0.map { .int($0) } ?? .null }
+                ),
+            ])
+        }
+
+        Tool(
+            name: "maps_itinerary",
+            description:
+                "Travel time and distance for a trip through a list of stops, in the order given, with the totals for the whole trip. "
+                + "Stops are never reordered: optimising the order is a different question that needs its own algorithm and its own statement of the traffic it assumed. "
+                + "Up to \(MapsItinerary.maximumStops) stops.",
+            inputSchema: .object(
+                properties: [
+                    "stops": .array(
+                        description:
+                            "Stops in the order they will be visited, each an address or a latitude and longitude",
+                        items: MapsService.pointSchema
+                    ),
+                    "transportType": .string(
+                        description: "Transport type",
+                        default: "automobile",
+                        enum: ["automobile", "walking", "transit"]
+                    ),
+                    "departureDate": .string(
+                        description:
+                            "When the trip starts, as an ISO 8601 date and time. Given one, each stop reports an arrival time."
+                    ),
+                    "dwellMinutes": .integer(
+                        description: "How long the trip stays at each stop, for the arrival times",
+                        default: .int(0)
+                    ),
+                ],
+                required: ["stops"],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Multi-Stop Itinerary",
+                readOnlyHint: true,
+                openWorldHint: true
+            )
+        ) { arguments in
+            let stops = try MapsService.points(from: arguments["stops"], named: "stops")
+            let legs = try MapsItinerary.legs(stopCount: stops.count)
+            let transportType = try MapsService.transportType(
+                arguments["transportType"]?.stringValue
+            )
+            let departure = try arguments["departureDate"]?.stringValue.map {
+                try MapsService.parseDate($0, named: "departureDate")
+            }
+            let items = try await MapsService.resolve(stops)
+
+            // Sequential, in order. The legs are a chain, and the arrival
+            // times below depend on each one landing in place.
+            var outcomes: [MapsRouteOutcome] = []
+            for leg in legs {
+                outcomes.append(
+                    await MapsService.travel(
+                        from: items[leg.from],
+                        to: items[leg.to],
+                        transportType: transportType,
+                        departure: departure,
+                        originIndex: leg.from,
+                        destinationIndex: leg.to
+                    )
+                )
+            }
+            let totals = MapsItinerary.totals(outcomes)
+
+            var described: [Value] = []
+            let arrivals = departure.map {
+                MapsItinerary.arrivals(
+                    departingAt: $0,
+                    outcomes: outcomes,
+                    dwellSeconds: (arguments["dwellMinutes"]?.intValue ?? 0) * 60
+                )
+            }
+            let formatter = ISO8601DateFormatter()
+            for (index, outcome) in outcomes.enumerated() {
+                guard case .object(var entry) = MapsService.describe(outcome) else { continue }
+                entry["from"] = .string(stops[outcome.originIndex].label)
+                entry["to"] = .string(stops[outcome.destinationIndex].label)
+                if let arrival = arrivals?[index] ?? nil {
+                    entry["arrivesAt"] = .string(formatter.string(from: arrival))
+                }
+                described.append(.object(entry))
+            }
+
+            var totalsValue: [String: Value] = [
+                "distanceMeters": .int(totals.distanceMeters),
+                "travelSeconds": .int(totals.travelSeconds),
+                "legCount": .int(totals.legCount),
+                "computedLegCount": .int(totals.computedLegCount),
+                "failedLegCount": .int(totals.failedLegCount),
+                "partial": .bool(totals.isPartial),
+            ]
+            if totals.isPartial {
+                totalsValue["note"] = .string(
+                    "\(totals.failedLegCount) leg\(totals.failedLegCount == 1 ? "" : "s") could not be routed, so these totals are a floor, not the trip. Check the legs for which."
+                )
+            }
+            return Value.object([
+                "totals": .object(totalsValue),
+                "stops": .array(stops.map { .string($0.label) }),
+                "transportType": .string(arguments["transportType"]?.stringValue ?? "automobile"),
+                "legs": .array(described),
+            ])
+        }
+
+        Tool(
             name: "maps_generate",
             description: "Generate a static map image for given coordinates and parameters",
             inputSchema: .object(
@@ -799,6 +996,153 @@ final class MapsService: NSObject, Service {
     struct PlaceDetails: Codable, Sendable {
         var place: Place
         var lookup: MapsPlaceLookupSummary
+    }
+
+    // MARK: - Multi-route support
+
+    /// One end of a route, as the caller gave it. The label is kept so the
+    /// answer can name the places back rather than returning bare indexes.
+    struct RoutePoint: Sendable {
+        let label: String
+        let address: String?
+        let coordinates: [String: Value]?
+    }
+
+    /// The schema for one end of a route, shared by the matrix and the
+    /// itinerary so the two cannot drift apart.
+    static var pointSchema: JSONSchema {
+        .object(
+            properties: [
+                "address": .string(description: "Address or place name"),
+                "latitude": .number(minimum: -90, maximum: 90),
+                "longitude": .number(minimum: -180, maximum: 180),
+                "label": .string(description: "What to call this point in the answer"),
+            ],
+            additionalProperties: false
+        )
+    }
+
+    static func points(from value: Value?, named argument: String) throws -> [RoutePoint] {
+        guard let raw = value?.arrayValue, !raw.isEmpty else {
+            throw invalidGeometry("\(argument) is required and must not be empty.")
+        }
+        return try raw.enumerated().map { index, entry in
+            guard let object = entry.objectValue else {
+                throw invalidGeometry("\(argument)[\(index)] must be an object.")
+            }
+            let address = object["address"]?.stringValue
+            let latitude = object["latitude"]?.doubleCoerced
+            let longitude = object["longitude"]?.doubleCoerced
+            if let latitude, let longitude {
+                _ = try coordinate(latitude: latitude, longitude: longitude)
+                return RoutePoint(
+                    label: object["label"]?.stringValue
+                        ?? "\(latitude), \(longitude)",
+                    address: nil,
+                    coordinates: ["latitude": .double(latitude), "longitude": .double(longitude)]
+                )
+            }
+            guard let address, !address.isEmpty else {
+                throw invalidGeometry(
+                    "\(argument)[\(index)] needs either an address or both latitude and longitude."
+                )
+            }
+            return RoutePoint(
+                label: object["label"]?.stringValue ?? address,
+                address: address,
+                coordinates: nil
+            )
+        }
+    }
+
+    /// Geocodes every point once, before any routing happens.
+    ///
+    /// A matrix reuses each origin across every destination, so resolving
+    /// inside the routing loop would geocode the same address five times and
+    /// spend the rate limit on work already done.
+    static func resolve(_ points: [RoutePoint]) async throws -> [MKMapItem] {
+        var items: [MKMapItem] = []
+        for point in points {
+            items.append(
+                try await MapsService.shared.getMapItem(
+                    address: point.address,
+                    coordinates: point.coordinates
+                )
+            )
+        }
+        return items
+    }
+
+    static func transportType(_ raw: String?) throws -> MKDirectionsTransportType {
+        switch raw {
+        case nil, "automobile": return .automobile
+        case "walking": return .walking
+        case "transit": return .transit
+        default:
+            throw NSError(
+                domain: "MapsServiceError",
+                code: 5,
+                userInfo: [NSLocalizedDescriptionKey: "Unknown transport type."]
+            )
+        }
+    }
+
+    /// One route's time and distance, as an outcome rather than a throw.
+    ///
+    /// Returning the failure instead of raising it is the whole point of the
+    /// per-route status: a matrix where one pair has no ferry must still
+    /// answer for the other twenty-four.
+    static func travel(
+        from origin: MKMapItem,
+        to destination: MKMapItem,
+        transportType: MKDirectionsTransportType,
+        departure: Date?,
+        originIndex: Int,
+        destinationIndex: Int
+    ) async -> MapsRouteOutcome {
+        let request = MKDirections.Request()
+        request.source = origin
+        request.destination = destination
+        request.transportType = transportType
+        if let departure { request.departureDate = departure }
+        do {
+            let response = try await MKDirections(request: request).calculateETA()
+            return MapsRouteOutcome(
+                originIndex: originIndex,
+                destinationIndex: destinationIndex,
+                distanceMeters: Int(response.distance.rounded()),
+                travelSeconds: Int(response.expectedTravelTime.rounded()),
+                error: nil
+            )
+        } catch {
+            let nsError = error as NSError
+            let message = MapsTransitDirections.message(
+                forTransportType: transportType == .transit ? "transit" : nil,
+                errorDomain: nsError.domain,
+                errorCode: nsError.code
+            )
+            return MapsRouteOutcome(
+                originIndex: originIndex,
+                destinationIndex: destinationIndex,
+                distanceMeters: nil,
+                travelSeconds: nil,
+                error: message ?? error.localizedDescription
+            )
+        }
+    }
+
+    static func describe(_ outcome: MapsRouteOutcome) -> Value {
+        var entry: [String: Value] = [
+            "originIndex": .int(outcome.originIndex),
+            "destinationIndex": .int(outcome.destinationIndex),
+            "status": .string(outcome.status),
+        ]
+        if let distance = outcome.distanceMeters { entry["distanceMeters"] = .int(distance) }
+        if let seconds = outcome.travelSeconds {
+            entry["expectedTravelSeconds"] = .int(seconds)
+        }
+        if let error = outcome.error { entry["error"] = .string(error) }
+        return .object(entry)
     }
 
     // MARK: - Helper methods

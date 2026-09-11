@@ -46,6 +46,15 @@ private let defaultSearchRefreshWaitSeconds = 10
 /// on threading.
 private let maximumThreadCandidates = 60
 
+/// Ceiling on one rules listing. Every rule costs a dozen Apple Events to
+/// read, so a pathological rule set cannot turn into a minute-long call.
+private let maximumRuleCount = 200
+
+/// Above this many indexed messages the per-account breakdown in mail_doctor
+/// is skipped, because it walks every row. The report says it was skipped
+/// rather than reporting nothing.
+private let maximumDiagnosticIndexRows = 50_000
+
 // MARK: - Output models
 
 private struct MailAccount: Codable, Sendable {
@@ -118,6 +127,35 @@ private struct MailComposeResult: Codable, Sendable {
 private struct MailReplyResult: Codable, Sendable {
     let status: String
     let messageId: Int
+}
+
+/// One condition of a Mail rule, as Mail's own scripting interface reports
+/// it. Empty strings are what Mail gives for a field a condition does not
+/// use, and they are passed through rather than dropped, so a condition that
+/// reads oddly can be recognized as Mail's answer rather than as a parse.
+private struct MailRuleCondition: Codable, Sendable {
+    let ruleType: String
+    let header: String
+    let qualifier: String
+    let expression: String
+}
+
+private struct MailRule: Codable, Sendable {
+    let name: String
+    let enabled: Bool
+    let allConditionsMustBeMet: Bool
+    let stopEvaluatingRules: Bool
+    let conditions: [MailRuleCondition]
+    /// The rule's configured actions, already rendered as text. Mail spreads
+    /// one action across two or three properties (a move is a boolean and a
+    /// mailbox), and a client has no use for that shape.
+    let actions: [String]
+}
+
+private struct MailRuleListing: Codable, Sendable {
+    let rules: [MailRule]
+    let total: Int
+    let note: String
 }
 
 private struct MailUnreadCount: Codable, Sendable {
@@ -364,6 +402,72 @@ private let listAccountsScript = """
             emailAddresses: account.emailAddresses() || [],
             enabled: account.enabled(),
         }));
+        return JSON.stringify(result);
+    }
+    """
+
+private let listRulesScript = """
+    function run(argv) {
+        const limit = parseInt(argv[0], 10);
+        const Mail = Application('Mail');
+        // Every property is read behind its own try. Mail returns
+        // 'missing value' for an action that is not configured, and reading
+        // one of those through JXA throws rather than returning null; a
+        // single unset action must not lose the whole rule.
+        function read(fn, fallback) {
+            try {
+                const value = fn();
+                return value === null || value === undefined ? fallback : value;
+            } catch (e) {
+                return fallback;
+            }
+        }
+        const rules = read(() => Mail.rules(), []);
+        const result = [];
+        for (let i = 0; i < rules.length && i < limit; i++) {
+            const rule = rules[i];
+            const conditions = [];
+            const rawConditions = read(() => rule.ruleConditions(), []);
+            for (let c = 0; c < rawConditions.length; c++) {
+                const condition = rawConditions[c];
+                conditions.push({
+                    ruleType: String(read(() => condition.ruleType(), '')),
+                    header: String(read(() => condition.header(), '')),
+                    qualifier: String(read(() => condition.qualifier(), '')),
+                    expression: String(read(() => condition.expression(), '')),
+                });
+            }
+            const actions = [];
+            if (read(() => rule.shouldMoveMessage(), false)) {
+                actions.push('move to ' + String(read(() => rule.moveMessage.name(), 'a mailbox')));
+            }
+            if (read(() => rule.shouldCopyMessage(), false)) {
+                actions.push('copy to ' + String(read(() => rule.copyMessage.name(), 'a mailbox')));
+            }
+            if (read(() => rule.deleteMessage(), false)) { actions.push('delete message'); }
+            if (read(() => rule.markRead(), false)) { actions.push('mark read'); }
+            if (read(() => rule.markFlagged(), false)) { actions.push('mark flagged'); }
+            const color = String(read(() => rule.colorMessage(), 'none'));
+            if (color && color !== 'none') { actions.push('color message ' + color); }
+            const forward = String(read(() => rule.forwardMessage(), ''));
+            if (forward) { actions.push('forward to ' + forward); }
+            const redirect = String(read(() => rule.redirectMessage(), ''));
+            if (redirect) { actions.push('redirect to ' + redirect); }
+            const replyText = String(read(() => rule.replyText(), ''));
+            if (replyText) { actions.push('reply with stored text'); }
+            const sound = String(read(() => rule.playSound(), ''));
+            if (sound) { actions.push('play sound ' + sound); }
+            const script = read(() => rule.runScript(), null);
+            if (script) { actions.push('run script ' + String(script)); }
+            result.push({
+                name: String(read(() => rule.name(), '')),
+                enabled: read(() => rule.enabled(), false) === true,
+                allConditionsMustBeMet: read(() => rule.allConditionsMustBeMet(), false) === true,
+                stopEvaluatingRules: read(() => rule.stopEvaluatingRules(), false) === true,
+                conditions: conditions,
+                actions: actions,
+            });
+        }
         return JSON.stringify(result);
     }
     """
@@ -2317,9 +2421,192 @@ final class MailService: Service {
         ) { arguments in
             try await Self.indexSearch(arguments: arguments)
         }
+
+        Tool(
+            name: "mail_health_check",
+            description:
+                "Check quickly whether the Mail surface is usable: one probe confirming Mail.app is reachable and Apple Core holds Automation permission. Use mail_doctor when something is wrong and you want the fuller picture.",
+            inputSchema: .object(properties: [:], additionalProperties: false),
+            annotations: .init(
+                title: "Mail Health Check",
+                readOnlyHint: true,
+                openWorldHint: false
+            )
+        ) { _ in
+            await MailService.diagnose(deep: false)
+        }
+
+        Tool(
+            name: "mail_doctor",
+            description:
+                "Diagnose the Mail surface end to end: Apple Events reachability, Automation permission, account state, Full Disk Access to Mail's own files, the local index, and how much mail is actually downloaded to this Mac, each reported as ok, warn or fail with what to do about it. Reports evidence of sync state rather than claiming it: Mail exposes no way to test that an account is connected, and mail_check_for_new_mail returns when Mail accepts the command, not when a sync finishes.",
+            inputSchema: .object(properties: [:], additionalProperties: false),
+            annotations: .init(
+                title: "Mail Doctor",
+                readOnlyHint: true,
+                openWorldHint: false
+            )
+        ) { _ in
+            await MailService.diagnose(deep: true)
+        }
+
+        Tool(
+            name: "mail_list_rules",
+            description:
+                "List Mail's message rules read-only: name, whether it is enabled, whether all conditions must match, each condition, and the actions it takes. Inspection only. Apple Core does not create, change, enable or delete rules, and changing a rule while Mail is running is not a supported operation.",
+            inputSchema: .object(
+                properties: [
+                    "limit": .integer(
+                        description: "Maximum rules to return (max \(maximumRuleCount))",
+                        default: .int(maximumRuleCount)
+                    )
+                ],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "List Mail Rules",
+                readOnlyHint: true,
+                openWorldHint: false
+            )
+        ) { arguments in
+            let limit = min(max(arguments["limit"]?.intValue ?? maximumRuleCount, 1), maximumRuleCount)
+            let rules = try await scriptedMailApp.runJSON(
+                .jxa,
+                script: listRulesScript,
+                arguments: [String(limit)],
+                as: [MailRule].self,
+                timeout: 120
+            )
+            return MailRuleListing(
+                rules: rules,
+                total: rules.count,
+                note:
+                    "Read-only. A rule reported with no conditions or no actions is a rule Mail "
+                    + "would not describe further over scripting, not an empty rule."
+            )
+        }
+
+        Tool(
+            name: "mail_list_smart_mailboxes",
+            description:
+                "List Mail's smart mailboxes read-only, with their conditions. Mail's scripting interface has no smart mailbox in it, so this reads Mail's own private SyncedSmartMailboxes.plist and needs Full Disk Access. That file has no published schema: the reader reports every field it could not place instead of dropping it, and a file whose layout it cannot follow comes back as state=unrecognized rather than as an empty list. Inspection only; nothing here writes.",
+            inputSchema: .object(properties: [:], additionalProperties: false),
+            annotations: .init(
+                title: "List Smart Mailboxes",
+                readOnlyHint: true,
+                openWorldHint: false
+            )
+        ) { _ in
+            MailSmartMailboxes.list()
+        }
     }
 
     // MARK: - Helpers
+
+    /// The Mail diagnosis, assembled here and worded in MailDiagnostics.
+    ///
+    /// Shallow is one Apple Event and nothing else. Deep adds the account
+    /// list, Mail's on-disk store, the local index and the download state,
+    /// each of which can fail on its own without making the rest unreadable.
+    static func diagnose(deep: Bool) async -> MailDiagnosticReport {
+        do {
+            _ = try await scriptedMailApp.run(.jxa, script: mailPermissionProbeScript)
+        } catch {
+            return MailDiagnostics.unreachableReport(error.localizedDescription)
+        }
+        var checks: [MailCheck] = [MailDiagnostics.reachableCheck]
+        guard deep else { return MailDiagnostics.report(checks: checks) }
+
+        var accounts: [MailDiagnosticAccount] = []
+        do {
+            accounts = try await scriptedMailApp.runJSON(
+                .jxa,
+                script: listAccountsScript,
+                as: [MailAccount].self
+            )
+            .map {
+                MailDiagnosticAccount(
+                    id: $0.id,
+                    name: $0.name,
+                    enabled: $0.enabled,
+                    emailAddresses: $0.emailAddresses
+                )
+            }
+            checks.append(MailDiagnostics.accountsCheck(accounts: accounts, error: nil))
+        } catch {
+            checks.append(
+                MailDiagnostics.accountsCheck(
+                    accounts: nil,
+                    error: error.localizedDescription
+                )
+            )
+        }
+
+        checks.append(MailDiagnostics.localStoreCheck(MailLocalStore.default.access))
+
+        let status = MailIndex.status()
+        checks.append(MailDiagnostics.indexCheck(status))
+        checks.append(MailDiagnostics.downloadCheck(status))
+        if let unreadable = MailDiagnostics.unreadableFilesCheck(status) {
+            checks.append(unreadable)
+        }
+
+        var notes: [String] = []
+        if !accounts.isEmpty, status.messageCount > 0 {
+            if status.messageCount > maximumDiagnosticIndexRows {
+                notes.append(
+                    "The per-account breakdown was skipped: the index holds "
+                        + "\(status.messageCount) messages, over the \(maximumDiagnosticIndexRows) "
+                        + "row ceiling this report walks."
+                )
+            } else {
+                do {
+                    let coverage = try Self.accountCoverage()
+                    checks.append(
+                        contentsOf: MailDiagnostics.coverageChecks(
+                            accounts: accounts,
+                            coverage: coverage,
+                            now: Date()
+                        )
+                    )
+                } catch {
+                    notes.append(
+                        "The per-account breakdown could not be read: "
+                            + error.localizedDescription
+                    )
+                }
+            }
+        }
+
+        return MailDiagnostics.report(checks: checks, extraNotes: notes)
+    }
+
+    /// Per-account counts folded out of the index's own rows. Read here
+    /// rather than queried, so no new statement is added to the index store
+    /// for a diagnostic.
+    private static func accountCoverage() throws -> [MailAccountCoverage] {
+        var counts: [String: (messages: Int, incomplete: Int, newest: Date?)] = [:]
+        for entry in try MailIndexStore.default.entries() {
+            var row = counts[entry.accountID] ?? (0, 0, nil)
+            row.messages += 1
+            if entry.isPartial { row.incomplete += 1 }
+            if let newest = row.newest {
+                row.newest = max(newest, entry.modified)
+            } else {
+                row.newest = entry.modified
+            }
+            counts[entry.accountID] = row
+        }
+        return counts.keys.sorted().map { id in
+            let row = counts[id]!
+            return MailAccountCoverage(
+                accountID: id,
+                messageCount: row.messages,
+                incompleteCount: row.incomplete,
+                newestMessage: row.newest
+            )
+        }
+    }
 
     /// Why an index-backed read refused, told apart by whether a pass is
     /// running. "Run a refresh" and "wait for the refresh already running"

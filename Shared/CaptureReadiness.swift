@@ -218,3 +218,24 @@ enum CaptureReadiness {
         }
     }
 }
+
+// MARK: - Accessibility readiness
+
+/// Whether the interface can be read as text, and what to do when it cannot.
+///
+/// Accessibility is a different grant from Screen Recording, lives in a
+/// different pane of System Settings, and is the one people have not heard of.
+/// Reporting it beside the camera and the screen is what stops
+/// `capture_read_text` reading as broken when it is merely switched off.
+enum CaptureAccessibilityReadiness {
+    static func status(isTrusted: Bool) -> String {
+        isTrusted ? "ready" : "permissionRequired"
+    }
+
+    static func detail(isTrusted: Bool) -> String {
+        isTrusted
+            ? "Apple Core can read application interfaces as text with capture_read_text."
+            : "Accessibility permission has not been granted, so capture_read_text cannot read an interface. "
+                + "System Settings › Privacy & Security › Accessibility. Screenshots and OCR do not need it."
+    }
+}

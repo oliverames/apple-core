@@ -204,6 +204,108 @@ struct MessagesDatabaseReader {
         return matches
     }
 
+    /// What chat.db records about the addresses matching `aliases`: the
+    /// service each handle is registered under, how much traffic it has, and
+    /// the service of the most recent outgoing message.
+    ///
+    /// Read-only and bounded. Nothing here sends or prepares a send; the
+    /// routing prediction built on top of it lives in
+    /// `MessagesRouteDiagnostic`.
+    func routeObservations(matching aliases: [String], limit: Int = 20) throws
+        -> [MessagesRouteObservation]
+    {
+        guard !aliases.isEmpty else { return [] }
+        let handle = try open()
+        defer { sqlite3_close(handle) }
+
+        guard tableExists("handle", in: handle) else {
+            throw MessagesDatabaseReaderError.schemaMissing("the handle table")
+        }
+
+        let hasService = columnExists("service", onTable: "handle", in: handle)
+        let hasMessages =
+            tableExists("message", in: handle)
+            && columnExists("handle_id", onTable: "message", in: handle)
+            && columnExists("date", onTable: "message", in: handle)
+        let messageHasService = hasMessages && columnExists("service", onTable: "message", in: handle)
+        let messageHasDirection =
+            hasMessages && columnExists("is_from_me", onTable: "message", in: handle)
+
+        // Matching happens in Swift, as it does for participant handles: the
+        // alias forms a caller passes are not a SQL pattern.
+        var rows: [(rowID: Int64, identifier: String, service: String?)] = []
+        do {
+            var statement: OpaquePointer?
+            defer { sqlite3_finalize(statement) }
+            let sql = """
+                SELECT h.ROWID, h.id, \(hasService ? "h.service" : "NULL"), h.uncanonicalized_id
+                FROM handle h WHERE h.id IS NOT NULL
+                """
+            guard sqlite3_prepare_v2(handle, sql, -1, &statement, nil) == SQLITE_OK else {
+                throw MessagesDatabaseReaderError.schemaMissing("the handle columns")
+            }
+            while sqlite3_step(statement) == SQLITE_ROW, rows.count < max(limit, 1) {
+                guard let identifier = Self.text(statement, 1) else { continue }
+                let uncanonicalized = Self.text(statement, 3)
+                guard
+                    messageHandle(identifier, matchesAny: aliases)
+                        || uncanonicalized.map({ messageHandle($0, matchesAny: aliases) }) == true
+                else { continue }
+                rows.append(
+                    (sqlite3_column_int64(statement, 0), identifier, Self.text(statement, 2))
+                )
+            }
+        }
+
+        return try rows.map { row in
+            var count = 0
+            var lastDate: Date?
+            if hasMessages {
+                var statement: OpaquePointer?
+                defer { sqlite3_finalize(statement) }
+                let sql = """
+                    SELECT COUNT(m.ROWID), MAX(\(Self.normalizedMessageSeconds))
+                    FROM message m WHERE m.handle_id = ?
+                    """
+                guard sqlite3_prepare_v2(handle, sql, -1, &statement, nil) == SQLITE_OK else {
+                    throw MessagesDatabaseReaderError.schemaMissing("the message columns")
+                }
+                sqlite3_bind_int64(statement, 1, row.rowID)
+                if sqlite3_step(statement) == SQLITE_ROW {
+                    count = Int(sqlite3_column_int64(statement, 0))
+                    if sqlite3_column_type(statement, 1) != SQLITE_NULL {
+                        lastDate = Self.date(fromAppleSeconds: sqlite3_column_int64(statement, 1))
+                    }
+                }
+            }
+
+            var lastOutgoing: String?
+            if messageHasService, messageHasDirection {
+                var statement: OpaquePointer?
+                defer { sqlite3_finalize(statement) }
+                let sql = """
+                    SELECT m.service FROM message m
+                    WHERE m.handle_id = ? AND m.is_from_me = 1 AND m.service IS NOT NULL
+                    ORDER BY m.date DESC LIMIT 1
+                    """
+                if sqlite3_prepare_v2(handle, sql, -1, &statement, nil) == SQLITE_OK {
+                    sqlite3_bind_int64(statement, 1, row.rowID)
+                    if sqlite3_step(statement) == SQLITE_ROW {
+                        lastOutgoing = Self.text(statement, 0)
+                    }
+                }
+            }
+
+            return MessagesRouteObservation(
+                handle: row.identifier,
+                registeredService: row.service,
+                lastOutgoingService: lastOutgoing,
+                lastMessageDate: lastDate,
+                messageCount: count
+            )
+        }
+    }
+
     /// Attachments, newest first, optionally limited to one chat.
     ///
     /// Kept as the narrow entry point the unread and listing paths already

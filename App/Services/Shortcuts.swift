@@ -121,6 +121,127 @@ final class ShortcutsService: Service {
         }
 
         Tool(
+            name: "shortcuts_health",
+            description:
+                "Check whether shortcuts can actually be run from here, and say what is wrong when they "
+                + "cannot. Distinguishes the command-line tool being unavailable, macOS refusing access, "
+                + "input being rejected, and a shortcut that runs but returns nothing. Runs only a "
+                + "diagnostic shortcut named \""
+                + ShortcutsHealth.fixtureName
+                + "\", never one of your own, and reports what to create when that fixture is missing.",
+            inputSchema: .object(
+                properties: [
+                    "runFixture": .boolean(
+                        description:
+                            "Run the diagnostic shortcut when it exists. Turn this off for a read-only check.",
+                        default: .bool(true)
+                    )
+                ],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Check Shortcuts Health",
+                readOnlyHint: true,
+                openWorldHint: false
+            )
+        ) { arguments in
+            let wantsFixture = arguments["runFixture"]?.boolValue ?? true
+            let available = FileManager.default.isExecutableFile(atPath: self.shortcutsPath)
+
+            var listing: Result<Int, ShortcutsProbeFailure> = .success(0)
+            var fixtureNames: [String] = []
+            if available {
+                let probe = await self.probe(
+                    arguments: ["list", "--show-identifiers"],
+                    timeout: Self.captureTimeout
+                )
+                if probe.timedOut {
+                    listing = .failure(
+                        ShortcutsProbeFailure(
+                            exitStatus: nil,
+                            standardError: "Listing shortcuts did not finish in time."
+                        )
+                    )
+                } else if probe.status == 0 {
+                    let lines = probe.output
+                        .split(separator: "\n")
+                        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                        .filter { !$0.isEmpty }
+                    fixtureNames = lines
+                    listing = .success(lines.count)
+                } else {
+                    listing = .failure(
+                        ShortcutsProbeFailure(
+                            exitStatus: probe.status,
+                            standardError: probe.error.trimmingCharacters(in: .whitespacesAndNewlines)
+                        )
+                    )
+                }
+            }
+
+            // Existence is decided from the listing, so the diagnostic never
+            // runs anything whose name it has not already seen.
+            let fixtureExists = fixtureNames.contains { line in
+                line == ShortcutsHealth.fixtureName
+                    || line.hasPrefix(ShortcutsHealth.fixtureName + " (")
+            }
+
+            var fixture: ShortcutsFixtureProbe?
+            if available, case .success = listing {
+                if !fixtureExists {
+                    fixture = ShortcutsFixtureProbe(
+                        name: ShortcutsHealth.fixtureName,
+                        existed: false
+                    )
+                } else if wantsFixture {
+                    fixture = await self.runDiagnosticFixture()
+                }
+            }
+
+            let folders = self.filesystemRoots.map { root -> ShortcutsFolderProbe in
+                var isDirectory: ObjCBool = false
+                let exists = FileManager.default.fileExists(
+                    atPath: root.path,
+                    isDirectory: &isDirectory
+                )
+                return ShortcutsFolderProbe(
+                    path: root.path,
+                    exists: exists && isDirectory.boolValue,
+                    readable: FileManager.default.isReadableFile(atPath: root.path),
+                    writeAllowed: root.writable,
+                    writable: root.writable
+                        && FileManager.default.isWritableFile(atPath: root.path)
+                )
+            }
+
+            let report = ShortcutsHealth.report(
+                executableAvailable: available,
+                executablePath: self.shortcutsPath,
+                listing: listing,
+                fixture: fixture,
+                folders: folders
+            )
+
+            let described: [Value] = report.checks.map { check in
+                var entry: [String: Value] = [
+                    "name": .string(check.name),
+                    "state": .string(check.state.rawValue),
+                    "detail": .string(check.detail),
+                ]
+                if let failure = check.failure { entry["failure"] = .string(failure.rawValue) }
+                if let advice = check.advice { entry["advice"] = .string(advice) }
+                return .object(entry)
+            }
+
+            return Value.object([
+                "state": .string(report.state.rawValue),
+                "summary": .string(report.summary),
+                "checks": .array(described),
+                "fixtureName": .string(ShortcutsHealth.fixtureName),
+            ])
+        }
+
+        Tool(
             name: "shortcuts_view",
             description:
                 "Open a shortcut in the Shortcuts app so the user can see how it is built. Does not run it.",
@@ -150,6 +271,118 @@ final class ShortcutsService: Service {
     /// Generous ceiling for `shortcuts list` / `shortcuts view`, which are
     /// fast operations when healthy.
     private static let captureTimeout: Duration = .seconds(60)
+
+    /// The result of a bounded CLI probe that reports failure rather than
+    /// throwing, because the diagnostic's job is to describe a failure.
+    private struct ShortcutsProbeResult {
+        let status: Int32?
+        let output: String
+        let error: String
+        let timedOut: Bool
+    }
+
+    /// How long the diagnostic gives its fixture. Far shorter than a real run:
+    /// a fixture that takes longer than this is interactive or broken, and
+    /// either way waiting five minutes to find out helps nobody.
+    private static let fixtureTimeout: Duration = .seconds(20)
+
+    private func probe(arguments: [String], timeout: Duration) async -> ShortcutsProbeResult {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: shortcutsPath)
+        process.arguments = arguments
+
+        let outputPipe = Pipe()
+        let errorPipe = Pipe()
+        process.standardOutput = outputPipe
+        process.standardError = errorPipe
+        let outputHandle = outputPipe.fileHandleForReading
+        let errorHandle = errorPipe.fileHandleForReading
+        defer {
+            outputHandle.closeFile()
+            errorHandle.closeFile()
+        }
+
+        do {
+            try process.run()
+        } catch {
+            return ShortcutsProbeResult(
+                status: nil,
+                output: "",
+                error: error.localizedDescription,
+                timedOut: false
+            )
+        }
+
+        let outputTask = Task.detached { (try? outputHandle.readToEnd()) ?? Data() }
+        let errorTask = Task.detached { (try? errorHandle.readToEnd()) ?? Data() }
+
+        var timedOut = false
+        do {
+            timedOut = try await !ProcessCompletion.wait(for: process, timeout: timeout)
+        } catch {
+            timedOut = true
+        }
+        if timedOut, process.isRunning {
+            process.terminate()
+        }
+
+        let outputData = await outputTask.value
+        let errorData = await errorTask.value
+        return ShortcutsProbeResult(
+            status: timedOut ? nil : process.terminationStatus,
+            output: String(data: outputData, encoding: .utf8) ?? "",
+            error: String(data: errorData, encoding: .utf8) ?? "",
+            timedOut: timedOut
+        )
+    }
+
+    /// Runs the reserved diagnostic shortcut with a known scrap of text and
+    /// reports what came back, so input and output are verified rather than
+    /// assumed from a zero exit status.
+    private func runDiagnosticFixture() async -> ShortcutsFixtureProbe {
+        let token = "apple-core-diagnostic-\(UUID().uuidString.prefix(8))"
+        let directory = FileManager.default.temporaryDirectory
+        let inputURL = directory.appendingPathComponent("shortcut_health_input_\(UUID().uuidString).txt")
+        let outputURL = directory.appendingPathComponent("shortcut_health_output_\(UUID().uuidString)")
+        defer {
+            try? FileManager.default.removeItem(at: inputURL)
+            try? FileManager.default.removeItem(at: outputURL)
+        }
+
+        do {
+            try token.write(to: inputURL, atomically: true, encoding: .utf8)
+        } catch {
+            return ShortcutsFixtureProbe(
+                name: ShortcutsHealth.fixtureName,
+                existed: true,
+                ran: false,
+                exitStatus: nil,
+                standardError:
+                    "Could not write the diagnostic's own input file: \(error.localizedDescription)"
+            )
+        }
+
+        let result = await probe(
+            arguments: [
+                "run", ShortcutsHealth.fixtureName,
+                "--input-path", inputURL.path,
+                "--output-path", outputURL.path,
+            ],
+            timeout: Self.fixtureTimeout
+        )
+
+        let output = try? String(contentsOf: outputURL, encoding: .utf8)
+        return ShortcutsFixtureProbe(
+            name: ShortcutsHealth.fixtureName,
+            existed: true,
+            ran: true,
+            timedOut: result.timedOut,
+            exitStatus: result.status,
+            standardError: result.error.trimmingCharacters(in: .whitespacesAndNewlines),
+            output: output,
+            input: token
+        )
+    }
 
     /// Runs the CLI and returns stdout, throwing with stderr on a non-zero exit.
     private func capture(arguments: [String], what: String) async throws -> String {

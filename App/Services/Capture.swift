@@ -1,11 +1,13 @@
 import AVFoundation
 import AppKit
+import ApplicationServices
 import Foundation
 import OSLog
 import ObjectiveC
 import Ontology
 import ScreenCaptureKit
 import SwiftUI
+import Vision
 
 private let log = Logger.service("capture")
 
@@ -505,6 +507,21 @@ final class CaptureService: NSObject, Service {
                         description: "Include cursor in screenshot",
                         default: true
                     ),
+                    "crop": .object(
+                        description:
+                            "Capture only part of the target. Points, measured from the target's own top-left corner: "
+                            + "the selected display's, or the selected window's, never the desktop's. "
+                            + "A crop that does not fit inside the target is an error, not a full-screen screenshot. "
+                            + "capture_list_targets reports each target's size.",
+                        properties: [
+                            "x": .number(description: "Points from the target's left edge"),
+                            "y": .number(description: "Points from the target's top edge"),
+                            "width": .number(description: "Width in points"),
+                            "height": .number(description: "Height in points"),
+                        ],
+                        required: ["x", "y", "width", "height"],
+                        additionalProperties: false
+                    ),
                 ],
                 additionalProperties: false
             ),
@@ -542,8 +559,14 @@ final class CaptureService: NSObject, Service {
             // Get available content
             let availableContent = try await SCShareableContent.getAvailableContent()
 
-            // Create content filter based on content type
+            // Create content filter based on content type, and remember the
+            // target's own size. The configuration used to be scaled against
+            // whichever display happened to be first in the list, which is the
+            // wrong size for a window, and the wrong size for anything at all
+            // on a Mac whose first display is not the one being captured.
             let contentFilter: SCContentFilter
+            var targetWidth = 0.0
+            var targetHeight = 0.0
             switch contentType {
             case .display:
                 let display: SCDisplay
@@ -577,6 +600,8 @@ final class CaptureService: NSObject, Service {
                     display = mainDisplay
                 }
                 contentFilter = SCContentFilter(display: display, excludingWindows: [])
+                targetWidth = Double(display.width)
+                targetHeight = Double(display.height)
 
             case .window:
                 guard let windowId = windowId else {
@@ -598,6 +623,8 @@ final class CaptureService: NSObject, Service {
                     )
                 }
                 contentFilter = SCContentFilter(desktopIndependentWindow: window)
+                targetWidth = window.frame.width
+                targetHeight = window.frame.height
 
             case .application:
                 guard let bundleId = bundleId else {
@@ -637,6 +664,10 @@ final class CaptureService: NSObject, Service {
                     display: firstDisplay,
                     including: appWindows
                 )
+                // An application capture is framed by the display it is drawn
+                // on, not by the windows, so the display is the crop's target.
+                targetWidth = Double(firstDisplay.width)
+                targetHeight = Double(firstDisplay.height)
             }
 
             // Create stream configuration
@@ -646,12 +677,32 @@ final class CaptureService: NSObject, Service {
             streamConfiguration.scalesToFit = true
             streamConfiguration.pixelFormat = kCVPixelFormatType_32BGRA
 
-            // Apply quality settings based on the display
-            if let display = availableContent.displays.first {
-                let scaledWidth = Int(CGFloat(display.width) * quality.scaleFactor)
-                let scaledHeight = Int(CGFloat(display.height) * quality.scaleFactor)
-                streamConfiguration.width = scaledWidth
-                streamConfiguration.height = scaledHeight
+            // Quality scales the target's own size, and a crop replaces that
+            // size with the requested region. A crop that cannot be honoured
+            // throws here, before anything is captured: falling back to the
+            // whole screen would widen a request whose entire purpose was to
+            // narrow what is returned.
+            if let crop = arguments["crop"]?.objectValue {
+                let region = try CaptureCrop.validate(
+                    x: crop["x"]?.doubleCoerced,
+                    y: crop["y"]?.doubleCoerced,
+                    width: crop["width"]?.doubleCoerced,
+                    height: crop["height"]?.doubleCoerced,
+                    targetWidth: targetWidth,
+                    targetHeight: targetHeight,
+                    scale: Double(quality.scaleFactor)
+                )
+                streamConfiguration.sourceRect = region.sourceRect
+                streamConfiguration.width = region.pixelWidth
+                streamConfiguration.height = region.pixelHeight
+            } else if targetWidth > 0, targetHeight > 0 {
+                let size = CaptureCrop.scaledSize(
+                    targetWidth: targetWidth,
+                    targetHeight: targetHeight,
+                    scale: Double(quality.scaleFactor)
+                )
+                streamConfiguration.width = size.width
+                streamConfiguration.height = size.height
             }
 
             return try await withCheckedThrowingContinuation { continuation in
@@ -877,6 +928,166 @@ final class CaptureService: NSObject, Service {
         }
 
         Tool(
+            name: "capture_read_text",
+            description:
+                "Read an application's on-screen text through the macOS accessibility API, instead of screenshotting it. "
+                + "Far smaller than a screenshot and far more accurate than reading pixels, and it returns only the named "
+                + "application's interface rather than everything on screen. Password and other secure fields are never read. "
+                + "Needs Accessibility permission, which is separate from Screen Recording. "
+                + "This reads only: it cannot click, type or focus anything.",
+            inputSchema: .object(
+                properties: [
+                    "bundleId": .string(
+                        description:
+                            "Bundle identifier of the running application to read, from capture_list_targets"
+                    ),
+                    "scope": .string(
+                        description:
+                            "Which of the application's windows to read. \"focused\" is its frontmost window; \"all\" is every window it has open.",
+                        default: .string("focused"),
+                        enum: [.string("focused"), .string("all")]
+                    ),
+                    "source": .string(
+                        description:
+                            "\"accessibility\" reads the interface's own labels and needs Accessibility permission. "
+                            + "\"ocr\" recognises text from a picture of the application's windows on this Mac, needs Screen Recording permission instead, "
+                            + "and is the fallback for an application that exposes nothing to accessibility, such as a remote desktop or a scanned document. "
+                            + "OCR runs on this Mac; nothing is sent anywhere.",
+                        default: .string("accessibility"),
+                        enum: [.string("accessibility"), .string("ocr")]
+                    ),
+                    "maxDepth": .integer(
+                        description:
+                            "How deep to walk the interface, up to \(CaptureAccessibilityText.maximumMaxDepth)",
+                        default: .int(CaptureAccessibilityText.defaultMaxDepth)
+                    ),
+                    "maxNodes": .integer(
+                        description:
+                            "Maximum interface elements to visit, up to \(CaptureAccessibilityText.maximumMaxNodes)",
+                        default: .int(CaptureAccessibilityText.defaultMaxNodes)
+                    ),
+                    "maxCharacters": .integer(
+                        description:
+                            "Maximum characters of text to return, up to \(CaptureAccessibilityText.maximumMaxCharacters)",
+                        default: .int(CaptureAccessibilityText.defaultMaxCharacters)
+                    ),
+                ],
+                required: ["bundleId"],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Read On-Screen Text",
+                readOnlyHint: true,
+                openWorldHint: false
+            )
+        ) { arguments in
+            guard let bundleId = arguments["bundleId"]?.stringValue, !bundleId.isEmpty else {
+                throw CaptureAccessibilityError.missingBundleIdentifier
+            }
+            guard GUISession.isActive else {
+                throw CaptureAccessibilityError.noGUISession
+            }
+            let maxCharactersRequested = CaptureAccessibilityText.clampedCharacters(
+                arguments["maxCharacters"]?.intValue
+            )
+            // The two sources need different permissions and read different
+            // things, so they are separate paths rather than one path with a
+            // fallback. A silent fallback from accessibility to OCR would turn
+            // a refused Accessibility grant into a screen capture the user
+            // never agreed to.
+            if arguments["source"]?.stringValue == "ocr" {
+                return try await CaptureService.recognizeText(
+                    bundleId: bundleId,
+                    maxCharacters: maxCharactersRequested
+                )
+            }
+            // Checked without prompting. A tool call arriving over a connector
+            // is the wrong moment to throw a system dialog at whoever is
+            // sitting at the Mac; the error says exactly what to switch on.
+            guard AXIsProcessTrusted() else {
+                throw CaptureAccessibilityError.accessibilityNotAuthorized
+            }
+            guard
+                let application = NSRunningApplication.runningApplications(
+                    withBundleIdentifier: bundleId
+                ).first
+            else {
+                throw CaptureAccessibilityError.applicationNotRunning(bundleId)
+            }
+
+            let readAllWindows = arguments["scope"]?.stringValue == "all"
+            let root = AXElement(element: AXUIElementCreateApplication(application.processIdentifier))
+            let windows: [AXElement]
+            if readAllWindows {
+                windows = root.windows
+            } else if let focused = root.focusedWindow {
+                windows = [focused]
+            } else {
+                // An application with no focused window is ordinary — it may be
+                // in the background — so read its windows rather than failing.
+                windows = root.windows
+            }
+            guard !windows.isEmpty else {
+                throw CaptureAccessibilityError.noWindows(bundleId)
+            }
+
+            let maxCharacters = maxCharactersRequested
+            let maxNodes = CaptureAccessibilityText.clampedNodes(arguments["maxNodes"]?.intValue)
+            let maxDepth = CaptureAccessibilityText.clampedDepth(arguments["maxDepth"]?.intValue)
+
+            var described: [Value] = []
+            var remainingCharacters = maxCharacters
+            var remainingNodes = maxNodes
+            var secureExcluded = 0
+            var bounded = false
+            for window in windows {
+                guard remainingCharacters > 0, remainingNodes > 0 else {
+                    bounded = true
+                    break
+                }
+                let result = CaptureAccessibilityText.read(
+                    root: window,
+                    maxDepth: maxDepth,
+                    maxNodes: remainingNodes,
+                    maxCharacters: remainingCharacters
+                )
+                remainingCharacters -= result.text.count
+                remainingNodes -= result.visitedCount
+                secureExcluded += result.secureElementsExcluded
+                bounded = bounded || result.isBounded
+                described.append(
+                    .object([
+                        "title": .string(window.axTitle ?? ""),
+                        "text": .string(result.text),
+                        "elementCount": .int(result.nodes.count),
+                    ])
+                )
+            }
+
+            var response: [String: Value] = [
+                "bundleId": .string(bundleId),
+                "applicationName": .string(application.localizedName ?? bundleId),
+                "scope": .string(readAllWindows ? "all" : "focused"),
+                "source": .string("accessibility"),
+                "windows": .array(described),
+                "charactersReturned": .int(maxCharacters - max(0, remainingCharacters)),
+                "truncated": .bool(bounded),
+            ]
+            if secureExcluded > 0 {
+                response["secureFieldsExcluded"] = .int(secureExcluded)
+                response["secureFieldsNote"] = .string(
+                    "\(secureExcluded) secure field\(secureExcluded == 1 ? " was" : "s were") skipped. Apple Core never reads the contents of a password field, whatever the accessibility API offers."
+                )
+            }
+            if bounded {
+                response["note"] = .string(
+                    "The read stopped at one of its bounds. Raise maxNodes, maxDepth or maxCharacters, or read one window at a time with scope: focused."
+                )
+            }
+            return Value.object(response)
+        }
+
+        Tool(
             name: "capture_readiness",
             description:
                 "Report whether the camera, microphone and screen are each usable on this Mac, telling missing "
@@ -943,6 +1154,17 @@ final class CaptureService: NSObject, Service {
                     "detail": .string(CaptureReadiness.detail(for: screen, modality: .screen)),
                     "permission": .string(screenAuthorized ? "authorized" : "notAuthorized"),
                     "displayCount": .int(displayCount),
+                ]),
+                "accessibility": .object([
+                    "status": .string(
+                        CaptureAccessibilityReadiness.status(isTrusted: AXIsProcessTrusted())
+                    ),
+                    "detail": .string(
+                        CaptureAccessibilityReadiness.detail(isTrusted: AXIsProcessTrusted())
+                    ),
+                    "permission": .string(
+                        AXIsProcessTrusted() ? "authorized" : "notAuthorized"
+                    ),
                 ]),
                 "guiSessionActive": .bool(guiSessionActive),
             ])
@@ -1171,6 +1393,177 @@ private class PhotoCaptureDelegate: NSObject, AVCapturePhotoCaptureDelegate {
             complete(with: .success(imageValue))
         } catch {
             complete(with: .failure(error))
+        }
+    }
+}
+
+// MARK: - Reading an interface as text
+
+/// A thin wrapper over `AXUIElement` that conforms it to the traversal rules
+/// in `CaptureAccessibilityText`.
+///
+/// The rules live in Shared so they can be tested against a constructed tree;
+/// this type is the part that cannot be, because an `AXUIElement` only exists
+/// against a live application. Keeping it this thin is the point: every
+/// decision about what is read and what is withheld is made in the tested
+/// file, not here.
+struct AXElement: CaptureAccessibleElement {
+    let element: AXUIElement
+
+    private func string(_ attribute: String) -> String? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success
+        else { return nil }
+        if let text = value as? String { return text }
+        // A value can be a number, a boolean or a URL. Numbers and booleans
+        // are interface state rather than text, and are left out; a URL is
+        // worth reading, since it is what a browser's address field holds.
+        if let url = value as? URL { return url.absoluteString }
+        return nil
+    }
+
+    var axRole: String? { string(kAXRoleAttribute) }
+    var axSubrole: String? { string(kAXSubroleAttribute) }
+    var axTitle: String? { string(kAXTitleAttribute) }
+    var axValueText: String? { string(kAXValueAttribute) }
+    var axDescriptionText: String? { string(kAXDescriptionAttribute) }
+
+    var axChildren: [AXElement] {
+        var value: CFTypeRef?
+        guard
+            AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &value)
+                == .success,
+            let children = value as? [AXUIElement]
+        else { return [] }
+        return children.map { AXElement(element: $0) }
+    }
+
+    var windows: [AXElement] {
+        var value: CFTypeRef?
+        guard
+            AXUIElementCopyAttributeValue(element, kAXWindowsAttribute as CFString, &value)
+                == .success,
+            let windows = value as? [AXUIElement]
+        else { return [] }
+        return windows.map { AXElement(element: $0) }
+    }
+
+    var focusedWindow: AXElement? {
+        var value: CFTypeRef?
+        guard
+            AXUIElementCopyAttributeValue(element, kAXFocusedWindowAttribute as CFString, &value)
+                == .success,
+            let window = value
+        else { return nil }
+        // CFTypeRef carries no static type, and an attribute that should be a
+        // window is not always one. Checked rather than force cast.
+        guard CFGetTypeID(window) == AXUIElementGetTypeID() else { return nil }
+        // swift-format-ignore: NeverForceUnwrap
+        return AXElement(element: window as! AXUIElement)
+    }
+}
+
+extension CaptureService {
+    /// Recognises text in a picture of one application's windows, on this Mac.
+    ///
+    /// Vision's text recogniser runs locally. That is the only reason this is
+    /// acceptable on a connector at all: the alternative shape of this feature
+    /// ships a screenshot of someone's Mail window to a server.
+    static func recognizeText(bundleId: String, maxCharacters: Int) async throws -> Value {
+        guard CGPreflightScreenCaptureAccess() else {
+            throw CaptureAccessibilityError.screenRecordingNotAuthorized
+        }
+        let content = try await SCShareableContent.getAvailableContent()
+        guard
+            let application = content.applications.first(where: { $0.bundleIdentifier == bundleId })
+        else {
+            throw CaptureAccessibilityError.applicationNotRunning(bundleId)
+        }
+        let windows = content.windows.filter { $0.owningApplication == application }
+        guard !windows.isEmpty else { throw CaptureAccessibilityError.noWindows(bundleId) }
+        guard let display = content.displays.first else {
+            throw CaptureAccessibilityError.noGUISession
+        }
+
+        let configuration = SCStreamConfiguration()
+        configuration.capturesAudio = false
+        configuration.showsCursor = false
+        configuration.width = display.width
+        configuration.height = display.height
+        let image = try await SCScreenshotManager.captureImage(
+            contentFilter: SCContentFilter(display: display, including: windows),
+            configuration: configuration
+        )
+
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .accurate
+        request.usesLanguageCorrection = true
+        try VNImageRequestHandler(cgImage: image, options: [:]).perform([request])
+
+        var lines: [String] = []
+        var characters = 0
+        var truncated = false
+        for observation in request.results ?? [] {
+            guard let candidate = observation.topCandidates(1).first else { continue }
+            let text = candidate.string
+            if characters + text.count > maxCharacters {
+                truncated = true
+                break
+            }
+            characters += text.count
+            lines.append(text)
+        }
+
+        var response: [String: Value] = [
+            "bundleId": .string(bundleId),
+            "applicationName": .string(application.applicationName),
+            "source": .string("ocr"),
+            "text": .string(lines.joined(separator: "\n")),
+            "lineCount": .int(lines.count),
+            "charactersReturned": .int(characters),
+            "truncated": .bool(truncated),
+            "note": .string(
+                "Recognised from a picture of the application's windows, on this Mac. Recognition makes mistakes: check anything exact, such as a number or an address, against the interface itself."
+            ),
+        ]
+        if truncated {
+            response["note"] = .string(
+                "Recognition stopped at maxCharacters. Raise it, or narrow what is on screen."
+            )
+        }
+        return Value.object(response)
+    }
+}
+
+enum CaptureAccessibilityError: LocalizedError {
+    case missingBundleIdentifier
+    case accessibilityNotAuthorized
+    case screenRecordingNotAuthorized
+    case noGUISession
+    case applicationNotRunning(String)
+    case noWindows(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .missingBundleIdentifier:
+            return
+                "bundleId is required. Call capture_list_targets for the bundle identifiers of the applications running on this Mac."
+        case .accessibilityNotAuthorized:
+            return
+                "Apple Core does not have Accessibility permission, which is what reading an interface as text needs. "
+                + "It is a separate permission from Screen Recording: System Settings › Privacy & Security › Accessibility, then switch Apple Core on. "
+                + "Until then, capture_take_screenshot still works, and source: \"ocr\" reads text from a picture instead."
+        case .screenRecordingNotAuthorized:
+            return
+                "Recognising text from the screen needs Screen Recording permission: System Settings › Privacy & Security › Screen & System Audio Recording."
+        case .noGUISession:
+            return
+                "No one is logged in at this Mac's screen, or it is locked, so there is no interface to read."
+        case let .applicationNotRunning(bundleId):
+            return
+                "\(bundleId) is not running on this Mac. Call capture_list_targets to see what is."
+        case let .noWindows(bundleId):
+            return "\(bundleId) is running but has no open windows to read."
         }
     }
 }

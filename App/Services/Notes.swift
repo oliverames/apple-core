@@ -153,6 +153,10 @@ private struct NoteMarkdown: Codable, Sendable {
     /// note rendered without ticked boxes is never mistaken for a note whose
     /// boxes are all empty.
     let checklistState: String
+    /// Why attachment placeholders are or are not named. Always present, for
+    /// the same reason: `[attachment]` with no name is a fact about what
+    /// could be matched, not a file without a name.
+    let attachmentState: String
 }
 
 private struct NotesStatsFolder: Codable, Sendable {
@@ -1617,7 +1621,7 @@ final class NotesService: Service {
         Tool(
             name: "notes_get_markdown",
             description:
-                "Get a single note's body converted to Markdown (headings, bold/italic, lists, links, code). Checklist items render as [x] and [ ] when the Notes database is readable; the checklistState field says when it is not and why.",
+                "Get a single note's body converted to Markdown (headings, bold/italic, lists, links, code, tables). Checklist items render as [x] and [ ] when the Notes database is readable; the checklistState field says when it is not and why. Attachments render in place as [attachment: name], or as a bare [attachment] when the names Notes lists cannot be lined up with the body; attachmentState says which happened. Tables render as Markdown pipe tables, with an empty header row because Apple Notes tables have no header.",
             inputSchema: .object(
                 properties: [
                     "id": .string(
@@ -1656,12 +1660,52 @@ final class NotesService: Service {
                     "unavailable: checklist items render as plain list items because "
                     + "\(error.localizedDescription)"
             }
+            // Render once to learn whether the body references attachments at
+            // all. Most notes do not, and this keeps the extra Apple Event
+            // off the common path.
+            var rendered = NotesHTMLMarkdown.convert(
+                content.bodyHTML,
+                checklist: checklist,
+                attachmentNames: []
+            )
+            var attachmentState = "none: this note's body references no attachments"
+            if rendered.attachmentPlaceholders > 0 {
+                let placeholders = rendered.attachmentPlaceholders
+                do {
+                    let attachments = try await scriptedNotesApp.runJSON(
+                        .jxa,
+                        script: listAttachmentsScript,
+                        arguments: [id],
+                        as: [NoteAttachment].self
+                    )
+                    rendered = NotesHTMLMarkdown.convert(
+                        content.bodyHTML,
+                        checklist: checklist,
+                        attachmentNames: attachments.map(\.name)
+                    )
+                    attachmentState =
+                        rendered.attachmentsNamed
+                        ? "named: \(placeholders) attachment placeholder"
+                            + "\(placeholders == 1 ? "" : "s"), each named from notes_list_attachments"
+                        : "unnamed: the body has \(placeholders) attachment placeholder"
+                            + "\(placeholders == 1 ? "" : "s") but Notes lists "
+                            + "\(attachments.count) attachment"
+                            + "\(attachments.count == 1 ? "" : "s") for this note, so the two "
+                            + "cannot be matched up. Use notes_list_attachments."
+                } catch {
+                    attachmentState =
+                        "unnamed: the body has \(placeholders) attachment placeholder"
+                        + "\(placeholders == 1 ? "" : "s") but they could not be named because "
+                        + "\(error.localizedDescription)"
+                }
+            }
             return NoteMarkdown(
                 id: content.id,
                 name: content.name,
                 folderName: content.folderName,
-                markdown: NotesHTMLMarkdown.convert(content.bodyHTML, checklist: checklist),
-                checklistState: state
+                markdown: rendered.markdown,
+                checklistState: state,
+                attachmentState: attachmentState
             )
         }
 

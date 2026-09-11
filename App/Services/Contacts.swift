@@ -76,6 +76,33 @@ private let contactProperties: OrderedDictionary<String, JSONSchema> = [
         ],
         required: ["day", "month"]
     ),
+    "nickname": .string(description: "Nickname, as Contacts shows it beside the name"),
+    "urlAddresses": .object(
+        description:
+            "Websites, as label to URL, such as {\"homepage\": \"https://example.com\"}. "
+            + "Only the labels named here change; pass null as a value to remove that one.",
+        additionalProperties: true
+    ),
+    "socialProfiles": .object(
+        description:
+            "Social accounts, as service to handle or profile URL, such as "
+            + "{\"Mastodon\": \"@someone@example.social\"}. Only the services named here change; "
+            + "pass null as a value to remove one.",
+        additionalProperties: true
+    ),
+    "relations": .object(
+        description:
+            "Related people, as relationship to name, such as {\"spouse\": \"Robin Vale\"}. "
+            + "Known relationships are spouse, partner, child, parent, mother, father, brother, "
+            + "sister, friend, manager and assistant; any other word is kept as a custom label. "
+            + "Only the relationships named here change; pass null as a value to remove one.",
+        additionalProperties: true
+    ),
+    "photoBase64": .string(
+        description:
+            "Contact photo as base64-encoded PNG, JPEG, HEIC or GIF data, up to 6MB. "
+            + "Pass null to remove the existing photo."
+    ),
 ]
 
 final class ContactsService: Service {
@@ -147,6 +174,25 @@ final class ContactsService: Service {
             )
         }
         return value
+    }
+
+    /// One group by identifier, as a live object a save request will accept.
+    private func resolveGroup(_ identifier: String) throws -> CNGroup {
+        let groups = try contactStore.groups(
+            matching: CNGroup.predicateForGroups(withIdentifiers: [identifier])
+        )
+        guard let group = groups.first else {
+            throw NSError(
+                domain: "ContactsService",
+                code: 1,
+                userInfo: [
+                    NSLocalizedDescriptionKey:
+                        "NOT_FOUND: no group with identifier \(identifier). "
+                        + "Use contacts_groups to list current group identifiers."
+                ]
+            )
+        }
+        return group
     }
 
     /// Membership changes need the group and the contact as live objects, and
@@ -756,6 +802,118 @@ final class ContactsService: Service {
                 "identifier": .string(created.identifier),
                 "name": .string(name),
                 "destination": Self.describe(created.report),
+            ])
+        }
+
+        Tool(
+            name: "contacts_rename_group",
+            description:
+                "Rename a contact group. The group keeps its identifier and its members; only the name changes.",
+            inputSchema: .object(
+                properties: [
+                    "identifier": .string(description: "Group identifier from contacts_groups"),
+                    "name": .string(description: "New name for the group"),
+                ],
+                required: ["identifier", "name"],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Rename Contact Group",
+                readOnlyHint: false,
+                idempotentHint: true,
+                openWorldHint: false
+            )
+        ) { arguments in
+            let identifier = try Self.requiredIdentifier("identifier", from: arguments)
+            let name = try ContactGroupName.normalize(arguments["name"]?.stringValue)
+
+            let previousName: String = try await self.runContactStore {
+                let group = try self.resolveGroup(identifier)
+                guard let mutable = group.mutableCopy() as? CNMutableGroup else {
+                    throw NSError(
+                        domain: "ContactsService",
+                        code: 1,
+                        userInfo: [
+                            NSLocalizedDescriptionKey: "Could not prepare the group for renaming"
+                        ]
+                    )
+                }
+                let previous = group.name
+                mutable.name = name
+                let request = CNSaveRequest()
+                request.update(mutable)
+                try self.contactStore.execute(request)
+                return previous
+            }
+
+            // Everything reported here was read before the save. Nothing is
+            // read back afterwards, so a follow-up read cannot fail a rename
+            // that already happened and send the caller round again.
+            return Value.object([
+                "renamed": .bool(true),
+                "identifier": .string(identifier),
+                "name": .string(name),
+                "previousName": .string(previousName),
+            ])
+        }
+
+        Tool(
+            name: "contacts_delete_group",
+            description:
+                "Delete a contact group. The contacts in it are not deleted: they stay in the address book "
+                + "and lose only their membership of this group. Deleting a group cannot be undone from here, "
+                + "so confirm with the user first.",
+            inputSchema: .object(
+                properties: [
+                    "identifier": .string(description: "Group identifier from contacts_groups")
+                ],
+                required: ["identifier"],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Delete Contact Group",
+                readOnlyHint: false,
+                destructiveHint: true,
+                idempotentHint: true,
+                openWorldHint: false
+            )
+        ) { arguments in
+            let identifier = try Self.requiredIdentifier("identifier", from: arguments)
+
+            // The membership count is read before the delete, both because it
+            // is unavailable afterwards and because a read that fails here
+            // fails before anything has been changed.
+            let deleted: (name: String, memberCount: Int) = try await self.runContactStore {
+                let group = try self.resolveGroup(identifier)
+                let members = try self.contactStore.unifiedContacts(
+                    matching: CNContact.predicateForContactsInGroup(withIdentifier: identifier),
+                    keysToFetch: [CNContactIdentifierKey as CNKeyDescriptor]
+                )
+                guard let mutable = group.mutableCopy() as? CNMutableGroup else {
+                    throw NSError(
+                        domain: "ContactsService",
+                        code: 1,
+                        userInfo: [
+                            NSLocalizedDescriptionKey: "Could not prepare the group for deletion"
+                        ]
+                    )
+                }
+                let request = CNSaveRequest()
+                request.delete(mutable)
+                try self.contactStore.execute(request)
+                return (group.name, members.count)
+            }
+
+            return Value.object([
+                "deleted": .bool(true),
+                "identifier": .string(identifier),
+                "name": .string(deleted.name),
+                "formerMemberCount": .int(deleted.memberCount),
+                "contactsDeleted": .bool(false),
+                "note": .string(
+                    "The \(deleted.memberCount) contact(s) that were in this group still exist; "
+                        + "only the group was removed."
+                ),
             ])
         }
 

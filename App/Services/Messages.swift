@@ -610,6 +610,266 @@ final class MessageService: NSObject, Service, NSOpenSavePanelDelegate {
         }
 
         Tool(
+            name: "messages_search",
+            description:
+                "Search message text approximately, ranked by how well each message matches. Unlike the "
+                + "query filter on messages_fetch, this finds near matches: a misremembered phrase, a "
+                + "misspelling, or words in a different order. Every result says whether the match was the "
+                + "exact phrase, all of the words, or only an approximation, so an approximate hit is never "
+                + "reported as the caller's own words.",
+            inputSchema: .object(
+                properties: [
+                    "query": .string(
+                        description: "What to look for. Words are matched individually and approximately."
+                    ),
+                    "chat_id": .string(
+                        description: "Restrict the search to one conversation (GUID from messages_list_chats)."
+                    ),
+                    "participants": .array(
+                        description:
+                            "Restrict the search to conversations with these handles (phone or email).",
+                        items: .string()
+                    ),
+                    "start": .string(
+                        description:
+                            "Start of the date range (inclusive). If timezone is omitted, local time is assumed.",
+                        format: .dateTime
+                    ),
+                    "end": .string(
+                        description:
+                            "End of the date range (exclusive). If timezone is omitted, local time is assumed.",
+                        format: .dateTime
+                    ),
+                    "limit": .integer(
+                        description: "Maximum matches to return",
+                        default: .int(20)
+                    ),
+                    "minScore": .number(
+                        description:
+                            "Discard matches below this score, between 0 and 1. Raise it for fewer, closer results.",
+                        default: .double(MessagesSearchMatching.defaultMinimumScore)
+                    ),
+                ],
+                required: ["query"],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Search Messages",
+                readOnlyHint: true,
+                openWorldHint: false
+            )
+        ) { arguments in
+            try await self.activate()
+
+            guard let query = arguments["query"]?.stringValue,
+                !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            else {
+                throw NSError(
+                    domain: "MessagesServiceError",
+                    code: 3,
+                    userInfo: [NSLocalizedDescriptionKey: "A search query is required."]
+                )
+            }
+
+            let participants = try Self.participantArgument(arguments)
+            let chatID = arguments["chat_id"]?.stringValue?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let limit = min(max(arguments["limit"]?.intValue ?? 20, 1), 200)
+            let minimumScore = min(
+                max(arguments["minScore"]?.doubleCoerced ?? MessagesSearchMatching.defaultMinimumScore, 0),
+                1
+            )
+
+            let start = try Self.optionalBoundary("start", from: arguments, isEnd: false)
+            let end = try Self.optionalBoundary("end", from: arguments, isEnd: true)
+            var dateRange: Range<Date>?
+            if let start, let end {
+                guard start < end else {
+                    throw NSError(
+                        domain: "MessagesServiceError",
+                        code: 3,
+                        userInfo: [NSLocalizedDescriptionKey: "start must be before end."]
+                    )
+                }
+                dateRange = start ..< end
+            } else if let start {
+                dateRange = start ..< Date.distantFuture
+            } else if let end {
+                dateRange = Date.distantPast ..< end
+            }
+
+            var chat: MessagesChatSummary?
+            if let chatID, !chatID.isEmpty {
+                chat = try self.withDatabaseReader { try $0.chat(guid: chatID) }
+                guard chat != nil else {
+                    throw NSError(
+                        domain: "MessagesServiceError",
+                        code: 4,
+                        userInfo: [
+                            NSLocalizedDescriptionKey:
+                                "NOT_FOUND: no conversation with chat_id \"\(chatID)\". "
+                                + "Use messages_list_chats to get a current chat id."
+                        ]
+                    )
+                }
+            }
+
+            let handles = try Set(
+                self.withDatabaseReader {
+                    try $0.participantHandles(matching: participants)
+                }.map { Account.Handle(rawValue: $0) }
+            )
+            if !participants.isEmpty, handles.isEmpty {
+                return Value.object([
+                    "query": .string(query),
+                    "matches": .array([]),
+                    "scanned": .int(0),
+                ])
+            }
+
+            // Ranking needs a pool to rank. The pool is bounded so a search
+            // cannot walk the entire history, and the bound is reported so a
+            // caller can tell a thin answer from an exhaustive one.
+            let poolSize = 4000
+            let db = try self.createDatabaseConnection()
+            var scanned = 0
+            var scored: [(score: Double, kind: MessageMatchKind, entry: [String: Value], date: Date)] = []
+
+            for message in try db.fetchMessages(
+                for: chat.map { iMessage.Chat.ID(rawValue: $0.chatGUID) },
+                with: handles,
+                in: dateRange,
+                limit: poolSize
+            ) {
+                guard !message.text.isEmpty else { continue }
+                scanned += 1
+                guard
+                    let match = MessagesSearchMatching.match(
+                        query: query,
+                        text: message.text,
+                        minimumScore: minimumScore
+                    )
+                else { continue }
+
+                let sender: String
+                if message.isFromMe {
+                    sender = "me"
+                } else {
+                    sender = message.sender?.rawValue ?? "unknown"
+                }
+                let entry: [String: Value] = [
+                    "@id": .string(message.id.description),
+                    "sender": .object(["@id": .string(sender)]),
+                    "text": .string(message.text),
+                    "createdAt": .string(message.date.formatted(.iso8601)),
+                    "matchKind": .string(match.kind.rawValue),
+                    "score": .double((match.score * 100).rounded() / 100),
+                    "matchedWords": .array(match.matchedWords.map { .string($0) }),
+                ]
+                scored.append((match.score, match.kind, entry, message.date))
+            }
+
+            // Best match first; equally good matches, newest first.
+            scored.sort { left, right in
+                if left.score != right.score { return left.score > right.score }
+                return left.date > right.date
+            }
+            let page = Array(scored.prefix(limit))
+
+            var result: [String: Value] = [
+                "query": .string(query),
+                "matches": .array(page.map { .object($0.entry) }),
+                "matchCount": .int(page.count),
+                "scanned": .int(scanned),
+                "minScore": .double(minimumScore),
+            ]
+            if scanned >= poolSize {
+                result["note"] = .string(
+                    "Only the most recent \(poolSize) messages in scope were searched. "
+                        + "Narrow by chat_id, participants or date range to search further back."
+                )
+            }
+            if let chat { result["chatId"] = .string(chat.chatGUID) }
+            return Value.object(result)
+        }
+
+        Tool(
+            name: "messages_route_check",
+            description:
+                "Report how Messages on this Mac is likely to route a message to an address, based on what "
+                + "it has done with that address before. This predicts the service (iMessage or SMS); it "
+                + "does not and cannot guarantee that a message will be delivered. Read-only: it sends "
+                + "nothing.",
+            inputSchema: .object(
+                properties: [
+                    "recipient": .string(
+                        description: "Phone number or email address to check"
+                    )
+                ],
+                required: ["recipient"],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Check Message Routing",
+                readOnlyHint: true,
+                openWorldHint: false
+            )
+        ) { arguments in
+            let requested = arguments["recipient"]?.stringValue?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let recipient = requested, !recipient.isEmpty else {
+                throw NSError(
+                    domain: "MessagesServiceError",
+                    code: 3,
+                    userInfo: [NSLocalizedDescriptionKey: "A recipient is required."]
+                )
+            }
+            guard isValidMessageParticipant(recipient) else {
+                throw SendError.invalidRecipient
+            }
+            try await self.activate()
+
+            let observations = try self.withDatabaseReader { reader in
+                try reader.routeObservations(matching: [recipient])
+            }
+            let assessment = MessagesRouteDiagnostic.assess(
+                address: recipient,
+                observations: observations
+            )
+
+            let described: [Value] = assessment.observations.map { observation in
+                var entry: [String: Value] = [
+                    "handle": .string(observation.handle),
+                    "messageCount": .int(observation.messageCount),
+                ]
+                if let service = MessagesRouteDiagnostic.normalizeService(observation.registeredService) {
+                    entry["registeredService"] = .string(service)
+                }
+                if let service = MessagesRouteDiagnostic.normalizeService(observation.lastOutgoingService) {
+                    entry["lastOutgoingService"] = .string(service)
+                }
+                if let date = observation.lastMessageDate {
+                    entry["lastMessageAt"] = .string(date.formatted(.iso8601))
+                }
+                return .object(entry)
+            }
+
+            var result: [String: Value] = [
+                "recipient": .string(recipient),
+                "confidence": .string(assessment.confidence.rawValue),
+                "summary": .string(assessment.summary),
+                // Named so that no caller can read it as a delivery receipt.
+                "deliveryGuaranteed": .bool(false),
+                "deliveryCaveat": .string(assessment.deliveryCaveat),
+                "handles": .array(described),
+            ]
+            if let service = assessment.likelyService {
+                result["likelyService"] = .string(service)
+            }
+            return Value.object(result)
+        }
+
+        Tool(
             name: "messages_unread",
             description:
                 "Show unread message counts per conversation, busiest first. Use this to answer "
