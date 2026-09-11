@@ -406,10 +406,13 @@ final class FilesystemService: Service {
             guard let path = arguments["path"]?.stringValue else {
                 throw FilesystemServiceError.missingArgument("path")
             }
-            let url = try FilesystemAccess.resolve(
+            // A path whose parent still exists resolves fine, so a file that
+            // has been trashed since the caller last saw it used to come back
+            // described as an ordinary non-directory with no size. Absence is
+            // an error here, the same one every other surface returns.
+            let url = try FilesystemContent.resolveExisting(
                 requested: path,
-                roots: FilesystemService.shared.roots,
-                requiringWrite: false
+                roots: FilesystemService.shared.roots
             )
             guard case .object(var entry) = FilesystemService.describe(url) else {
                 throw FilesystemServiceError.missingArgument("path")
@@ -917,6 +920,167 @@ final class FilesystemService: Service {
                 "path": .string(url.path),
                 "tags": .array(current.map { .string($0) }),
                 "changed": .bool(requested != nil),
+            ])
+        }
+
+        Tool(
+            name: "filesystem_edit",
+            description:
+                "Change part of a text file by replacing exact text, leaving the rest of the file alone. "
+                + "Pass preview: true to see what would change without touching the file. "
+                + "Pass expectedHash, from filesystem_hash, to have the edit refused if the file changed since you read it.",
+            inputSchema: .object(
+                properties: [
+                    "path": .string(description: "File to edit"),
+                    "edits": .array(
+                        description:
+                            "Replacements to make, in order. Each oldText must appear exactly once unless replaceAll is true.",
+                        items: .object(
+                            properties: [
+                                "oldText": .string(
+                                    description:
+                                        "Exact text to find, copied from the file including indentation"
+                                ),
+                                "newText": .string(description: "Text to put in its place"),
+                                "replaceAll": .boolean(
+                                    description: "Replace every occurrence rather than refusing repeated text",
+                                    default: .bool(false)
+                                ),
+                            ],
+                            required: ["oldText", "newText"],
+                            additionalProperties: false
+                        )
+                    ),
+                    "preview": .boolean(
+                        description: "Show what would change and write nothing",
+                        default: .bool(false)
+                    ),
+                    "expectedHash": .string(
+                        description:
+                            "The file's SHA-256 from filesystem_hash when you read it. The edit is refused if the file has changed since."
+                    ),
+                ],
+                required: ["path", "edits"],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Edit File",
+                readOnlyHint: false,
+                destructiveHint: true,
+                idempotentHint: false,
+                openWorldHint: false
+            )
+        ) { arguments in
+            guard let path = arguments["path"]?.stringValue else {
+                throw FilesystemServiceError.missingArgument("path")
+            }
+            guard let rawEdits = arguments["edits"]?.arrayValue, !rawEdits.isEmpty else {
+                throw FilesystemEditError.noEdits
+            }
+            let edits: [FilesystemTextEdit] = try rawEdits.map { raw in
+                guard let object = raw.objectValue,
+                    let oldText = object["oldText"]?.stringValue,
+                    let newText = object["newText"]?.stringValue
+                else {
+                    throw FilesystemServiceError.missingArgument("edits[].oldText and edits[].newText")
+                }
+                return FilesystemTextEdit(
+                    oldText: oldText,
+                    newText: newText,
+                    replaceAll: object["replaceAll"]?.boolValue ?? false
+                )
+            }
+            let preview = arguments["preview"]?.boolValue ?? false
+            let applied = try FilesystemEdit.perform(
+                path: path,
+                edits: edits,
+                expectedHash: arguments["expectedHash"]?.stringValue,
+                preview: preview,
+                roots: FilesystemService.shared.roots
+            )
+            if applied.committed {
+                log.info("Edited \(applied.url.lastPathComponent, privacy: .public)")
+            }
+            let changes: [Value] = applied.result.hunks.map { hunk in
+                .object([
+                    "editIndex": .int(hunk.editIndex),
+                    "line": .int(hunk.line),
+                    "before": .string(hunk.before),
+                    "after": .string(hunk.after),
+                ])
+            }
+            return Value.object([
+                "path": .string(applied.url.path),
+                "preview": .bool(preview),
+                "applied": .bool(applied.committed),
+                "replacements": .array(applied.result.replacements.map { .int($0) }),
+                "changes": .array(changes),
+                "previousHash": .string(applied.previousHash),
+                "hash": .string(applied.newHash),
+                "sizeBytes": .int(applied.result.content.utf8.count),
+            ])
+        }
+
+        Tool(
+            name: "filesystem_read_multiple",
+            description:
+                "Read up to \(FilesystemBatchRead.maximumPaths) text files in one call. Each file reports its own success or error, so one unreadable path does not lose the rest. "
+                + "The whole call returns at most \(FilesystemBatchRead.byteBudget / 1024)KB; read anything larger with filesystem_read.",
+            inputSchema: .object(
+                properties: [
+                    "paths": .array(
+                        description: "Files to read, in the order you want them back",
+                        items: .string()
+                    )
+                ],
+                required: ["paths"],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Read Several Files",
+                readOnlyHint: true,
+                openWorldHint: false
+            )
+        ) { arguments in
+            guard let raw = arguments["paths"]?.arrayValue else {
+                throw FilesystemServiceError.missingArgument("paths")
+            }
+            let paths = raw.compactMap(\.stringValue)
+            guard paths.count == raw.count else {
+                throw FilesystemServiceError.missingArgument("paths")
+            }
+            let batch = try FilesystemBatchRead.read(
+                paths: paths,
+                roots: FilesystemService.shared.roots
+            )
+            let files: [Value] = batch.entries.map { entry in
+                var described: [String: Value] = [
+                    "path": .string(entry.resolvedPath ?? entry.requestedPath),
+                    "requestedPath": .string(entry.requestedPath),
+                    "ok": .bool(entry.ok),
+                ]
+                if let error = entry.error {
+                    described["error"] = .string(error)
+                    return .object(described)
+                }
+                described["isText"] = .bool(entry.isText)
+                if let size = entry.sizeBytes { described["sizeBytes"] = .int(size) }
+                if let content = entry.content {
+                    described["content"] = .string(content)
+                } else {
+                    described["note"] = .string(
+                        "This file is not UTF-8 text, so its contents were not read. "
+                            + "Use filesystem_read_binary for small binary files."
+                    )
+                }
+                if entry.truncated { described["truncated"] = .bool(true) }
+                return .object(described)
+            }
+            return Value.object([
+                "files": .array(files),
+                "bytesReturned": .int(batch.bytesReturned),
+                "budgetBytes": .int(FilesystemBatchRead.byteBudget),
+                "budgetExhausted": .bool(batch.budgetExhausted),
             ])
         }
     }

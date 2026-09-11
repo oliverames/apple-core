@@ -8,6 +8,7 @@
 // for Spotlight. `FilesystemAccess` is the sibling of this file and answers
 // the separate question of whether a path may be touched at all.
 
+import CryptoKit
 import Foundation
 
 public enum FilesystemContentError: LocalizedError, Equatable {
@@ -184,5 +185,464 @@ public enum Spotlight {
             .split(separator: "\n")
             .map(String.init)
             .filter { !$0.isEmpty }
+    }
+}
+
+extension FilesystemContent {
+    /// Resolves a path and insists it is actually there.
+    ///
+    /// `FilesystemAccess.resolve` answers whether a path may be touched, and
+    /// deliberately succeeds for a path that does not exist yet, because that
+    /// is the write case. Read-only callers that skipped this check described
+    /// a trashed file back as an ordinary non-directory with no size, so the
+    /// caller had to infer absence from missing fields.
+    public static func resolveExisting(
+        requested path: String,
+        roots: [FilesystemRoot],
+        requiringWrite: Bool = false,
+        fileManager: FileManager = .default
+    ) throws -> URL {
+        let url = try FilesystemAccess.resolve(
+            requested: path,
+            roots: roots,
+            requiringWrite: requiringWrite,
+            fileManager: fileManager
+        )
+        guard fileManager.fileExists(atPath: url.path) else {
+            throw FilesystemAccessError.notFound(url.path)
+        }
+        return url
+    }
+}
+
+// MARK: - Selective text edits
+
+public enum FilesystemEditError: LocalizedError, Equatable {
+    case noEdits
+    case tooManyEdits(requested: Int, limit: Int)
+    case emptyMatchText(editIndex: Int)
+    case textNotFound(editIndex: Int)
+    case ambiguousMatch(editIndex: Int, count: Int)
+    case notText(String)
+    case conflict(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .noEdits:
+            return "Pass at least one edit, each with the exact text to find and the text to put in its place."
+        case let .tooManyEdits(requested, limit):
+            return "\(requested) edits is over the \(limit) this call accepts. Split them across calls."
+        case let .emptyMatchText(index):
+            return
+                "Edit \(index + 1) has empty oldText. Use filesystem_write or filesystem_append to add text that is not replacing anything."
+        case let .textNotFound(index):
+            return
+                "Edit \(index + 1): its oldText does not appear in the file. Read the file again and copy the text to replace exactly, including indentation and line endings."
+        case let .ambiguousMatch(index, count):
+            return
+                "Edit \(index + 1): its oldText appears \(count) times, so there is no one place to change. Include enough surrounding text to make it unique, or pass replaceAll: true to change every occurrence."
+        case let .notText(path):
+            return "\(path) is not UTF-8 text, so it cannot be edited by matching text."
+        case let .conflict(path):
+            return
+                "filesystem_edit_conflict: \(path) changed since the hash you passed. Read it again with filesystem_read and hash it with filesystem_hash before editing."
+        }
+    }
+}
+
+/// One exact-match replacement. `oldText` is matched literally, byte for byte,
+/// rather than by Unicode canonical equivalence: a caller that copied its
+/// match text out of a read must get back the bytes it saw, and two spellings
+/// of the same accented character compare equal under the default `String`
+/// semantics while occupying different bytes on disk.
+public struct FilesystemTextEdit: Equatable, Sendable {
+    public let oldText: String
+    public let newText: String
+    /// Repeated text is a conflict by default. This turns it into an instruction.
+    public let replaceAll: Bool
+
+    public init(oldText: String, newText: String, replaceAll: Bool = false) {
+        self.oldText = oldText
+        self.newText = newText
+        self.replaceAll = replaceAll
+    }
+}
+
+/// One replaced span, shown as the whole lines it touched.
+///
+/// A character-level diff would be smaller and much harder to check by eye,
+/// and the point of preview is that a person or a model can see what the edit
+/// would do before it happens.
+public struct FilesystemEditHunk: Equatable, Sendable {
+    public let editIndex: Int
+    /// 1-based line the match starts on, counted in the file as it stood
+    /// before this particular edit.
+    public let line: Int
+    public let before: String
+    public let after: String
+
+    public init(editIndex: Int, line: Int, before: String, after: String) {
+        self.editIndex = editIndex
+        self.line = line
+        self.before = before
+        self.after = after
+    }
+}
+
+public struct FilesystemEditResult: Equatable, Sendable {
+    public let content: String
+    /// How many occurrences each edit replaced, in the order the edits were given.
+    public let replacements: [Int]
+    public let hunks: [FilesystemEditHunk]
+}
+
+public enum FilesystemEdit {
+    public static let maximumEdits = 64
+    /// Enough to show a whole-file rename without describing every line of a
+    /// large file back to the caller.
+    public static let maximumHunks = 50
+
+    /// SHA-256 hex, the same value `filesystem_hash` returns for the file and
+    /// the same contract `notes_update` uses for `expectedHash`. Sharing the
+    /// representation is the point: a caller hashes once and the two surfaces
+    /// agree on what a stale snapshot looks like.
+    public static func hash(of data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    public static func hash(of text: String) -> String {
+        hash(of: Data(text.utf8))
+    }
+
+    /// Every literal, non-overlapping occurrence of `needle`.
+    private static func occurrences(of needle: String, in haystack: String) -> [Range<String.Index>] {
+        var found: [Range<String.Index>] = []
+        var searchStart = haystack.startIndex
+        while searchStart < haystack.endIndex,
+            let range = haystack.range(
+                of: needle,
+                options: .literal,
+                range: searchStart ..< haystack.endIndex
+            )
+        {
+            found.append(range)
+            searchStart = range.upperBound
+        }
+        return found
+    }
+
+    /// The whole lines a range sits on, before and after the replacement.
+    private static func hunk(
+        editIndex: Int,
+        replacing range: Range<String.Index>,
+        with newText: String,
+        in content: String
+    ) -> FilesystemEditHunk {
+        let lineStart =
+            content[content.startIndex ..< range.lowerBound].lastIndex(of: "\n")
+            .map { content.index(after: $0) } ?? content.startIndex
+        let lineEnd = content[range.upperBound...].firstIndex(of: "\n") ?? content.endIndex
+        let before = String(content[lineStart ..< lineEnd])
+        let after =
+            String(content[lineStart ..< range.lowerBound]) + newText
+            + String(content[range.upperBound ..< lineEnd])
+        let line = content[content.startIndex ..< lineStart].filter { $0 == "\n" }.count + 1
+        return FilesystemEditHunk(editIndex: editIndex, line: line, before: before, after: after)
+    }
+
+    /// Applies the edits in order, refusing the whole set if any one of them
+    /// cannot be placed. Nothing partial ever reaches a caller, which is what
+    /// lets the commit below be all-or-nothing.
+    public static func apply(_ edits: [FilesystemTextEdit], to content: String) throws
+        -> FilesystemEditResult
+    {
+        guard !edits.isEmpty else { throw FilesystemEditError.noEdits }
+        guard edits.count <= maximumEdits else {
+            throw FilesystemEditError.tooManyEdits(requested: edits.count, limit: maximumEdits)
+        }
+
+        var working = content
+        var replacements: [Int] = []
+        var hunks: [FilesystemEditHunk] = []
+
+        for (index, edit) in edits.enumerated() {
+            guard !edit.oldText.isEmpty else {
+                throw FilesystemEditError.emptyMatchText(editIndex: index)
+            }
+            let matches = occurrences(of: edit.oldText, in: working)
+            guard !matches.isEmpty else {
+                throw FilesystemEditError.textNotFound(editIndex: index)
+            }
+            guard edit.replaceAll || matches.count == 1 else {
+                throw FilesystemEditError.ambiguousMatch(editIndex: index, count: matches.count)
+            }
+
+            for match in matches where hunks.count < maximumHunks {
+                hunks.append(
+                    hunk(editIndex: index, replacing: match, with: edit.newText, in: working)
+                )
+            }
+            // Replace back to front so the earlier ranges stay valid.
+            for match in matches.reversed() {
+                working.replaceSubrange(match, with: edit.newText)
+            }
+            replacements.append(matches.count)
+        }
+
+        return FilesystemEditResult(content: working, replacements: replacements, hunks: hunks)
+    }
+
+    /// Replaces the file's contents in one step, or leaves it exactly as it was.
+    ///
+    /// Writes a sibling temporary file and swaps it in, rather than truncating
+    /// and rewriting in place: a failure halfway through the second would
+    /// leave a half-edited file with no way back. `replaceItemAt` also carries
+    /// the original's metadata across, so an edit does not silently drop a
+    /// file's Finder tags.
+    public static func commit(_ content: String, to url: URL) throws {
+        let directory = url.deletingLastPathComponent()
+        let temporary = directory.appendingPathComponent(
+            ".apple-core-edit-\(UUID().uuidString)"
+        )
+        do {
+            try Data(content.utf8).write(to: temporary, options: [.atomic])
+            _ = try FileManager.default.replaceItemAt(url, withItemAt: temporary)
+        } catch {
+            try? FileManager.default.removeItem(at: temporary)
+            throw error
+        }
+    }
+
+    public struct Applied: Sendable {
+        public let url: URL
+        public let result: FilesystemEditResult
+        public let previousHash: String
+        public let newHash: String
+        public let committed: Bool
+    }
+
+    /// Resolves, checks for a conflict, applies, and commits unless previewing.
+    ///
+    /// A preview still requires a writable root. Previewing an edit that could
+    /// never be committed reads as approval for something the allowlist will
+    /// refuse, and the caller learns the real answer one call later than it
+    /// should.
+    public static func perform(
+        path: String,
+        edits: [FilesystemTextEdit],
+        expectedHash: String?,
+        preview: Bool,
+        roots: [FilesystemRoot],
+        fileManager: FileManager = .default
+    ) throws -> Applied {
+        let url = try FilesystemContent.resolveExisting(
+            requested: path,
+            roots: roots,
+            requiringWrite: true,
+            fileManager: fileManager
+        )
+        let data = try Data(contentsOf: url)
+        let previousHash = hash(of: data)
+        if let expectedHash, expectedHash != previousHash {
+            throw FilesystemEditError.conflict(url.path)
+        }
+        guard let content = String(data: data, encoding: .utf8) else {
+            throw FilesystemEditError.notText(url.path)
+        }
+
+        let result = try apply(edits, to: content)
+        if !preview {
+            try commit(result.content, to: url)
+        }
+        return Applied(
+            url: url,
+            result: result,
+            previousHash: previousHash,
+            newHash: hash(of: result.content),
+            committed: !preview
+        )
+    }
+}
+
+// MARK: - Batch reads
+
+public enum FilesystemBatchReadError: LocalizedError, Equatable {
+    case noPaths
+    case tooManyPaths(requested: Int, limit: Int)
+
+    public var errorDescription: String? {
+        switch self {
+        case .noPaths:
+            return "Pass at least one path to read."
+        case let .tooManyPaths(requested, limit):
+            return
+                "\(requested) paths is over the \(limit) this call accepts. Read them in batches of \(limit)."
+        }
+    }
+}
+
+/// One file's outcome. Ordered against the request, and carrying its own
+/// success or failure: a batch where one path is denied still returns the
+/// other files, and the denial says nothing about folders the caller was
+/// never shown.
+public struct FilesystemBatchReadEntry: Equatable, Sendable {
+    public let requestedPath: String
+    public let resolvedPath: String?
+    public let content: String?
+    public let sizeBytes: Int?
+    public let isText: Bool
+    public let truncated: Bool
+    public let error: String?
+
+    public var ok: Bool { error == nil }
+}
+
+public struct FilesystemBatchReadResult: Equatable, Sendable {
+    public let entries: [FilesystemBatchReadEntry]
+    public let bytesReturned: Int
+    /// True when the budget, not the files, ended the read.
+    public let budgetExhausted: Bool
+}
+
+public enum FilesystemBatchRead {
+    public static let maximumPaths = 32
+    /// The same ceiling one `filesystem_read` may return, spent across the
+    /// whole batch. Without an aggregate bound, a batch of thirty-two files is
+    /// thirty-two times the cap a single read is held to, which is the client
+    /// context window this surface is capped to protect in the first place.
+    public static let byteBudget = 512 * 1024
+
+    public static func read(
+        paths: [String],
+        roots: [FilesystemRoot],
+        budget: Int = byteBudget,
+        fileManager: FileManager = .default
+    ) throws -> FilesystemBatchReadResult {
+        guard !paths.isEmpty else { throw FilesystemBatchReadError.noPaths }
+        guard paths.count <= maximumPaths else {
+            throw FilesystemBatchReadError.tooManyPaths(
+                requested: paths.count,
+                limit: maximumPaths
+            )
+        }
+
+        var remaining = max(0, budget)
+        var entries: [FilesystemBatchReadEntry] = []
+        var budgetExhausted = false
+
+        for path in paths {
+            let url: URL
+            do {
+                url = try FilesystemAccess.resolve(
+                    requested: path,
+                    roots: roots,
+                    requiringWrite: false,
+                    fileManager: fileManager
+                )
+            } catch {
+                entries.append(failure(path, nil, error.localizedDescription))
+                continue
+            }
+
+            var isDirectory: ObjCBool = false
+            guard fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory) else {
+                entries.append(
+                    failure(
+                        path,
+                        url.path,
+                        FilesystemAccessError.notFound(url.path).localizedDescription
+                    )
+                )
+                continue
+            }
+            if isDirectory.boolValue {
+                entries.append(
+                    failure(
+                        path,
+                        url.path,
+                        "\(url.path) is a folder. Use filesystem_list to see what is in it."
+                    )
+                )
+                continue
+            }
+            guard remaining > 0 else {
+                budgetExhausted = true
+                entries.append(
+                    failure(
+                        path,
+                        url.path,
+                        "The \(byteBudget / 1024)KB this call may return was already used by the files before it. Read this one with filesystem_read."
+                    )
+                )
+                continue
+            }
+
+            do {
+                let entry = try readOne(path: path, url: url, cap: remaining)
+                remaining -= entry.content.map { $0.utf8.count } ?? 0
+                if entry.truncated { budgetExhausted = true }
+                entries.append(entry)
+            } catch {
+                entries.append(failure(path, url.path, error.localizedDescription))
+            }
+        }
+
+        return FilesystemBatchReadResult(
+            entries: entries,
+            bytesReturned: max(0, budget) - remaining,
+            budgetExhausted: budgetExhausted
+        )
+    }
+
+    private static func failure(_ requested: String, _ resolved: String?, _ message: String)
+        -> FilesystemBatchReadEntry
+    {
+        FilesystemBatchReadEntry(
+            requestedPath: requested,
+            resolvedPath: resolved,
+            content: nil,
+            sizeBytes: nil,
+            isText: false,
+            truncated: false,
+            error: message
+        )
+    }
+
+    private static func readOne(path: String, url: URL, cap: Int) throws
+        -> FilesystemBatchReadEntry
+    {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        // Three bytes past the cap so a window cut mid-character is visible as
+        // truncation rather than as a file that is not text.
+        let data = try handle.read(upToCount: cap + 3) ?? Data()
+        let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? data.count
+        let truncated = data.count > cap
+        let window = FilesystemContent.textWindow(
+            data,
+            cap: cap,
+            resuming: false,
+            truncated: truncated
+        )
+        guard let text = window.text else {
+            return FilesystemBatchReadEntry(
+                requestedPath: path,
+                resolvedPath: url.path,
+                content: nil,
+                sizeBytes: size,
+                isText: false,
+                truncated: false,
+                error: nil
+            )
+        }
+        return FilesystemBatchReadEntry(
+            requestedPath: path,
+            resolvedPath: url.path,
+            content: text,
+            sizeBytes: size,
+            isText: true,
+            truncated: truncated,
+            error: nil
+        )
     }
 }
