@@ -119,12 +119,70 @@ final class MapsService: NSObject, Service {
 
                     // Convert MKMapItems to Ontology Place objects
                     let places = response.mapItems.map { item -> Place in
-                        return Place(item)
+                        return Self.place(item)
                     }
 
                     continuation.resume(returning: places)
                 }
             }
+        }
+
+        Tool(
+            name: "maps_place_details",
+            description: """
+                Look up a place again by its Apple Maps place identifier and return its current \
+                details. The identifier is the "@id" value on any result from maps_search or \
+                maps_explore. Returns the place's name, address, coordinates, telephone, URL, \
+                point of interest category and time zone when Apple Maps supplies them, and names \
+                the ones it does not in "unavailableFields" rather than returning empty values. \
+                Apple's public MapKit API supplies no reviews, opening hours or accessibility \
+                information, so this tool never returns them. An identifier stops resolving once \
+                Apple Maps drops the place, which is reported as an error rather than an empty \
+                result.
+                """,
+            inputSchema: .object(
+                properties: [
+                    "identifier": .string(
+                        description:
+                            "Apple Maps place identifier, the \"@id\" of a maps_search or maps_explore result"
+                    )
+                ],
+                required: ["identifier"],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Get Place Details",
+                readOnlyHint: true,
+                openWorldHint: true
+            )
+        ) { arguments in
+            let requested = try MapsPlaceIdentifier.normalized(arguments["identifier"]?.stringValue)
+            guard let identifier = MKMapItem.Identifier(rawValue: requested) else {
+                throw MapsPlaceLookupError.malformedIdentifier(requested)
+            }
+
+            let item: MKMapItem
+            do {
+                item = try await MKMapItemRequest(mapItemIdentifier: identifier).mapItem
+            } catch {
+                log.debug("Place identifier did not resolve: \(error.localizedDescription)")
+                throw MapsPlaceLookupError.unresolvedIdentifier(requested)
+            }
+
+            let place = Self.place(item)
+            let summary = MapsPlaceLookupSummary(
+                requestedIdentifier: requested,
+                resolvedIdentifier: item.identifier?.rawValue,
+                alternateIdentifiers: item.alternateIdentifiers.map(\.rawValue),
+                pointOfInterestCategory: item.pointOfInterestCategory?.rawValue,
+                timeZoneIdentifier: item.timeZone?.identifier,
+                hasName: place.name?.isEmpty == false,
+                hasAddress: place.address != nil,
+                hasCoordinates: place.geo != nil,
+                hasTelephone: place.telephone?.isEmpty == false,
+                hasURL: place.url != nil
+            )
+            return PlaceDetails(place: place, lookup: summary)
         }
 
         Tool(
@@ -387,7 +445,7 @@ final class MapsService: NSObject, Service {
 
                     // Convert MKMapItems to Value objects
                     let places = response.mapItems.prefix(limit).map { item -> Place in
-                        return Place(item)
+                        return Self.place(item)
                     }
 
                     continuation.resume(returning: places)
@@ -697,6 +755,27 @@ final class MapsService: NSObject, Service {
                 }
             }
         }
+    }
+
+    // MARK: - Place identity
+
+    /// The schema.org `Place` already carries an `identifier`, encoded as
+    /// `@id`, but `Place(MKMapItem)` never fills it in, so every place this
+    /// service returned used to be anonymous. Filling the existing field is
+    /// what makes a result addressable later; adding a second identifier field
+    /// under a new name would have given clients two ways to say the same
+    /// thing.
+    static func place(_ item: MKMapItem) -> Place {
+        var place = Place(item)
+        place.identifier = item.identifier?.rawValue
+        return place
+    }
+
+    /// Everything a detail lookup returns: the place itself, and the identity
+    /// and MapKit-only attributes that `Place` has nowhere to put.
+    struct PlaceDetails: Codable, Sendable {
+        var place: Place
+        var lookup: MapsPlaceLookupSummary
     }
 
     // MARK: - Helper methods
