@@ -40,6 +40,10 @@ private let maximumThreadCandidates = 60
 // MARK: - Output models
 
 private struct MailAccount: Codable, Sendable {
+    /// Mail's own account id, which is also the name of the account's
+    /// directory inside ~/Library/Mail/V10. It is the only join between the
+    /// display names these tools take and the keys the local index uses.
+    let id: String
     let name: String
     let emailAddresses: [String]
     let enabled: Bool
@@ -237,6 +241,55 @@ private struct MailIndexMessagePage: Codable, Sendable {
     let status: MailIndexStatus
 }
 
+/// What the search did about staleness before answering, said out loud.
+///
+/// The index tools never refresh implicitly, and search is the one place
+/// where that rule had to be revisited rather than inherited: a caller asking
+/// "do I have anything from the landlord" cannot be expected to know that the
+/// right answer today is "run a different tool first". So search does refresh
+/// by default, and reports it, because a refresh that happens silently is
+/// just as misleading as a stale answer that arrives silently.
+private struct MailSearchRefreshNote: Codable, Sendable {
+    /// `auto`, `never` or `always`, as requested.
+    let policy: String
+    let performed: Bool
+    /// Why it did or did not refresh, in a sentence a client can relay.
+    let reason: String
+    let durationSeconds: Double?
+    let inserted: Int?
+    let updated: Int?
+    let removed: Int?
+    /// False when the refresh stopped at its file limit, which leaves the
+    /// index usable but incomplete.
+    let scanComplete: Bool?
+}
+
+/// One page of search results, with the index's own account of itself
+/// attached. The status block travels with every page for the same reason it
+/// travels with every index listing: a caller that cannot tell "no such
+/// message" from "not indexed yet" has been given a number, not an answer.
+private struct MailSearchPage: Codable, Sendable {
+    let hits: [MailSearchHit]
+    let returned: Int
+    let limit: Int
+    let hasMore: Bool
+    /// Pass back as `cursor` for the next page. Absent on the last page.
+    let nextCursor: String?
+    let query: String?
+    let scope: String
+    /// The mailboxes actually searched, under both names.
+    let searchedMailboxes: [MailMailboxName]
+    /// Every mailbox the index holds, so a caller can see the vocabulary.
+    let indexedMailboxes: [MailMailboxName]
+    /// False when bodies could not be matched on this Mac.
+    let bodySearched: Bool
+    /// Messages a date filter excluded because they carry no parsable date.
+    let undatedExcluded: Int?
+    let warnings: [String]
+    let refresh: MailSearchRefreshNote
+    let status: MailIndexStatus
+}
+
 private struct MailMessageDetail: Codable, Sendable {
     let id: Int
     let subject: String
@@ -262,6 +315,7 @@ private let listAccountsScript = """
     function run(argv) {
         const Mail = Application('Mail');
         const result = Mail.accounts().map(account => ({
+            id: account.id(),
             name: account.name(),
             emailAddresses: account.emailAddresses() || [],
             enabled: account.enabled(),
@@ -1038,12 +1092,13 @@ private let deleteMailboxScript =
 ///   gated behind Mail's `com.apple.mail.compose` access group, so an
 ///   unentitled script reads it as null. Confirmed against Mail's own
 ///   dictionary rather than assumed; there is no unentitled path to it.
-/// - Cross-mailbox and body search: per-mailbox subject/sender search is
-///   the AppleScript-feasible ceiling, so `mail_search` stays there. The
-///   disk-first .emlx index it was waiting on now exists (see Shared/
-///   MailIndex.swift and issue #19) and stores bodies in FTS5, but the
-///   search contract on top of it is issue #3 and is not implemented
-///   here. The index tools below read and reconcile; they do not query.
+/// - Cross-mailbox and body search through Apple Events: per-mailbox
+///   subject/sender search is the AppleScript-feasible ceiling, so
+///   `mail_search` stays there and keeps returning Mail's own live message
+///   ids, which every mutating tool here needs. Searching across accounts
+///   and inside bodies is served instead by `mail_index_search` over the
+///   disk-first .emlx index (Shared/MailIndex.swift, issue #19), which
+///   answers from a snapshot and reports how old that snapshot is.
 final class MailService: Service {
     static let shared = MailService()
 
@@ -1189,7 +1244,8 @@ final class MailService: Service {
 
         Tool(
             name: "mail_search",
-            description: "Search messages in a mailbox by subject or sender",
+            description:
+                "Search one mailbox by subject or sender through Mail itself, returning live message ids the other Mail tools accept. For searching across accounts, inside message bodies, or by date, attachment or read state, use mail_index_search.",
             inputSchema: .object(
                 properties: [
                     "account": .string(
@@ -2139,6 +2195,77 @@ final class MailService: Service {
         ) { arguments in
             try Self.indexedMessages(arguments: arguments)
         }
+
+        Tool(
+            name: "mail_index_search",
+            description:
+                "Search mail across every account and mailbox at once, including message bodies, using Apple Core's local index. Filters on date range, mailbox, attachments, read state and download state. Pages by cursor, not offset, so a page boundary stays correct while mail arrives. Every result carries the index's staleness and completeness, and says whether it refreshed the index before answering. Needs Full Disk Access. Use mail_search instead when you need Mail's own live message ids for a follow-up action.",
+            inputSchema: .object(
+                properties: [
+                    "query": .string(
+                        description:
+                            "Words to match. Quote a phrase; a trailing * matches by prefix. Omit to return every message the filters allow, newest first"
+                    ),
+                    "scope": .string(
+                        description:
+                            "Which indexed text to match: all of subject, sender and body, or just one of them",
+                        default: "all",
+                        enum: ["all", "subject", "sender", "body"]
+                    ),
+                    "mailboxes": .array(
+                        description:
+                            "Mailboxes to search: an account/mailbox key from indexed_mailboxes, a display path such as 'iCloud/INBOX', an account name on its own, or a bare mailbox path such as INBOX meaning that mailbox in every account. Every indexed mailbox if omitted",
+                        items: .string()
+                    ),
+                    "since": .string(
+                        description: "Only messages sent on or after this date (YYYY-MM-DD or ISO 8601)"
+                    ),
+                    "until": .string(
+                        description: "Only messages sent on or before this date (YYYY-MM-DD or ISO 8601)"
+                    ),
+                    "attachments": .string(
+                        description: "Filter on whether the message has attachments",
+                        default: "any",
+                        enum: ["any", "with", "without"]
+                    ),
+                    "read_state": .string(
+                        description: "Filter on read state",
+                        default: "any",
+                        enum: ["any", "read", "unread"]
+                    ),
+                    "body_state": .string(
+                        description:
+                            "Filter on whether the body is fully on this Mac. 'incomplete' finds messages whose text was never downloaded and so could not be matched",
+                        default: "any",
+                        enum: ["any", "complete", "incomplete"]
+                    ),
+                    "limit": .integer(
+                        description: "Maximum messages to return (max \(maximumMessageLimit))",
+                        default: .int(defaultMessageLimit)
+                    ),
+                    "cursor": .string(
+                        description:
+                            "next_cursor from a previous search, to continue it. Do not construct one by hand"
+                    ),
+                    "refresh": .string(
+                        description:
+                            "What to do about a stale index: 'auto' refreshes only when it is stale or has never completed a pass, 'never' refuses to search a stale index, 'always' refreshes first. The answer says which happened",
+                        default: "auto",
+                        enum: ["auto", "never", "always"]
+                    ),
+                ],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Search Indexed Mail",
+                readOnlyHint: false,
+                destructiveHint: false,
+                idempotentHint: true,
+                openWorldHint: false
+            )
+        ) { arguments in
+            try await Self.indexSearch(arguments: arguments)
+        }
     }
 
     // MARK: - Helpers
@@ -2174,6 +2301,269 @@ final class MailService: Service {
             indexedMailboxes: try index.mailboxKeys(),
             status: status
         )
+    }
+
+    /// Runs one page of index-backed search.
+    ///
+    /// The order here is the contract: decide about staleness first, refuse
+    /// or refresh and record which, then resolve the caller's mailbox names
+    /// into index keys, then query. Nothing is answered from an index that
+    /// has never completed a pass, and nothing is answered from a stale one
+    /// without the answer saying so.
+    private static func indexSearch(arguments: [String: Value]) async throws -> MailSearchPage {
+        var status = MailIndex.status()
+        guard status.access == "available" else {
+            throw Self.error(status.accessDetail)
+        }
+
+        let policy = arguments["refresh"]?.stringValue ?? "auto"
+        let (note, refreshedStatus) = try Self.applyRefreshPolicy(policy, status: status)
+        status = refreshedStatus
+
+        guard status.lastCompleteRefresh != nil else {
+            throw Self.error(
+                "INDEX_EMPTY: the local mail index has never completed a full pass, so it cannot "
+                    + "say what is or is not in your mail. Run mail_index_refresh first."
+            )
+        }
+
+        var warnings: [String] = []
+        // Display names come from Mail itself. Losing them is survivable —
+        // the index keys still identify every mailbox — so a failure here
+        // degrades the naming rather than the search.
+        var accounts: [MailAccountDescriptor] = []
+        do {
+            accounts = try await scriptedMailApp.runJSON(
+                .jxa,
+                script: listAccountsScript,
+                as: [MailAccount].self
+            )
+            .map {
+                MailAccountDescriptor(id: $0.id, name: $0.name, emailAddresses: $0.emailAddresses)
+            }
+        } catch {
+            warnings.append(
+                "Mail's account list could not be read (\(error.localizedDescription)), so "
+                    + "mailboxes are named by their account directory rather than by the account "
+                    + "names the other Mail tools take."
+            )
+        }
+
+        let index = MailIndexStore.default
+        let keys = try index.mailboxKeys()
+        let named = MailMailboxNaming.names(keys: keys, accounts: accounts)
+
+        var requested = arguments["mailboxes"]?.arrayValue?.compactMap { $0.stringValue } ?? []
+        if let single = arguments["mailbox"]?.stringValue, !single.isEmpty {
+            requested.append(single)
+        }
+        let resolution = MailMailboxNaming.resolve(requested, keys: keys, accounts: accounts)
+        if !resolution.unmatched.isEmpty {
+            throw Self.error(
+                MailMailboxNaming.unmatchedExplanation(resolution.unmatched, names: named)
+            )
+        }
+        if named.contains(where: { $0.accountName == nil }) {
+            warnings.append(
+                "Some indexed mailboxes belong to account directories no live Mail account "
+                    + "claims, usually an account that was removed. Their messages are still on "
+                    + "disk and are searched; they have no display name and the Apple Events Mail "
+                    + "tools cannot open them."
+            )
+        }
+
+        var request = MailSearchRequest()
+        request.query = arguments["query"]?.stringValue.flatMap { $0.isEmpty ? nil : $0 }
+        let scopeName = arguments["scope"]?.stringValue ?? "all"
+        guard let scope = MailSearchScope(rawValue: scopeName) else {
+            throw Self.error("scope must be one of: all, subject, sender, body")
+        }
+        request.scope = scope
+        request.mailboxKeys = resolution.keys
+        request.since = try Self.searchDate(arguments["since"]?.stringValue, key: "since")
+        request.until = try Self.searchDate(arguments["until"]?.stringValue, key: "until")
+        request.hasAttachments = Self.triState(
+            arguments["attachments"]?.stringValue,
+            trueValue: "with",
+            falseValue: "without"
+        )
+        request.isRead = Self.triState(
+            arguments["read_state"]?.stringValue,
+            trueValue: "read",
+            falseValue: "unread"
+        )
+        request.bodyComplete = Self.triState(
+            arguments["body_state"]?.stringValue,
+            trueValue: "complete",
+            falseValue: "incomplete"
+        )
+        request.limit = Self.clampedLimit(arguments["limit"]?.intValue)
+        request.fullTextAvailable = status.bodySearchAvailable
+
+        if let token = arguments["cursor"]?.stringValue, !token.isEmpty {
+            guard let cursor = MailSearchCursor.decode(token) else {
+                throw Self.error(
+                    MailSearchQueryError.badCursor("\"\(token)\" is not a cursor this build wrote.")
+                        .localizedDescription
+                )
+            }
+            request.cursor = cursor
+        }
+
+        let bodySearched =
+            status.bodySearchAvailable && request.query != nil && scope != .subject
+            && scope != .sender
+        if request.query != nil, !status.bodySearchAvailable {
+            warnings.append(
+                "This SQLite has no FTS5 module, so the query matched subject and sender by "
+                    + "substring only. Message bodies were not searched."
+            )
+        }
+        if status.incompleteBodyCount > 0, bodySearched {
+            warnings.append(
+                "\(status.incompleteBodyCount) indexed message(s) have bodies that were never "
+                    + "downloaded to this Mac. Their text could not be matched, so a message whose "
+                    + "only match is in an undownloaded body will not appear. Filter with "
+                    + "body_state=incomplete to see them."
+            )
+        }
+
+        let result = try index.search(request)
+        return MailSearchPage(
+            hits: result.hits,
+            returned: result.hits.count,
+            limit: request.limit,
+            hasMore: result.hasMore,
+            nextCursor: result.nextCursor,
+            query: request.query,
+            scope: scope.rawValue,
+            searchedMailboxes: resolution.matched.isEmpty ? named : resolution.matched,
+            indexedMailboxes: named,
+            bodySearched: bodySearched,
+            undatedExcluded: result.undatedExcluded,
+            warnings: warnings + status.warnings,
+            refresh: note,
+            status: status
+        )
+    }
+
+    /// Decides what to do about a stale index, and says what it decided.
+    ///
+    /// `auto` is the default because the alternative — refusing until the
+    /// client calls mail_index_refresh — pushes a piece of Apple Core's own
+    /// bookkeeping into every client's prompt, and the failure mode when they
+    /// do not do it is a confidently empty answer. Refreshing is incremental:
+    /// a file whose size and modification date are unchanged is not reparsed,
+    /// so the cost after the first build is a directory walk.
+    private static func applyRefreshPolicy(
+        _ policy: String,
+        status: MailIndexStatus
+    ) throws -> (MailSearchRefreshNote, MailIndexStatus) {
+        let needsRefresh = status.lastCompleteRefresh == nil || status.stale
+        func refreshed(_ reason: String) throws -> (MailSearchRefreshNote, MailIndexStatus) {
+            let report = try MailIndex.refresh(fileLimit: maximumIndexFileLimit)
+            return (
+                MailSearchRefreshNote(
+                    policy: policy,
+                    performed: true,
+                    reason: reason,
+                    durationSeconds: report.durationSeconds,
+                    inserted: report.inserted,
+                    updated: report.updated,
+                    removed: report.removed,
+                    scanComplete: report.scanComplete
+                ),
+                report.status
+            )
+        }
+
+        switch policy {
+        case "always":
+            return try refreshed("Refreshed because refresh=always was requested.")
+        case "never":
+            guard needsRefresh else {
+                return (
+                    MailSearchRefreshNote(
+                        policy: policy,
+                        performed: false,
+                        reason: "The index was already current, so nothing was refreshed.",
+                        durationSeconds: nil,
+                        inserted: nil,
+                        updated: nil,
+                        removed: nil,
+                        scanComplete: nil
+                    ),
+                    status
+                )
+            }
+            throw Self.error(
+                "INDEX_STALE: refresh=never was requested and the index is not current. "
+                    + status.completeness
+                    + " Run mail_index_refresh, or search again with refresh=auto."
+            )
+        case "auto":
+            guard needsRefresh else {
+                return (
+                    MailSearchRefreshNote(
+                        policy: policy,
+                        performed: false,
+                        reason:
+                            "The index was refreshed \(status.ageSeconds ?? 0) second(s) ago, "
+                            + "inside its freshness window, so it was used as it stood.",
+                        durationSeconds: nil,
+                        inserted: nil,
+                        updated: nil,
+                        removed: nil,
+                        scanComplete: nil
+                    ),
+                    status
+                )
+            }
+            return try refreshed(
+                status.lastCompleteRefresh == nil
+                    ? "Refreshed because the index had never completed a full pass."
+                    : "Refreshed because the index was \(status.ageSeconds ?? 0) second(s) old, "
+                        + "past its freshness window."
+            )
+        default:
+            throw Self.error("refresh must be one of: auto, never, always")
+        }
+    }
+
+    /// `YYYY-MM-DD` or ISO 8601. A date that will not parse is refused rather
+    /// than dropped, because a silently ignored filter returns more mail than
+    /// the caller asked for and looks like a working search.
+    private static func searchDate(_ value: String?, key: String) throws -> Date? {
+        guard let value, !value.isEmpty else { return nil }
+        let iso = ISO8601DateFormatter()
+        iso.formatOptions = [.withInternetDateTime]
+        if let date = iso.date(from: value) { return date }
+        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = iso.date(from: value) { return date }
+        let plain = DateFormatter()
+        plain.locale = Locale(identifier: "en_US_POSIX")
+        plain.timeZone = TimeZone.current
+        plain.dateFormat = "yyyy-MM-dd"
+        if let date = plain.date(from: value) { return date }
+        throw Self.error(
+            "\(key) must be a date as YYYY-MM-DD or ISO 8601; \"\(value)\" is neither."
+        )
+    }
+
+    /// Reads a three-valued filter argument: a value, its opposite, or no
+    /// filter at all. A tri-state is spelled out rather than left as an
+    /// optional boolean because a client that defaults booleans to false
+    /// would otherwise silently ask for unread mail only.
+    private static func triState(
+        _ value: String?,
+        trueValue: String,
+        falseValue: String
+    ) -> Bool? {
+        switch value {
+        case trueValue: return true
+        case falseValue: return false
+        default: return nil
+        }
     }
 
     private static func requiredString(
