@@ -149,6 +149,10 @@ private struct NoteMarkdown: Codable, Sendable {
     let name: String
     let folderName: String?
     let markdown: String
+    /// Why checklist state is or is not in `markdown`. Always present, so a
+    /// note rendered without ticked boxes is never mistaken for a note whose
+    /// boxes are all empty.
+    let checklistState: String
 }
 
 private struct NotesStatsFolder: Codable, Sendable {
@@ -245,145 +249,159 @@ private let listFoldersScript = """
     }
     """
 
-private let listNotesScript = """
-    function run(argv) {
-        const folderName = argv[0];
-        const limit = parseInt(argv[1], 10);
-        const Notes = Application('Notes');
-
-        let collection;
-        if (folderName === '') {
-            collection = Notes.notes;
-        } else {
-            const matches = Notes.folders.whose({ name: folderName })();
-            if (matches.length === 0) {
-                throw new Error('NOT_FOUND: no folder named ' + folderName);
-            }
-            collection = matches[0].notes;
-        }
-
-        const ids = collection.id();
-        const names = collection.name();
-        const modified = collection.modificationDate();
-        const created = collection.creationDate();
-        const locked = collection.passwordProtected();
-
-        // `Notes.notes` can yield the same note more than once when it is
-        // reachable by more than one enumeration path, so the same id would
-        // otherwise fill the page with repeats. Keep the first occurrence.
-        const rows = [];
-        const seen = {};
-        for (let i = 0; i < ids.length; i++) {
-            if (seen[ids[i]] === true) { continue; }
-            seen[ids[i]] = true;
-            rows.push({
-                id: ids[i],
-                name: names[i],
-                folderName: null,
-                creationDate: created[i] ? created[i].toISOString() : null,
-                modificationDate: modified[i] ? modified[i].toISOString() : null,
-                isLocked: locked[i] === true,
-            });
-        }
-        rows.sort((a, b) =>
-            (b.modificationDate || '').localeCompare(a.modificationDate || '')
-        );
-        const page = rows.slice(0, limit);
-
-        // Containers can't be bulk-fetched per note, and calling
-        // `container()` once per returned note costs one Apple Event each:
-        // at ~200ms per round trip a default page of 50 outlives the
-        // client's patience, which surfaces as "server isn't responding".
-        // Fold the whole page in with one bulk fetch per folder instead, so
-        // the cost tracks the folder count and not `limit`. A note missing
-        // from the map keeps a null folderName rather than dropping out.
-        if (folderName !== '') {
-            for (const row of page) { row.folderName = folderName; }
-        } else if (page.length > 0) {
-            const wanted = {};
-            for (const row of page) { wanted[row.id] = true; }
-            const folderOf = {};
-            let remaining = page.length;
-            const folders = Notes.folders();
-            for (const folder of folders) {
-                if (remaining === 0) { break; }
-                let folderIds;
-                try { folderIds = folder.notes.id(); } catch (e) { continue; }
-                if (folderIds.length === 0) { continue; }
-                let label = null;
-                for (const id of folderIds) {
-                    if (wanted[id] !== true || folderOf[id] !== undefined) { continue; }
-                    if (label === null) { label = folder.name(); }
-                    folderOf[id] = label;
-                    remaining -= 1;
+private let folderScopeHelper = """
+    // Resolves the scope argv asks for: a folder by id, an account by name,
+    // or the whole store. Ids come from notes_list_folders by way of
+    // NotesFolderTargeting, which has already refused anything ambiguous.
+    function notesScope(Notes, folderId, accountName) {
+        if (folderId !== '') {
+            let folder = null;
+            try { folder = Notes.folders.byId(folderId); folder.name(); } catch (e) { folder = null; }
+            if (folder === null) {
+                for (const account of Notes.accounts()) {
+                    for (const candidate of account.folders()) {
+                        if (candidate.id() === folderId) { folder = candidate; break; }
+                    }
+                    if (folder !== null) { break; }
                 }
             }
-            for (const row of page) {
-                const found = folderOf[row.id];
-                row.folderName = found === undefined ? null : found;
+            if (folder === null) {
+                throw new Error('NOT_FOUND: no folder with id ' + folderId);
             }
+            return { collection: folder.notes, label: folder.name() };
         }
-        return JSON.stringify(page);
+        if (accountName !== '') {
+            const accounts = Notes.accounts.whose({ name: accountName })();
+            if (accounts.length === 0) {
+                throw new Error('NOT_FOUND: no Notes account named ' + accountName);
+            }
+            return { collection: accounts[0].notes, label: null };
+        }
+        return { collection: Notes.notes, label: null };
     }
     """
 
-private let searchNotesScript = """
-    function run(argv) {
-        const query = argv[0];
-        const folderName = argv[1];
-        const scope = argv[2];
-        const limit = parseInt(argv[3], 10);
-        const Notes = Application('Notes');
+private let listNotesScript =
+    folderScopeHelper + """
+        function run(argv) {
+            const limit = parseInt(argv[2], 10);
+            const Notes = Application('Notes');
+            const scope = notesScope(Notes, argv[0], argv[1]);
+            const collection = scope.collection;
 
-        let collection;
-        if (folderName === '') {
-            collection = Notes.notes;
-        } else {
-            const matches = Notes.folders.whose({ name: folderName })();
-            if (matches.length === 0) {
-                throw new Error('NOT_FOUND: no folder named ' + folderName);
+            const ids = collection.id();
+            const names = collection.name();
+            const modified = collection.modificationDate();
+            const created = collection.creationDate();
+            const locked = collection.passwordProtected();
+
+            // `Notes.notes` can yield the same note more than once when it is
+            // reachable by more than one enumeration path, so the same id would
+            // otherwise fill the page with repeats. Keep the first occurrence.
+            const rows = [];
+            const seen = {};
+            for (let i = 0; i < ids.length; i++) {
+                if (seen[ids[i]] === true) { continue; }
+                seen[ids[i]] = true;
+                rows.push({
+                    id: ids[i],
+                    name: names[i],
+                    folderName: null,
+                    creationDate: created[i] ? created[i].toISOString() : null,
+                    modificationDate: modified[i] ? modified[i].toISOString() : null,
+                    isLocked: locked[i] === true,
+                });
             }
-            collection = matches[0].notes;
-        }
+            rows.sort((a, b) =>
+                (b.modificationDate || '').localeCompare(a.modificationDate || '')
+            );
+            const page = rows.slice(0, limit);
 
-        let predicate;
-        if (scope === 'title') {
-            predicate = { name: { _contains: query } };
-        } else if (scope === 'body') {
-            predicate = { plaintext: { _contains: query } };
-        } else {
-            predicate = {
-                _or: [
-                    { name: { _contains: query } },
-                    { plaintext: { _contains: query } },
-                ],
-            };
+            // Containers can't be bulk-fetched per note, and calling
+            // `container()` once per returned note costs one Apple Event each:
+            // at ~200ms per round trip a default page of 50 outlives the
+            // client's patience, which surfaces as "server isn't responding".
+            // Fold the whole page in with one bulk fetch per folder instead, so
+            // the cost tracks the folder count and not `limit`. A note missing
+            // from the map keeps a null folderName rather than dropping out.
+            if (scope.label !== null) {
+                for (const row of page) { row.folderName = scope.label; }
+            } else if (page.length > 0) {
+                const wanted = {};
+                for (const row of page) { wanted[row.id] = true; }
+                const folderOf = {};
+                let remaining = page.length;
+                const folders = Notes.folders();
+                for (const folder of folders) {
+                    if (remaining === 0) { break; }
+                    let folderIds;
+                    try { folderIds = folder.notes.id(); } catch (e) { continue; }
+                    if (folderIds.length === 0) { continue; }
+                    let label = null;
+                    for (const id of folderIds) {
+                        if (wanted[id] !== true || folderOf[id] !== undefined) { continue; }
+                        if (label === null) { label = folder.name(); }
+                        folderOf[id] = label;
+                        remaining -= 1;
+                    }
+                }
+                for (const row of page) {
+                    const found = folderOf[row.id];
+                    row.folderName = found === undefined ? null : found;
+                }
+            }
+            return JSON.stringify(page);
         }
+        """
 
-        const hits = collection.whose(predicate)();
-        const rows = [];
-        const seen = {};
-        for (const note of hits) {
-            if (rows.length >= limit) break;
-            // The whole-store notes collection surfaces the same note once
-            // per smart-folder view; dedupe by id.
-            const id = note.id();
-            if (seen[id]) continue;
-            seen[id] = true;
-            let container = null;
-            try { container = note.container().name(); } catch (e) {}
-            rows.push({
-                id: id,
-                name: note.name(),
-                folderName: container,
-                creationDate: note.creationDate() ? note.creationDate().toISOString() : null,
-                modificationDate: note.modificationDate() ? note.modificationDate().toISOString() : null,
-                isLocked: note.passwordProtected() === true,
-            });
+private let searchNotesScript =
+    folderScopeHelper + """
+        function run(argv) {
+            const query = argv[0];
+            const scope = argv[2];
+            const limit = parseInt(argv[3], 10);
+            const Notes = Application('Notes');
+            const target = notesScope(Notes, argv[1], argv[4]);
+            const collection = target.collection;
+
+            let predicate;
+            if (scope === 'title') {
+                predicate = { name: { _contains: query } };
+            } else if (scope === 'body') {
+                predicate = { plaintext: { _contains: query } };
+            } else {
+                predicate = {
+                    _or: [
+                        { name: { _contains: query } },
+                        { plaintext: { _contains: query } },
+                    ],
+                };
+            }
+
+            const hits = collection.whose(predicate)();
+            const rows = [];
+            const seen = {};
+            for (const note of hits) {
+                if (rows.length >= limit) break;
+                // The whole-store notes collection surfaces the same note once
+                // per smart-folder view; dedupe by id.
+                const id = note.id();
+                if (seen[id]) continue;
+                seen[id] = true;
+                let container = null;
+                try { container = note.container().name(); } catch (e) {}
+                rows.push({
+                    id: id,
+                    name: note.name(),
+                    folderName: container,
+                    creationDate: note.creationDate() ? note.creationDate().toISOString() : null,
+                    modificationDate: note.modificationDate() ? note.modificationDate().toISOString() : null,
+                    isLocked: note.passwordProtected() === true,
+                });
+            }
+            return JSON.stringify(rows);
         }
-        return JSON.stringify(rows);
-    }
-    """
+        """
 
 private let getNoteScript = """
     function run(argv) {
@@ -583,30 +601,23 @@ private let createNoteScript = """
     on run argv
         set noteBody to item 1 of argv
         set folderName to item 2 of argv
+        set accountName to item 3 of argv
         tell application "Notes"
-            if folderName is "" then
+            if folderName is "" and accountName is "" then
                 set newNote to make new note with properties {body:noteBody}
-            else
+            else if folderName is "" then
+                set targetFolder to default folder of account accountName
+                set newNote to make new note at targetFolder with properties {body:noteBody}
+            else if accountName is "" then
                 set targetFolder to first folder whose name is folderName
+                set newNote to make new note at targetFolder with properties {body:noteBody}
+            else
+                set targetFolder to folder folderName of account accountName
                 set newNote to make new note at targetFolder with properties {body:noteBody}
             end if
             set noteId to id of newNote
             set noteName to name of newNote
             set noteFolder to name of container of newNote
-        end tell
-        return noteId & linefeed & noteName & linefeed & noteFolder
-    end run
-    """
-
-private let appendNoteScript = """
-    on run argv
-        set noteId to item 1 of argv
-        set appendedHTML to item 2 of argv
-        tell application "Notes"
-            set targetNote to note id noteId
-            set body of targetNote to (body of targetNote) & appendedHTML
-            set noteName to name of targetNote
-            set noteFolder to name of container of targetNote
         end tell
         return noteId & linefeed & noteName & linefeed & noteFolder
     end run
@@ -905,7 +916,15 @@ final class NotesService: Service {
             inputSchema: .object(
                 properties: [
                     "folder": .string(
-                        description: "Folder name to list from; all folders if omitted"
+                        description:
+                            "Folder name to list from; all folders if omitted. Rejected as ambiguous when two accounts have a folder by this name, unless account or folder_id narrows it."
+                    ),
+                    "account": .string(
+                        description:
+                            "Account name from notes_list_accounts. Scopes the listing to that account, and disambiguates folder."
+                    ),
+                    "folder_id": .string(
+                        description: "Folder id from notes_list_folders. Exact, and used instead of folder when given."
                     ),
                     "limit": .integer(
                         description: "Maximum notes to return",
@@ -920,12 +939,16 @@ final class NotesService: Service {
                 openWorldHint: false
             )
         ) { arguments in
-            let folder = arguments["folder"]?.stringValue ?? ""
+            let target = try await Self.resolveTarget(from: arguments)
             let limit = Self.clampedLimit(arguments["limit"]?.intValue, default: defaultListLimit)
             return try await scriptedNotesApp.runJSON(
                 .jxa,
                 script: listNotesScript,
-                arguments: [folder, String(limit)],
+                arguments: [
+                    target?.isFolderScoped == true ? target?.id ?? "" : "",
+                    target?.accountName ?? "",
+                    String(limit),
+                ],
                 as: [NoteSummary].self,
                 timeout: 120
             )
@@ -940,7 +963,15 @@ final class NotesService: Service {
                         description: "Text to search for"
                     ),
                     "folder": .string(
-                        description: "Folder name to search in; all folders if omitted"
+                        description:
+                            "Folder name to search in; all folders if omitted. Rejected as ambiguous when two accounts have a folder by this name, unless account or folder_id narrows it."
+                    ),
+                    "account": .string(
+                        description:
+                            "Account name from notes_list_accounts. Scopes the search to that account, and disambiguates folder."
+                    ),
+                    "folder_id": .string(
+                        description: "Folder id from notes_list_folders. Exact, and used instead of folder when given."
                     ),
                     "scope": .string(
                         description: "Which fields to match against",
@@ -968,13 +999,19 @@ final class NotesService: Service {
                     userInfo: [NSLocalizedDescriptionKey: "Search query is required"]
                 )
             }
-            let folder = arguments["folder"]?.stringValue ?? ""
+            let target = try await Self.resolveTarget(from: arguments)
             let scope = arguments["scope"]?.stringValue ?? "all"
             let limit = Self.clampedLimit(arguments["limit"]?.intValue, default: defaultSearchLimit)
             return try await scriptedNotesApp.runJSON(
                 .jxa,
                 script: searchNotesScript,
-                arguments: [query, folder, scope, String(limit)],
+                arguments: [
+                    query,
+                    target?.isFolderScoped == true ? target?.id ?? "" : "",
+                    scope,
+                    String(limit),
+                    target?.accountName ?? "",
+                ],
                 as: [NoteSummary].self,
                 timeout: 120
             )
@@ -1035,7 +1072,15 @@ final class NotesService: Service {
                         description: "Raw HTML body (used instead of body if provided)"
                     ),
                     "folder": .string(
-                        description: "Destination folder name; account default folder if omitted"
+                        description:
+                            "Destination folder name; the account's default folder if omitted. Rejected as ambiguous when two accounts have a folder by this name, unless account or folder_id narrows it."
+                    ),
+                    "account": .string(
+                        description:
+                            "Account name from notes_list_accounts. Picks the account, and disambiguates folder."
+                    ),
+                    "folder_id": .string(
+                        description: "Folder id from notes_list_folders. Exact, and used instead of folder when given."
                     ),
                 ],
                 required: ["title"],
@@ -1048,7 +1093,7 @@ final class NotesService: Service {
             )
         ) { arguments in
             let title = try Self.requiredString("title", from: arguments)
-            let folder = arguments["folder"]?.stringValue ?? ""
+            let target = try await Self.resolveTarget(from: arguments)
             let html = Self.composeBodyHTML(
                 title: title,
                 bodyText: arguments["body"]?.stringValue,
@@ -1057,14 +1102,19 @@ final class NotesService: Service {
             let output = try await scriptedNotesApp.run(
                 .appleScript,
                 script: createNoteScript,
-                arguments: [html, folder]
+                arguments: [
+                    html,
+                    target?.isFolderScoped == true ? target?.name ?? "" : "",
+                    target?.accountName ?? "",
+                ]
             )
             return try Self.parseWriteResult(output)
         }
 
         Tool(
             name: "notes_append",
-            description: "Append text to the end of an existing note",
+            description:
+                "Append text to the end of an existing note. Appending rewrites the whole body, so a note with attachments is refused unless allow_attachment_loss is set, and so is a note whose attachment state cannot be read. Pass expected_hash from notes_get.bodyHash to reject an append onto a body that changed since you read it.",
             inputSchema: .object(
                 properties: [
                     "id": .string(
@@ -1076,13 +1126,21 @@ final class NotesService: Service {
                     "html": .string(
                         description: "Raw HTML to append (used instead of text if provided)"
                     ),
+                    "expected_hash": .string(
+                        description: "Exact bodyHash from notes_get. Rejects the append if the body has changed since."
+                    ),
+                    "allow_attachment_loss": .boolean(
+                        description:
+                            "Append anyway when the note has attachments, or when their state cannot be read, accepting that they are destroyed.",
+                        default: .bool(false)
+                    ),
                 ],
                 required: ["id"],
                 additionalProperties: false
             ),
             annotations: .init(
                 title: "Append to Note",
-                destructiveHint: false,
+                destructiveHint: true,
                 openWorldHint: false
             )
         ) { arguments in
@@ -1099,18 +1157,29 @@ final class NotesService: Service {
                     userInfo: [NSLocalizedDescriptionKey: "Either text or html is required"]
                 )
             }
-            let output = try await scriptedNotesApp.run(
-                .appleScript,
-                script: appendNoteScript,
-                arguments: [id, appended]
+            let snapshot = try await NotesUpdateGuard.snapshot(
+                expectedHash: arguments["expected_hash"]?.stringValue
+            ) {
+                try await Self.readBodyHTML(id)
+            }
+            return try await scriptedNotesApp.runJSON(
+                .jxa,
+                script: NotesUpdateGuard.appendScript,
+                arguments: [
+                    id,
+                    appended,
+                    snapshot == nil ? "0" : "1",
+                    snapshot ?? "",
+                    Self.allowsAttachmentLoss(arguments) ? "1" : "0",
+                ],
+                as: NoteWriteResult.self
             )
-            return try Self.parseWriteResult(output)
         }
 
         Tool(
             name: "notes_update",
             description:
-                "Replace a note's entire body. Pass expected_hash from notes_get.bodyHash to reject a changed body. Without it, updates are last-writer-wins. Embedded attachments may be lost.",
+                "Replace a note's entire body. A note with attachments is refused unless allow_attachment_loss is set, and so is a note whose attachment state cannot be read, because replacing the body destroys them. Pass expected_hash from notes_get.bodyHash to reject a changed body; without it, updates are last-writer-wins.",
             inputSchema: .object(
                 properties: [
                     "id": .string(
@@ -1127,6 +1196,11 @@ final class NotesService: Service {
                     ),
                     "bodyHTML": .string(
                         description: "Raw HTML body (used instead of body if provided)"
+                    ),
+                    "allow_attachment_loss": .boolean(
+                        description:
+                            "Replace the body anyway when the note has attachments, or when their state cannot be read, accepting that they are destroyed.",
+                        default: .bool(false)
                     ),
                 ],
                 required: ["id", "title"],
@@ -1145,19 +1219,21 @@ final class NotesService: Service {
                 bodyText: arguments["body"]?.stringValue,
                 bodyHTML: arguments["bodyHTML"]?.stringValue
             )
-            let snapshot = try await NotesUpdateGuard.snapshot(expectedHash: arguments["expected_hash"]?.stringValue) {
-                let content = try await scriptedNotesApp.runJSON(
-                    .jxa,
-                    script: getNoteScript,
-                    arguments: [id],
-                    as: NoteContent.self
-                )
-                return content.bodyHTML
+            let snapshot = try await NotesUpdateGuard.snapshot(
+                expectedHash: arguments["expected_hash"]?.stringValue
+            ) {
+                try await Self.readBodyHTML(id)
             }
             return try await scriptedNotesApp.runJSON(
                 .jxa,
                 script: NotesUpdateGuard.updateScript,
-                arguments: [id, html, snapshot == nil ? "0" : "1", snapshot ?? ""],
+                arguments: [
+                    id,
+                    html,
+                    snapshot == nil ? "0" : "1",
+                    snapshot ?? "",
+                    Self.allowsAttachmentLoss(arguments) ? "1" : "0",
+                ],
                 as: NoteWriteResult.self
             )
         }
@@ -1534,7 +1610,7 @@ final class NotesService: Service {
         Tool(
             name: "notes_get_markdown",
             description:
-                "Get a single note's body converted to Markdown (headings, bold/italic, lists, links, code). Checklist checked-state is not exposed by Notes' HTML, so checklist items render as plain list items.",
+                "Get a single note's body converted to Markdown (headings, bold/italic, lists, links, code). Checklist items render as [x] and [ ] when the Notes database is readable; the checklistState field says when it is not and why.",
             inputSchema: .object(
                 properties: [
                     "id": .string(
@@ -1557,11 +1633,28 @@ final class NotesService: Service {
                 arguments: [id],
                 as: NoteContent.self
             )
+            // Ticked state lives in the database, not the HTML. A database
+            // that will not open degrades this one field, so the failure is
+            // reported beside the Markdown rather than thrown over it.
+            var checklist: [NoteChecklistItem] = []
+            var state = "unavailable"
+            do {
+                checklist = try NotesDatabaseReader().checklistItems(forNoteId: id)
+                state =
+                    checklist.isEmpty
+                    ? "none: this note has no checklist items"
+                    : "read: \(checklist.count) checklist item\(checklist.count == 1 ? "" : "s")"
+            } catch {
+                state =
+                    "unavailable: checklist items render as plain list items because "
+                    + "\(error.localizedDescription)"
+            }
             return NoteMarkdown(
                 id: content.id,
                 name: content.name,
                 folderName: content.folderName,
-                markdown: NotesHTMLMarkdown.convert(content.bodyHTML)
+                markdown: NotesHTMLMarkdown.convert(content.bodyHTML, checklist: checklist),
+                checklistState: state
             )
         }
 
@@ -2007,6 +2100,43 @@ final class NotesService: Service {
 
     // MARK: - Helpers
 
+    /// Resolves the folder/account arguments shared by list, search and
+    /// create. Nil means the caller asked for no scope at all, which costs no
+    /// Apple Event.
+    private static func resolveTarget(from arguments: [String: Value]) async throws
+        -> NotesFolderTarget?
+    {
+        let folder = arguments["folder"]?.stringValue ?? ""
+        let account = arguments["account"]?.stringValue ?? ""
+        let folderId = arguments["folder_id"]?.stringValue ?? ""
+        guard
+            NotesFolderTargeting.needsResolution(
+                folder: folder,
+                account: account,
+                folderId: folderId
+            )
+        else { return nil }
+        return try await scriptedNotesApp.runJSON(
+            .jxa,
+            script: NotesFolderTargeting.resolveScript,
+            arguments: [folder, account, folderId],
+            as: NotesFolderTarget.self
+        )
+    }
+
+    private static func allowsAttachmentLoss(_ arguments: [String: Value]) -> Bool {
+        arguments["allow_attachment_loss"]?.boolValue == true
+    }
+
+    private static func readBodyHTML(_ id: String) async throws -> String {
+        try await scriptedNotesApp.runJSON(
+            .jxa,
+            script: getNoteScript,
+            arguments: [id],
+            as: NoteContent.self
+        ).bodyHTML
+    }
+
     private static func requiredString(
         _ key: String,
         from arguments: [String: Value]
@@ -2282,183 +2412,5 @@ final class NotesService: Service {
             name: lines.count > 1 ? lines[1] : "",
             folderName: lines.count > 2 ? lines[2] : nil
         )
-    }
-}
-
-// MARK: - HTML to Markdown
-
-/// Converts the constrained HTML that Apple Notes emits into Markdown.
-///
-/// Notes bodies use a small, predictable subset: one `<div>` per line,
-/// `<h1>`-`<h3>` headings, `<b>`/`<i>`/`<u>`/`<strike>` inline styles,
-/// `<ul>`/`<ol>` lists (nested via nested list tags), `<a href>` links,
-/// `<tt>` monospace, and `<br>` for blank lines. This is a deliberately
-/// small hand-rolled converter for exactly that subset; anything
-/// unrecognized is dropped, keeping only its text content. Checklist
-/// checked-state never appears in the HTML, so checklists come out as
-/// plain list items.
-enum NotesHTMLMarkdown {
-    static func convert(_ html: String) -> String {
-        var output = ""
-        var listStack: [(ordered: Bool, index: Int)] = []
-        var pendingHref: String? = nil
-        var index = html.startIndex
-
-        while index < html.endIndex {
-            let character = html[index]
-            if character == "<" {
-                guard let close = html[index...].firstIndex(of: ">") else { break }
-                let rawTag = String(html[html.index(after: index) ..< close])
-                index = html.index(after: close)
-                handle(
-                    tag: rawTag,
-                    output: &output,
-                    listStack: &listStack,
-                    pendingHref: &pendingHref
-                )
-            } else if character == "&" {
-                let (decoded, next) = decodeEntity(in: html, at: index)
-                output.append(decoded)
-                index = next
-            } else if character == "\n" {
-                // Literal newlines between tags are formatting noise.
-                index = html.index(after: index)
-            } else {
-                output.append(character)
-                index = html.index(after: index)
-            }
-        }
-        return output.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    private static func handle(
-        tag rawTag: String,
-        output: inout String,
-        listStack: inout [(ordered: Bool, index: Int)],
-        pendingHref: inout String?
-    ) {
-        let isClosing = rawTag.hasPrefix("/")
-        let body = isClosing ? String(rawTag.dropFirst()) : rawTag
-        let name =
-            body
-            .prefix(while: { !$0.isWhitespace && $0 != "/" })
-            .lowercased()
-
-        switch name {
-        case "h1", "h2", "h3", "h4", "h5", "h6":
-            if isClosing {
-                endBlock(&output)
-            } else {
-                endBlock(&output)
-                let level = Int(String(name.dropFirst())) ?? 1
-                output.append(String(repeating: "#", count: level) + " ")
-            }
-        case "b", "strong":
-            output.append("**")
-        case "i", "em":
-            output.append("*")
-        case "strike", "s", "del":
-            output.append("~~")
-        case "tt", "code":
-            output.append("`")
-        case "pre":
-            endBlock(&output)
-            output.append(isClosing ? "```\n" : "```\n")
-        case "blockquote":
-            if !isClosing {
-                endBlock(&output)
-                output.append("> ")
-            } else {
-                endBlock(&output)
-            }
-        case "a":
-            if isClosing {
-                if let href = pendingHref {
-                    output.append("](\(href))")
-                    pendingHref = nil
-                }
-            } else if let href = attribute("href", in: body) {
-                pendingHref = href
-                output.append("[")
-            }
-        case "ul", "ol":
-            if isClosing {
-                if !listStack.isEmpty { listStack.removeLast() }
-                if listStack.isEmpty { endBlock(&output) }
-            } else {
-                listStack.append((ordered: name == "ol", index: 0))
-            }
-        case "li":
-            if !isClosing {
-                endBlock(&output)
-                let depth = max(listStack.count - 1, 0)
-                output.append(String(repeating: "    ", count: depth))
-                if listStack.isEmpty {
-                    output.append("- ")
-                } else {
-                    var top = listStack.removeLast()
-                    top.index += 1
-                    listStack.append(top)
-                    output.append(top.ordered ? "\(top.index). " : "- ")
-                }
-            }
-        case "div", "p":
-            if isClosing { endBlock(&output) }
-        case "br":
-            output.append("\n")
-        case "img", "object":
-            if !isClosing { output.append("[attachment]") }
-        default:
-            break
-        }
-    }
-
-    /// Ends the current output line: trims trailing spaces and ensures a
-    /// terminating newline.
-    private static func endBlock(_ output: inout String) {
-        while output.hasSuffix(" ") { output.removeLast() }
-        if !output.isEmpty && !output.hasSuffix("\n") {
-            output.append("\n")
-        }
-    }
-
-    /// Extracts a quoted attribute value from a raw tag body.
-    private static func attribute(_ attributeName: String, in tagBody: String) -> String? {
-        let lowered = tagBody.lowercased()
-        guard let nameRange = lowered.range(of: attributeName + "=\"") else { return nil }
-        let valueStart = tagBody.index(nameRange.lowerBound, offsetBy: attributeName.count + 2)
-        guard let valueEnd = tagBody[valueStart...].firstIndex(of: "\"") else { return nil }
-        return String(tagBody[valueStart ..< valueEnd])
-    }
-
-    /// Decodes the entity starting at `index`; returns the decoded text and
-    /// the index to resume from. Unknown entities pass through literally.
-    private static func decodeEntity(
-        in html: String,
-        at index: String.Index
-    ) -> (String, String.Index) {
-        guard let semicolon = html[index...].firstIndex(of: ";"),
-            html.distance(from: index, to: semicolon) <= 10
-        else {
-            return ("&", html.index(after: index))
-        }
-        let entity = String(html[html.index(after: index) ..< semicolon])
-        let next = html.index(after: semicolon)
-        switch entity {
-        case "amp": return ("&", next)
-        case "lt": return ("<", next)
-        case "gt": return (">", next)
-        case "quot": return ("\"", next)
-        case "apos": return ("'", next)
-        case "nbsp": return (" ", next)
-        default:
-            if entity.hasPrefix("#"),
-                let code = UInt32(entity.dropFirst()),
-                let scalar = Unicode.Scalar(code)
-            {
-                return (String(Character(scalar)), next)
-            }
-            return ("&", html.index(after: index))
-        }
     }
 }
