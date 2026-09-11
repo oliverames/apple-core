@@ -90,3 +90,44 @@ enum NotesFolderTargeting {
         }
         """
 }
+
+/// Parsing for the line-oriented output the Notes write scripts return.
+///
+/// It lives here so the contract can be tested: a write that succeeded must
+/// report success even when Notes declines to say which folder the note landed
+/// in. Notes raises -1728 reading the container of a note it has just created,
+/// and treating that as fatal reported a committed write as a failure, which
+/// invited callers to retry into a duplicate note.
+public enum NotesWriteOutput {
+    public struct Parsed: Equatable, Sendable {
+        public let id: String
+        public let name: String
+        public let folderName: String?
+    }
+
+    public enum ParseError: LocalizedError, Equatable {
+        case missingIdentifier(String)
+
+        public var errorDescription: String? {
+            switch self {
+            case let .missingIdentifier(output):
+                return "Unexpected script output: \(output)"
+            }
+        }
+    }
+
+    public static func parse(_ output: String) throws -> Parsed {
+        let lines = output.components(separatedBy: "\n")
+        guard let id = lines.first, !id.isEmpty else {
+            throw ParseError.missingIdentifier(output)
+        }
+        let name = lines.count > 1 ? lines[1] : ""
+        // An absent folder is absent, not a note filed in a folder named "".
+        let folder = lines.count > 2 ? lines[2] : ""
+        return Parsed(
+            id: id,
+            name: name,
+            folderName: folder.isEmpty ? nil : folder
+        )
+    }
+}

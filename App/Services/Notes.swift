@@ -617,7 +617,14 @@ private let createNoteScript = """
             end if
             set noteId to id of newNote
             set noteName to name of newNote
-            set noteFolder to name of container of newNote
+            -- Notes raises -1728 reading the container of a note it has just
+            -- made, often enough that treating it as fatal loses a note that
+            -- was actually created and invites the caller to retry into a
+            -- duplicate. The folder name is decoration on a write result.
+            set noteFolder to ""
+            try
+                set noteFolder to name of container of newNote
+            end try
         end tell
         return noteId & linefeed & noteName & linefeed & noteFolder
     end run
@@ -2398,18 +2405,7 @@ final class NotesService: Service {
 
     /// Write scripts return `id\nname\nfolderName` on stdout.
     private static func parseWriteResult(_ output: String) throws -> NoteWriteResult {
-        let lines = output.components(separatedBy: "\n")
-        guard let id = lines.first, !id.isEmpty else {
-            throw NSError(
-                domain: "NotesError",
-                code: 3,
-                userInfo: [NSLocalizedDescriptionKey: "Unexpected script output: \(output)"]
-            )
-        }
-        return NoteWriteResult(
-            id: id,
-            name: lines.count > 1 ? lines[1] : "",
-            folderName: lines.count > 2 ? lines[2] : nil
-        )
+        let parsed = try NotesWriteOutput.parse(output)
+        return NoteWriteResult(id: parsed.id, name: parsed.name, folderName: parsed.folderName)
     }
 }
