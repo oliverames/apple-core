@@ -179,6 +179,108 @@ final class UtilitiesService: Service {
                 "processorCount": .int(info.processorCount),
             ])
         }
+
+        Tool(
+            name: "utilities_connector_health",
+            description:
+                "Report which Apple Core surfaces are live on this Mac, what each one is waiting on, "
+                + "which folders are shared, and the version information a support conversation needs. "
+                + "Read-only, and raises no permission prompts. Call this first when a tool is missing or failing.",
+            inputSchema: .object(properties: [:], additionalProperties: false),
+            annotations: .init(
+                title: "Connector Health",
+                readOnlyHint: true,
+                idempotentHint: true,
+                openWorldHint: false
+            )
+        ) { _ in
+            await connectorHealthReport()
+        }
+    }
+}
+
+/// Gathers the live values `ConnectorHealth` shapes into a report. Every probe
+/// here reads recorded state: nothing calls a surface, so nothing prompts.
+private func connectorHealthReport() async -> ConnectorHealthReport {
+    let built = Dictionary(
+        uniqueKeysWithValues: ServiceRegistry.services.map {
+            (String(describing: type(of: $0)), $0.tools.count)
+        }
+    )
+    let defaults = UserDefaults.standard
+    let info = Bundle.main.infoDictionary ?? [:]
+
+    var surfaces: [ConnectorSurfaceInput] = []
+    // The inventory, not the registry, decides which surfaces exist: a service
+    // compiled out of this build has to appear as unsupported rather than
+    // vanish, or a client cannot tell "not on this Mac" from "never existed".
+    for serviceTypeName in ServicePermissionInventory.standard.keys.sorted() {
+        let requirements = ServicePermissionInventory.standard[serviceTypeName] ?? []
+        let isBuilt = built[serviceTypeName] != nil
+        let isEnabled =
+            defaults.object(
+                forKey: ConnectorHealth.enablementDefaultsKey(forServiceTypeName: serviceTypeName)
+            ) as? Bool ?? ConnectorHealth.defaultEnabled(forServiceTypeName: serviceTypeName)
+
+        // A surface nobody switched on is reported as switched off, full stop.
+        // Reading its permissions anyway would list refusals for things the
+        // user has not agreed to use yet, and spend a TCC round trip each.
+        var permissions: [ConnectorPermissionInput] = []
+        if isBuilt && isEnabled {
+            for requirement in requirements {
+                let state = await ServicePermissionStatus.state(of: requirement)
+                permissions.append(
+                    ConnectorPermissionInput(
+                        requirement: requirement.settingsTitle,
+                        state: state.connectorState,
+                        detail: state.label
+                    )
+                )
+            }
+        }
+
+        surfaces.append(
+            ConnectorSurfaceInput(
+                serviceTypeName: serviceTypeName,
+                isBuilt: isBuilt,
+                isEnabled: isEnabled,
+                toolCount: built[serviceTypeName] ?? 0,
+                permissions: permissions
+            )
+        )
+    }
+
+    let sharedFolders = (ServingConfigManager.load().filesystemRoots ?? []).map {
+        ConnectorHealthReport.SharedFolder(path: $0.path, writable: $0.writable)
+    }
+
+    return ConnectorHealth.report(
+        application: ConnectorHealthReport.Application(
+            name: info["CFBundleName"] as? String ?? "Apple Core",
+            version: info["CFBundleShortVersionString"] as? String ?? "unknown",
+            build: info["CFBundleVersion"] as? String ?? "unknown",
+            macOSVersion: ProcessInfo.processInfo.operatingSystemVersionString
+        ),
+        // The menu bar switch, read from the same default `App.swift` binds.
+        isConnectorEnabled: defaults.object(forKey: "isEnabled") as? Bool ?? true,
+        surfaces: surfaces,
+        sharedFolders: sharedFolders
+    )
+}
+
+extension ServicePermissionState {
+    /// The recorded answer, reduced to what a client can act on. `limited`
+    /// keeps its wording in the detail, which is where the narrowing is
+    /// described.
+    var connectorState: ConnectorPermissionState {
+        switch self {
+        case .granted: .granted
+        case .limited: .limited
+        case .denied: .denied
+        case .notDetermined: .notRequested
+        case .promptBlocked: .promptBlocked
+        case .unknown: .unreadable
+        }
     }
 }
 
