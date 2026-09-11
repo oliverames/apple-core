@@ -21,6 +21,17 @@ private let maximumMessageLimit = 100
 private let maximumBatchSize = 50
 private let maximumRecipients = 50
 
+/// Base64 inflates by roughly a third, so this cap is about the transport and
+/// the client's context window rather than the disk. Matches the Notes
+/// attachment contract deliberately: a client that has learned one should not
+/// have to learn the other.
+private let maximumInlineAttachmentBytes = 256 * 1024
+
+/// How many messages `mail_get_thread` will read headers from. Reading `all
+/// headers` is one Apple Event per message, so this is the real cost ceiling
+/// on threading.
+private let maximumThreadCandidates = 60
+
 // MARK: - Output models
 
 private struct MailAccount: Codable, Sendable {
@@ -56,10 +67,34 @@ private struct MailBatchResult: Codable, Sendable {
     let results: [MailBatchItemResult]
 }
 
+/// What the compose script hands back after Mail has actually built the
+/// message. `body` and `attachments` are read off the composed message, not
+/// echoed from the request, so a draft can be inspected rather than assumed.
+private struct MailComposeScriptResult: Codable, Sendable {
+    let status: String
+    let subject: String
+    let to: [String]
+    let body: String
+    let attachments: [String]
+}
+
+private struct MailComposeAttachmentSummary: Codable, Sendable {
+    let name: String
+    let mimeType: String
+    let byteCount: Int
+}
+
 private struct MailComposeResult: Codable, Sendable {
     let status: String
     let subject: String
     let to: [String]
+    let cc: [String]
+    let bcc: [String]
+    let account: String?
+    /// The body as composed, for draft inspection.
+    let body: String
+    let attachmentCount: Int
+    let attachments: [MailComposeAttachmentSummary]
 }
 
 private struct MailReplyResult: Codable, Sendable {
@@ -94,9 +129,49 @@ private struct MailStats: Codable, Sendable {
     let totalUnread: Int
 }
 
+/// One candidate message, with its raw header block, on the way to
+/// MailThreadResolver. Only Mail.swift ever sees this shape.
+private struct MailThreadCandidateRow: Codable, Sendable {
+    let id: Int
+    let subject: String
+    let sender: String
+    let dateReceived: String?
+    let isRead: Bool
+    let mailbox: String
+    let accountName: String
+    let rawHeaders: String
+}
+
+private struct MailThreadCandidates: Codable, Sendable {
+    let subjectRoot: String
+    let mailboxesSearched: Int
+    let candidates: [MailThreadCandidateRow]
+}
+
+/// A thread member. The first five fields are what `mail_get_thread` has
+/// always returned; `mailbox`, `accountName` and `messageId` are new, and
+/// matter now that a thread can span mailboxes.
+private struct MailThreadMessage: Codable, Sendable {
+    let id: Int
+    let subject: String
+    let sender: String
+    let dateReceived: String?
+    let isRead: Bool
+    let mailbox: String
+    let accountName: String
+    let messageId: String?
+}
+
 private struct MailThreadResult: Codable, Sendable {
     let subjectRoot: String
-    let messages: [MailMessageSummary]
+    /// "headers" or "subject": which rule decided this thread.
+    let matching: String
+    /// True only for the subject fallback, which may include unrelated mail.
+    let approximate: Bool
+    let note: String
+    let mailboxesSearched: Int
+    let candidatesConsidered: Int
+    let messages: [MailThreadMessage]
 }
 
 private struct MailAttachmentInfo: Codable, Sendable {
@@ -110,6 +185,20 @@ private struct MailAttachmentInfo: Codable, Sendable {
 private struct MailSaveAttachmentResult: Codable, Sendable {
     let saved: String
     let attachmentName: String
+}
+
+/// The remote-client answer to "give me this attachment". A path on the
+/// serving Mac is useless to a client that cannot read that filesystem, so
+/// this carries the bytes, bounded, with the type and size beside them.
+private struct MailAttachmentData: Codable, Sendable {
+    let messageId: Int
+    let mailbox: String
+    let accountName: String
+    let attachmentIndex: Int
+    let attachmentName: String
+    let mimeType: String
+    let byteCount: Int
+    let base64: String
 }
 
 private struct MailMailboxMutationResult: Codable, Sendable {
@@ -412,7 +501,17 @@ private let deleteMessagesScript =
         """
 
 // Compose payload travels as one JSON argv string:
-// { to, cc, bcc, subject, body, account }. argv[1] selects the action.
+// { to, cc, bcc, subject, body, account, attachmentPaths }. argv[1] selects
+// the action.
+//
+// Attachment paths have already been validated in Swift — resolved against
+// the folders the user shared, or staged from inline base64 — so this script
+// only hands Mail file references it was given.
+//
+// The body and attachment list are read back off the composed message before
+// it is sent or saved, so the caller learns what the draft actually contains
+// rather than what it asked for. Mail does not always answer those reads on
+// an outgoing message, so each falls back to the requested value.
 private let composeScript = """
     function run(argv) {
         const payload = JSON.parse(argv[0]);
@@ -444,13 +543,47 @@ private let composeScript = """
         for (const address of payload.bcc) {
             message.bccRecipients.push(Mail.Recipient({ address: address }));
         }
+        const attachmentPaths = payload.attachmentPaths || [];
+        for (const path of attachmentPaths) {
+            message.attachments.push(Mail.Attachment({ fileName: Path(path) }));
+        }
+
+        let composedBody = payload.body;
+        try {
+            const actual = message.content();
+            if (typeof actual === 'string') { composedBody = actual; }
+        } catch (error) {}
+
+        let attachmentNames = payload.attachmentNames || [];
+        try {
+            const actual = message.attachments();
+            if (actual && actual.length > 0) {
+                const names = [];
+                for (let i = 0; i < actual.length; i++) {
+                    try { names.push(actual[i].name() || ''); } catch (error) { names.push(''); }
+                }
+                attachmentNames = names;
+            }
+        } catch (error) {}
 
         if (action === 'send') {
             message.send();
-            return JSON.stringify({ status: 'sent', subject: payload.subject, to: payload.to });
+            return JSON.stringify({
+                status: 'sent',
+                subject: payload.subject,
+                to: payload.to,
+                body: composedBody,
+                attachments: attachmentNames,
+            });
         }
         message.save();
-        return JSON.stringify({ status: 'draft_saved', subject: payload.subject, to: payload.to });
+        return JSON.stringify({
+            status: 'draft_saved',
+            subject: payload.subject,
+            to: payload.to,
+            body: composedBody,
+            attachments: attachmentNames,
+        });
     }
     """
 
@@ -516,20 +649,27 @@ private let forwardScript =
         }
         """
 
-// Thread reconstruction is an approximation: Mail's scripting interface
-// does not expose Message-ID/References headers, so the "thread" is every
-// message in the same mailbox whose subject contains the anchor message's
-// subject stripped of Re:/Fwd: prefixes. Unrelated messages that share a
-// short subject may be included; true header-based threading arrives with
-// the disk-first index (BUILD_PLAN §3.1).
-private let getThreadScript =
+// Thread identity comes from RFC 5322 headers, not from subject text.
+//
+// This script is only the gathering half. It narrows to plausible candidates
+// with Mail's own subject filter — which runs inside Mail and is cheap — then
+// reads each candidate's raw header block, which is not cheap: `all headers`
+// costs one Apple Event per message. The decision itself lives in
+// Shared/MailThreadResolver.swift, as a pure function over these headers, so
+// it can be tested against fixtures without Mail running.
+//
+// Mailboxes are visited anchor-first, then Sent-like, then the rest, and each
+// gets a share of the candidate budget. Spending the whole budget on a busy
+// Inbox would reintroduce exactly the bug this replaces: a conversation that
+// never reaches its own replies in Sent.
+private let threadCandidatesScript =
     resolveMailboxHelper + "\n"
         + """
         function run(argv) {
             const accountName = argv[0];
             const mailboxName = argv[1];
             const messageId = parseInt(argv[2], 10);
-            const limit = parseInt(argv[3], 10);
+            const candidateCap = parseInt(argv[3], 10);
             const Mail = Application('Mail');
             const mailbox = resolveMailbox(Mail, accountName, mailboxName);
 
@@ -537,26 +677,82 @@ private let getThreadScript =
             if (matches.length === 0) {
                 throw new Error('NOT_FOUND: no message with id ' + messageId);
             }
-            const subject = matches[0].subject() || '';
-            const root = subject.replace(/^((re|fwd?|fw)(\\[\\d+\\])?:\\s*)+/i, '').trim();
+            const anchor = matches[0];
+            const anchorSubject = anchor.subject() || '';
+            const root = anchorSubject.replace(/^((re|fwd?|fw)(\\[\\d+\\])?:\\s*)+/i, '').trim();
 
-            let related = matches;
-            if (root !== '') {
-                related = mailbox.messages.whose({ subject: { _contains: root } })();
+            function headersOf(message) {
+                try { return message.allHeaders() || ''; } catch (error) { return ''; }
             }
-            const count = Math.min(limit, related.length);
-            const rows = [];
-            for (let i = 0; i < count; i++) {
-                const message = related[i];
-                rows.push({
+            function rowFor(message, boxName) {
+                return {
                     id: message.id(),
                     subject: message.subject() || '',
                     sender: message.sender() || '',
                     dateReceived: message.dateReceived() ? message.dateReceived().toISOString() : null,
                     isRead: message.readStatus() === true,
-                });
+                    mailbox: boxName,
+                    accountName: accountName,
+                    rawHeaders: headersOf(message),
+                };
             }
-            return JSON.stringify({ subjectRoot: root, messages: rows });
+
+            const rows = [rowFor(anchor, mailboxName)];
+            const seen = {};
+            seen[messageId] = true;
+            let mailboxesSearched = 0;
+
+            if (root !== '') {
+                const accounts = Mail.accounts.whose({ name: accountName })();
+                let boxes = [];
+                try {
+                    boxes = accounts.length > 0 ? accounts[0].mailboxes() : [mailbox];
+                } catch (error) {
+                    boxes = [mailbox];
+                }
+                const ordered = [];
+                const sentish = [];
+                const rest = [];
+                for (const box of boxes) {
+                    let name = '';
+                    try { name = box.name() || ''; } catch (error) { continue; }
+                    if (name === mailboxName) { ordered.push(box); }
+                    else if (/sent|outbox|archive/i.test(name)) { sentish.push(box); }
+                    else { rest.push(box); }
+                }
+                const visiting = ordered.concat(sentish).concat(rest);
+                const perBox = Math.max(5, Math.floor(candidateCap / Math.max(visiting.length, 1)));
+
+                for (const box of visiting) {
+                    if (rows.length >= candidateCap) { break; }
+                    let related = [];
+                    let boxName = '';
+                    try {
+                        boxName = box.name() || '';
+                        related = box.messages.whose({ subject: { _contains: root } })();
+                    } catch (error) {
+                        continue;
+                    }
+                    mailboxesSearched += 1;
+                    let taken = 0;
+                    for (let i = 0; i < related.length; i++) {
+                        if (taken >= perBox || rows.length >= candidateCap) { break; }
+                        const message = related[i];
+                        let id;
+                        try { id = message.id(); } catch (error) { continue; }
+                        if (seen[id]) { continue; }
+                        seen[id] = true;
+                        rows.push(rowFor(message, boxName));
+                        taken += 1;
+                    }
+                }
+            }
+
+            return JSON.stringify({
+                subjectRoot: root,
+                mailboxesSearched: Math.max(mailboxesSearched, 1),
+                candidates: rows,
+            });
         }
         """
 
@@ -716,6 +912,12 @@ private let saveAttachmentScript =
             });
         }
         """
+
+// Mail will only hand an attachment to a file path, so the inline fetch
+// stages it exactly the way the save path does and reads it back. The
+// difference is that this destination is a scratch directory Swift removes on
+// the way out, rather than somewhere the user chose.
+private let fetchAttachmentScript = saveAttachmentScript
 
 private let selectedMessagesScript = """
     function run() {
@@ -1353,7 +1555,12 @@ final class MailService: Service {
         Tool(
             name: "mail_get_thread",
             description:
-                "Get the conversation around a message. Approximation: returns messages in the same mailbox whose subject matches the anchor's subject with Re:/Fwd: prefixes stripped (Mail's scripting interface exposes no Message-ID/References headers)",
+                "Get the conversation around a message, decided on RFC 5322 Message-ID, In-Reply-To and "
+                + "References headers and searched across every mailbox in the account, so a reply chain "
+                + "split between Inbox and Sent comes back whole and unrelated mail sharing the subject "
+                + "does not. A message carrying no usable headers falls back to subject matching; the "
+                + "response says which rule was used in \"matching\" and sets \"approximate\" when it was "
+                + "the fallback.",
             inputSchema: .object(
                 properties: [
                     "account": .string(
@@ -1383,12 +1590,11 @@ final class MailService: Service {
             let mailbox = try Self.requiredString("mailbox", from: arguments)
             let id = try Self.requiredID(from: arguments)
             let limit = Self.clampedLimit(arguments["limit"]?.intValue)
-            return try await scriptedMailApp.runJSON(
-                .jxa,
-                script: getThreadScript,
-                arguments: [account, mailbox, String(id), String(limit)],
-                as: MailThreadResult.self,
-                timeout: 120
+            return try await Self.getThread(
+                account: account,
+                mailbox: mailbox,
+                id: id,
+                limit: limit
             )
         }
 
@@ -1535,6 +1741,51 @@ final class MailService: Service {
                 id: id,
                 selector: selector,
                 saveDir: saveDir
+            )
+        }
+
+        Tool(
+            name: "mail_fetch_attachment",
+            description:
+                "Get a message attachment's bytes as base64, for attachments up to "
+                + "\(maximumInlineAttachmentBytes / 1024)KB. Use this from a remote client: "
+                + "mail_save_attachment writes to the serving Mac's disk, which a remote client cannot "
+                + "read. Use mail_save_attachment instead for anything larger, or when the file only "
+                + "needs to land on that disk.",
+            inputSchema: .object(
+                properties: [
+                    "account": .string(
+                        description: "Account name (from mail_list_accounts)"
+                    ),
+                    "mailbox": .string(
+                        description: "Mailbox name containing the message"
+                    ),
+                    "id": .integer(
+                        description: "Message id (from mail_list_messages or mail_search)"
+                    ),
+                    "attachment": .string(
+                        description:
+                            "Attachment name or zero-based index (from mail_list_attachments). A name matches the first attachment with that name"
+                    ),
+                ],
+                required: ["account", "mailbox", "id", "attachment"],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Fetch Attachment",
+                readOnlyHint: true,
+                openWorldHint: false
+            )
+        ) { arguments in
+            let account = try Self.requiredString("account", from: arguments)
+            let mailbox = try Self.requiredString("mailbox", from: arguments)
+            let id = try Self.requiredID(from: arguments)
+            let selector = try Self.requiredString("attachment", from: arguments)
+            return try await Self.fetchAttachment(
+                account: account,
+                mailbox: mailbox,
+                id: id,
+                selector: selector
             )
         }
 
@@ -1915,10 +2166,70 @@ final class MailService: Service {
                     description:
                         "Account name to send from (from mail_list_accounts); Mail's default if omitted"
                 ),
+                "attachments": .array(
+                    description:
+                        "Files to attach; max \(MailComposeAttachments.maximumCount), "
+                        + "\(MailComposeAttachments.maximumAttachmentBytes / (1024 * 1024))MB each and "
+                        + "\(MailComposeAttachments.maximumTotalBytes / (1024 * 1024))MB in total. Each "
+                        + "entry takes either \"path\" (a file inside a folder the user shared with "
+                        + "Apple Core; see filesystem_roots) or \"base64\" plus \"name\" (bytes the "
+                        + "client already holds, which is the route a remote client must use).",
+                    items: .object(
+                        properties: [
+                            "path": .string(
+                                description:
+                                    "Absolute path to an existing file inside a shared folder"
+                            ),
+                            "base64": .string(
+                                description: "Base64-encoded file contents"
+                            ),
+                            "name": .string(
+                                description:
+                                    "Filename the recipient sees. Required with base64; defaults to the path's filename"
+                            ),
+                        ],
+                        additionalProperties: false
+                    )
+                ),
             ],
             required: requireTo ? ["to", "subject", "body"] : ["subject", "body"],
             additionalProperties: false
         )
+    }
+
+    /// Reads the `attachments` argument into specs, without touching disk.
+    private static func attachmentSpecs(
+        from arguments: [String: Value]
+    ) throws -> [MailComposeAttachmentSpec] {
+        guard let values = arguments["attachments"]?.arrayValue else { return [] }
+        return try values.map { value in
+            guard case let .object(fields) = value else {
+                throw Self.error("attachments must contain objects with path or base64")
+            }
+            return MailComposeAttachmentSpec(
+                name: fields["name"]?.stringValue,
+                path: fields["path"]?.stringValue,
+                base64: fields["base64"]?.stringValue
+            )
+        }
+    }
+
+    /// Validates attachments against the shared-folder allowlist and the size
+    /// caps. The allowlist is the filesystem surface's, read fresh, because
+    /// the user can unshare a folder while a client is connected.
+    private static func prepareAttachments(
+        from arguments: [String: Value]
+    ) throws -> [MailPreparedAttachment] {
+        let specs = try Self.attachmentSpecs(from: arguments)
+        guard !specs.isEmpty else { return [] }
+        let roots = ServingConfigManager.load().filesystemRoots ?? []
+        return try MailComposeAttachments.prepare(specs) { path in
+            try FilesystemAccess.resolve(
+                requested: path,
+                roots: roots,
+                requiringWrite: false
+            )
+        }
     }
 
     private static func runCompose(
@@ -1937,6 +2248,51 @@ final class MailService: Service {
         let subject = try Self.requiredString("subject", from: arguments)
         let body = try Self.requiredString("body", from: arguments)
         let account = arguments["account"]?.stringValue
+        let attachments = try Self.prepareAttachments(from: arguments)
+
+        return try await Self.compose(
+            action: action,
+            to: to,
+            cc: cc,
+            bcc: bcc,
+            subject: subject,
+            body: body,
+            account: account,
+            attachments: attachments
+        )
+    }
+
+    /// Stages any inline attachment bytes, runs the compose script, and folds
+    /// what Mail reports back into the result.
+    ///
+    /// The scratch directory is removed on every exit, including the throwing
+    /// ones, so inline attachment bytes never outlive the call that carried
+    /// them.
+    private static func compose(
+        action: String,
+        to: [String],
+        cc: [String],
+        bcc: [String],
+        subject: String,
+        body: String,
+        account: String?,
+        attachments: [MailPreparedAttachment]
+    ) async throws -> MailComposeResult {
+        var staging: URL?
+        defer {
+            if let staging { try? FileManager.default.removeItem(at: staging) }
+        }
+        var paths: [String] = []
+        if !attachments.isEmpty {
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("apple-core-mail-compose-\(UUID().uuidString)")
+            try FileManager.default.createDirectory(
+                at: directory,
+                withIntermediateDirectories: true
+            )
+            staging = directory
+            paths = try MailComposeAttachments.stage(attachments, in: directory)
+        }
 
         let payload = ComposePayload(
             to: to,
@@ -1944,14 +2300,105 @@ final class MailService: Service {
             bcc: bcc,
             subject: subject,
             body: body,
-            account: account
+            account: account,
+            attachmentPaths: paths,
+            attachmentNames: attachments.map(\.name)
         )
-        return try await scriptedMailApp.runJSON(
+        let result = try await scriptedMailApp.runJSON(
             .jxa,
             script: composeScript,
             arguments: [try Self.encodeJSON(payload), action],
-            as: MailComposeResult.self,
-            timeout: 120
+            as: MailComposeScriptResult.self,
+            timeout: 180
+        )
+
+        // Report the names Mail ended up with, but keep the sizes and types
+        // this side measured: Mail will not tell us either for an outgoing
+        // message, and a caller inspecting a draft wants both.
+        let summaries = result.attachments.enumerated().map { offset, name -> MailComposeAttachmentSummary in
+            let measured = offset < attachments.count ? attachments[offset] : nil
+            return MailComposeAttachmentSummary(
+                name: name.isEmpty ? (measured?.name ?? "attachment") : name,
+                mimeType: measured?.mimeType
+                    ?? MailComposeAttachments.mimeType(forFileName: name),
+                byteCount: measured?.byteCount ?? 0
+            )
+        }
+        return MailComposeResult(
+            status: result.status,
+            subject: result.subject,
+            to: result.to,
+            cc: cc,
+            bcc: bcc,
+            account: account,
+            body: result.body,
+            attachmentCount: summaries.count,
+            attachments: summaries
+        )
+    }
+
+    // MARK: - Threads
+
+    /// Gathers candidates through Mail, then hands the decision to
+    /// MailThreadResolver.
+    ///
+    /// Behaviour change for existing clients: this no longer returns every
+    /// same-subject message in one mailbox. It returns the actual
+    /// conversation, which can span mailboxes, and it says in `matching`
+    /// whether headers or the subject fallback decided it.
+    private static func getThread(
+        account: String,
+        mailbox: String,
+        id: Int,
+        limit: Int
+    ) async throws -> MailThreadResult {
+        let gathered = try await scriptedMailApp.runJSON(
+            .jxa,
+            script: threadCandidatesScript,
+            arguments: [account, mailbox, String(id), String(maximumThreadCandidates)],
+            as: MailThreadCandidates.self,
+            timeout: 180
+        )
+
+        let resolution = MailThreadResolver.resolve(
+            anchorID: id,
+            candidates: gathered.candidates.map {
+                MailThreadCandidate(
+                    id: $0.id,
+                    mailbox: $0.mailbox,
+                    accountName: $0.accountName,
+                    subject: $0.subject,
+                    rawHeaders: $0.rawHeaders
+                )
+            }
+        )
+
+        var rowsByID: [Int: MailThreadCandidateRow] = [:]
+        for row in gathered.candidates { rowsByID[row.id] = row }
+
+        let messages = resolution.members.prefix(limit).compactMap {
+            member -> MailThreadMessage? in
+            guard let row = rowsByID[member.id] else { return nil }
+            return MailThreadMessage(
+                id: row.id,
+                subject: row.subject,
+                sender: row.sender,
+                dateReceived: row.dateReceived,
+                isRead: row.isRead,
+                mailbox: member.mailbox,
+                accountName: member.accountName,
+                messageId: member.messageId
+            )
+        }
+
+        return MailThreadResult(
+            subjectRoot: resolution.subjectRoot,
+            matching: resolution.matching.rawValue,
+            approximate: resolution.approximate,
+            note: resolution.note,
+            mailboxesSearched: gathered.mailboxesSearched,
+            candidatesConsidered: gathered.candidates.count,
+            messages: Array(messages)
         )
     }
 
@@ -1974,22 +2421,7 @@ final class MailService: Service {
             as: [MailAttachmentInfo].self,
             timeout: 120
         )
-        guard !attachments.isEmpty else {
-            throw Self.error("NOT_FOUND: message \(id) has no attachments")
-        }
-
-        let attachment: MailAttachmentInfo
-        if let index = Int(selector) {
-            guard let match = attachments.first(where: { $0.index == index }) else {
-                throw Self.error("NOT_FOUND: no attachment at index \(index) (message has \(attachments.count))")
-            }
-            attachment = match
-        } else {
-            guard let match = attachments.first(where: { $0.name == selector }) else {
-                throw Self.error("NOT_FOUND: no attachment named \(selector)")
-            }
-            attachment = match
-        }
+        let attachment = try Self.selectAttachment(selector, from: attachments, messageID: id)
 
         let directory = try AttachmentSaveDirectory.resolve(saveDir)
         let destination = Self.uniqueDestination(
@@ -2009,6 +2441,92 @@ final class MailService: Service {
 
     /// Strips path separators and control characters; an empty or
     /// dot-leading result falls back to a safe default.
+    /// Stages one attachment into a scratch directory, reads the bytes back,
+    /// and takes the directory with it on the way out.
+    ///
+    /// Mail will only hand an attachment to a file path, which is exactly the
+    /// problem this tool exists to solve: a path on the serving Mac is not a
+    /// result a remote client can use. The staging is an implementation
+    /// detail the caller never sees, and the `defer` is what keeps it that
+    /// way even when the read or the size check throws.
+    private static func fetchAttachment(
+        account: String,
+        mailbox: String,
+        id: Int,
+        selector: String
+    ) async throws -> MailAttachmentData {
+        let attachments = try await scriptedMailApp.runJSON(
+            .jxa,
+            script: listAttachmentsScript,
+            arguments: [account, mailbox, String(id)],
+            as: [MailAttachmentInfo].self,
+            timeout: 60
+        )
+        let attachment = try Self.selectAttachment(selector, from: attachments, messageID: id)
+
+        let staging = FileManager.default.temporaryDirectory
+            .appendingPathComponent("apple-core-mail-attachment-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: staging) }
+
+        let staged = staging.appendingPathComponent(
+            Self.sanitizedFileName(attachment.name)
+        )
+        _ = try await scriptedMailApp.runJSON(
+            .jxa,
+            script: fetchAttachmentScript,
+            arguments: [account, mailbox, String(id), String(attachment.index), staged.path],
+            as: MailSaveAttachmentResult.self,
+            timeout: 120
+        )
+
+        let data = try Data(contentsOf: staged)
+        guard data.count <= maximumInlineAttachmentBytes else {
+            throw Self.error(
+                "TOO_LARGE: \"\(attachment.name)\" is \(data.count / 1024)KB, over the "
+                    + "\(maximumInlineAttachmentBytes / 1024)KB inline limit. "
+                    + "Use mail_save_attachment to write it to disk instead."
+            )
+        }
+
+        log.notice("Fetched mail attachment at index \(attachment.index, privacy: .public)")
+        return MailAttachmentData(
+            messageId: id,
+            mailbox: mailbox,
+            accountName: account,
+            attachmentIndex: attachment.index,
+            attachmentName: attachment.name,
+            mimeType: attachment.mimeType
+                ?? MailComposeAttachments.mimeType(forFileName: attachment.name),
+            byteCount: data.count,
+            base64: data.base64EncodedString()
+        )
+    }
+
+    /// Index-or-name selection, shared by the save and fetch paths so the two
+    /// cannot drift into resolving the same selector differently.
+    private static func selectAttachment(
+        _ selector: String,
+        from attachments: [MailAttachmentInfo],
+        messageID: Int
+    ) throws -> MailAttachmentInfo {
+        guard !attachments.isEmpty else {
+            throw Self.error("NOT_FOUND: message \(messageID) has no attachments")
+        }
+        if let index = Int(selector) {
+            guard let match = attachments.first(where: { $0.index == index }) else {
+                throw Self.error(
+                    "NOT_FOUND: no attachment at index \(index) (message has \(attachments.count))"
+                )
+            }
+            return match
+        }
+        guard let match = attachments.first(where: { $0.name == selector }) else {
+            throw Self.error("NOT_FOUND: no attachment named \(selector)")
+        }
+        return match
+    }
+
     private static func sanitizedFileName(_ name: String) -> String {
         var cleaned =
             name
@@ -2068,20 +2586,15 @@ final class MailService: Service {
             throw Self.error("action must be draft or send")
         }
 
-        let payload = ComposePayload(
+        return try await Self.compose(
+            action: action == "send" ? "send" : "draft",
             to: to,
             cc: cc,
             bcc: bcc,
             subject: subject,
             body: body,
-            account: arguments["account"]?.stringValue
-        )
-        return try await scriptedMailApp.runJSON(
-            .jxa,
-            script: composeScript,
-            arguments: [try Self.encodeJSON(payload), action == "send" ? "send" : "draft"],
-            as: MailComposeResult.self,
-            timeout: 120
+            account: arguments["account"]?.stringValue,
+            attachments: try Self.prepareAttachments(from: arguments)
         )
     }
 
@@ -2106,5 +2619,7 @@ final class MailService: Service {
         let subject: String
         let body: String
         let account: String?
+        let attachmentPaths: [String]
+        let attachmentNames: [String]
     }
 }
