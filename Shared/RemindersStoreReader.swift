@@ -29,6 +29,36 @@ public struct ReminderSection: Sendable, Equatable {
     public let identifier: String?
 }
 
+/// A list as the Reminders store knows it, which is a good deal more than
+/// `EKCalendar` models.
+///
+/// EventKit reports a reminder list's identifier, title, source, colour and
+/// whether it is editable. It has no vocabulary at all for list groups, smart
+/// lists, pinning, emoji badges or sharing — so `reminders_lists` used to
+/// present a folder of lists and a saved smart list as though they were both
+/// ordinary lists, and never said which ones other people can see.
+public struct ReminderListDetail: Sendable, Equatable {
+    public let identifier: String?
+    public let name: String?
+    /// True for a folder that contains other lists rather than reminders.
+    public let isGroup: Bool
+    /// The reverse-DNS type of a built-in smart list ("today", "flagged" and
+    /// so on), or nil for an ordinary list.
+    public let smartListType: String?
+    public let isPinned: Bool
+    /// Non-zero when the list is shared with other people. The exact values
+    /// are Apple's and undocumented, so the raw number is reported alongside.
+    public let sharingStatus: Int
+    public let sharedOwnerName: String?
+    /// The emoji or SF Symbol name Reminders draws on the list.
+    public let badge: String?
+    /// The identifier of the group this list sits in, when the store records
+    /// one.
+    public let parentGroupIdentifier: String?
+
+    public var isShared: Bool { sharingStatus != 0 }
+}
+
 public enum RemindersStoreError: LocalizedError {
     case storeNotFound
     case cannotOpen(String)
@@ -173,6 +203,175 @@ public struct RemindersStoreReader {
             )
         }
         return results
+    }
+
+    /// Every list the store holds, including the ones EventKit will not show.
+    ///
+    /// Rows marked for deletion are skipped: they are tombstones waiting for
+    /// a sync round trip, and reporting them would show lists the user has
+    /// already deleted.
+    public func lists() throws -> [ReminderListDetail] {
+        let handle = try open()
+        defer { sqlite3_close(handle) }
+        guard tableExists("ZREMCDBASELIST", in: handle) else {
+            throw RemindersStoreError.schemaMissing("the lists table")
+        }
+
+        func column(_ name: String, default fallback: String = "NULL") -> String {
+            columnExists(name, onTable: "ZREMCDBASELIST", in: handle) ? "l.\(name)" : fallback
+        }
+
+        let sql = """
+            SELECT \(column("ZCKIDENTIFIER")),
+                   \(column("ZNAME")),
+                   \(column("ZISGROUP", default: "0")),
+                   \(column("ZSMARTLISTTYPE")),
+                   \(column("ZISPINNEDBYCURRENTUSER", default: "0")),
+                   \(column("ZSHARINGSTATUS", default: "0")),
+                   \(column("ZSHAREDOWNERNAME")),
+                   \(column("ZBADGEEMBLEM")),
+                   \(column("ZPARENTLIST"))
+            FROM ZREMCDBASELIST l
+            WHERE COALESCE(\(column("ZMARKEDFORDELETION", default: "0")), 0) = 0
+            ORDER BY \(column("ZNAME", default: "l.Z_PK"))
+            """
+
+        var statement: OpaquePointer?
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_prepare_v2(handle, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw RemindersStoreError.cannotOpen(String(cString: sqlite3_errmsg(handle)))
+        }
+
+        // ZPARENTLIST is a CoreData row id, not an identifier a caller can use.
+        // Resolving it needs the row-id-to-identifier map, built in the same
+        // pass so a second query cannot see a different snapshot.
+        var identifierByRow: [Int64: String] = [:]
+        if columnExists("ZCKIDENTIFIER", onTable: "ZREMCDBASELIST", in: handle) {
+            identifierByRow = rowIdentifiers(in: handle)
+        }
+
+        var results: [ReminderListDetail] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            let parentRow =
+                sqlite3_column_type(statement, 8) == SQLITE_NULL
+                ? nil : sqlite3_column_int64(statement, 8)
+            results.append(
+                ReminderListDetail(
+                    identifier: Self.text(statement, 0),
+                    name: Self.text(statement, 1),
+                    isGroup: sqlite3_column_int64(statement, 2) == 1,
+                    smartListType: Self.text(statement, 3),
+                    isPinned: sqlite3_column_int64(statement, 4) == 1,
+                    sharingStatus: Int(sqlite3_column_int64(statement, 5)),
+                    sharedOwnerName: Self.text(statement, 6),
+                    badge: Self.badgeName(fromStoredValue: Self.text(statement, 7)),
+                    parentGroupIdentifier: parentRow.flatMap { identifierByRow[$0] }
+                )
+            )
+        }
+        return results
+    }
+
+    private func rowIdentifiers(in handle: OpaquePointer) -> [Int64: String] {
+        var statement: OpaquePointer?
+        defer { sqlite3_finalize(statement) }
+        let sql = "SELECT Z_PK, ZCKIDENTIFIER FROM ZREMCDBASELIST"
+        guard sqlite3_prepare_v2(handle, sql, -1, &statement, nil) == SQLITE_OK else { return [:] }
+        var map: [Int64: String] = [:]
+        while sqlite3_step(statement) == SQLITE_ROW {
+            if let identifier = Self.text(statement, 1) {
+                map[sqlite3_column_int64(statement, 0)] = identifier
+            }
+        }
+        return map
+    }
+
+    /// Which reminders carry the flag EventKit cannot see.
+    ///
+    /// `EKReminder` has no `flagged` property, and the Reminders scripting
+    /// dictionary reaches it only through a live AppleScript round trip. The
+    /// store records it as a plain column, keyed by the same identifier
+    /// EventKit calls `calendarItemIdentifier`.
+    ///
+    /// Only the flagged identifiers are returned. An identifier that is
+    /// absent is not flagged; an identifier the store does not know at all is
+    /// also absent, which is why the caller is told whether the read
+    /// succeeded rather than being handed an empty set to interpret.
+    public func flaggedReminderIdentifiers() throws -> Set<String> {
+        let handle = try open()
+        defer { sqlite3_close(handle) }
+        guard tableExists("ZREMCDREMINDER", in: handle) else {
+            throw RemindersStoreError.schemaMissing("the reminders table")
+        }
+        guard columnExists("ZFLAGGED", onTable: "ZREMCDREMINDER", in: handle) else {
+            throw RemindersStoreError.schemaMissing("the flag column")
+        }
+        let identifierColumn =
+            columnExists("ZDACALENDARITEMUNIQUEIDENTIFIER", onTable: "ZREMCDREMINDER", in: handle)
+            ? "ZDACALENDARITEMUNIQUEIDENTIFIER"
+            : (columnExists("ZCKIDENTIFIER", onTable: "ZREMCDREMINDER", in: handle)
+                ? "ZCKIDENTIFIER" : nil)
+        guard let identifierColumn else {
+            throw RemindersStoreError.schemaMissing("the reminder identifier column")
+        }
+
+        let sql = """
+            SELECT \(identifierColumn) FROM ZREMCDREMINDER
+            WHERE ZFLAGGED = 1 AND COALESCE(ZMARKEDFORDELETION, 0) = 0
+              AND \(identifierColumn) IS NOT NULL
+            """
+        var statement: OpaquePointer?
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_prepare_v2(handle, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw RemindersStoreError.cannotOpen(String(cString: sqlite3_errmsg(handle)))
+        }
+        var flagged: Set<String> = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            if let identifier = Self.text(statement, 0) { flagged.insert(identifier) }
+        }
+        return flagged
+    }
+
+    /// The badge column holds either a JSON object wrapping an emoji, as in
+    /// `{"Emoji" : "\u{1F6D2}"}`, or a bare SF Symbol name. Both appear on
+    /// this machine, so both are handled and anything else is passed through.
+    static func badgeName(fromStoredValue raw: String?) -> String? {
+        guard let raw = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
+            return nil
+        }
+        guard raw.hasPrefix("{") else { return raw }
+        guard let data = raw.data(using: .utf8),
+            let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return raw }
+        for key in ["Emoji", "emoji"] {
+            if let value = object[key] as? String, !value.isEmpty { return value }
+        }
+        // A JSON badge whose shape is not the one known here: reporting the
+        // raw value beats reporting nothing and beats guessing.
+        return raw
+    }
+
+    private func columnExists(_ column: String, onTable table: String, in handle: OpaquePointer)
+        -> Bool
+    {
+        var statement: OpaquePointer?
+        defer { sqlite3_finalize(statement) }
+        // PRAGMA takes no bound parameter for a table name; every table name
+        // passed here is a compile-time constant in this file.
+        guard
+            sqlite3_prepare_v2(handle, "PRAGMA table_info(\(table))", -1, &statement, nil)
+                == SQLITE_OK
+        else { return false }
+        while sqlite3_step(statement) == SQLITE_ROW {
+            if let name = Self.text(statement, 1), name == column { return true }
+        }
+        return false
+    }
+
+    private static func text(_ statement: OpaquePointer?, _ index: Int32) -> String? {
+        guard let cString = sqlite3_column_text(statement, index) else { return nil }
+        let value = String(cString: cString)
+        return value.isEmpty ? nil : value
     }
 }
 

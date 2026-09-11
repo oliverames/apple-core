@@ -319,8 +319,14 @@ enum MailEmlxParser {
                 guard let separator = part.range(of: "\n\n") ?? part.range(of: "\r\n\r\n") else {
                     continue
                 }
+                // Splitting on the boundary leaves each part starting with the
+                // newline that followed it, and unfoldedHeaders stops at the
+                // first blank line. Without dropping it every part parsed as
+                // having no headers, so base64 and quoted-printable bodies were
+                // indexed still encoded and HTML was never stripped.
                 let partHeaders = MailThreadResolver.unfoldedHeaders(
                     String(part[part.startIndex ..< separator.lowerBound])
+                        .trimmingCharacters(in: CharacterSet(charactersIn: "\r\n"))
                 )
                 func partHeader(_ name: String) -> String? {
                     partHeaders.first { $0.name.caseInsensitiveCompare(name) == .orderedSame }?
@@ -422,6 +428,109 @@ enum MailEmlxParser {
         }
         characters = []
         return Data(bytes)
+    }
+
+    /// The best matching text part of a message, decoded but left as-is.
+    ///
+    /// `plainText` above exists to feed the search index, so it flattens HTML
+    /// to words and throws the markup away. Link extraction needs the markup:
+    /// an `href` is the only place the real destination of a link appears, and
+    /// Mail's own `content` property hands back the same flattened text, so
+    /// there is no Apple Events shortcut to it either.
+    ///
+    /// This walks the same MIME tree and applies the same transfer decoding,
+    /// but returns the part verbatim along with its type, preferring
+    /// `preferred` and falling back to any other `text/*` part. It never
+    /// truncates: the caller knows its own budget.
+    static func textPart(
+        body: String,
+        headers: [(name: String, value: String)],
+        preferring preferred: String = "text/html"
+    ) -> (text: String, mimeType: String)? {
+        func header(_ name: String) -> String? {
+            headers.first { $0.name.caseInsensitiveCompare(name) == .orderedSame }?.value
+        }
+        return textPart(
+            body: body,
+            contentType: header("Content-Type") ?? "text/plain",
+            transferEncoding: header("Content-Transfer-Encoding") ?? "7bit",
+            preferred: preferred.lowercased(),
+            depth: 0
+        )
+    }
+
+    private static func textPart(
+        body: String,
+        contentType: String,
+        transferEncoding: String,
+        preferred: String,
+        depth: Int
+    ) -> (text: String, mimeType: String)? {
+        let type =
+            contentType.split(separator: ";").first.map {
+                $0.trimmingCharacters(in: .whitespaces).lowercased()
+            } ?? "text/plain"
+
+        if type.hasPrefix("multipart/") {
+            guard depth < 4, let boundary = parameter("boundary", in: contentType) else {
+                return nil
+            }
+            // Every text part is collected before one is chosen, because the
+            // preferred type is conventionally last in a multipart/alternative
+            // and returning the first match would always pick the plain-text
+            // fallback.
+            var found: [(text: String, mimeType: String)] = []
+            for part in body.components(separatedBy: "--" + boundary).dropFirst() {
+                if part.hasPrefix("--") { break }
+                guard let separator = part.range(of: "\n\n") ?? part.range(of: "\r\n\r\n") else {
+                    continue
+                }
+                // The split leaves each part beginning with the line break
+                // that followed the boundary delimiter, and unfoldedHeaders
+                // treats a leading empty line as the end of the header block.
+                // Without this trim every part reads as text/plain 7bit and
+                // its real Content-Type and transfer encoding are lost.
+                let partHeaders = MailThreadResolver.unfoldedHeaders(
+                    String(part[part.startIndex ..< separator.lowerBound])
+                        .trimmingCharacters(in: .newlines)
+                )
+                func partHeader(_ name: String) -> String? {
+                    partHeaders.first { $0.name.caseInsensitiveCompare(name) == .orderedSame }?
+                        .value
+                }
+                if let resolved = textPart(
+                    body: String(part[separator.upperBound...]),
+                    contentType: partHeader("Content-Type") ?? "text/plain",
+                    transferEncoding: partHeader("Content-Transfer-Encoding") ?? "7bit",
+                    preferred: preferred,
+                    depth: depth + 1
+                ) {
+                    if resolved.mimeType == preferred { return resolved }
+                    found.append(resolved)
+                }
+            }
+            return found.first
+        }
+
+        guard type.hasPrefix("text/") else { return nil }
+        let charset = parameter("charset", in: contentType) ?? "utf-8"
+        let decoded: String
+        switch transferEncoding.trimmingCharacters(in: .whitespaces).lowercased() {
+        case "base64":
+            let joined = body.components(separatedBy: .whitespacesAndNewlines).joined()
+            guard let data = Data(base64Encoded: joined) else { return nil }
+            decoded =
+                String(data: data, encoding: textEncoding(named: charset))
+                ?? String(decoding: data, as: UTF8.self)
+        case "quoted-printable":
+            guard let data = quotedPrintable(body) else { return nil }
+            decoded =
+                String(data: data, encoding: textEncoding(named: charset))
+                ?? String(decoding: data, as: UTF8.self)
+        default:
+            decoded = body
+        }
+        return (decoded, type)
     }
 
     /// Enough HTML flattening to make a message searchable. It is not a

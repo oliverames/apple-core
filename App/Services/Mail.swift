@@ -19,6 +19,17 @@ private let mailPermissionProbeScript = """
 private let defaultMessageLimit = 20
 private let maximumMessageLimit = 100
 private let maximumBatchSize = 50
+
+/// Byte budgets for `mail_get_source`. A message with a photo attached is
+/// megabytes of base64, so the default returns enough to answer a delivery
+/// question and the result says how much it cut.
+private let defaultSourceByteBudget = 65_536
+private let maximumSourceByteBudget = 1_048_576
+
+/// Caps for `mail_extract_links`. A newsletter routinely carries a couple of
+/// hundred distinct URLs.
+private let defaultLinkLimit = 100
+private let maximumLinkLimit = 500
 private let maximumRecipients = 50
 
 /// Base64 inflates by roughly a third, so this cap is about the transport and
@@ -386,6 +397,67 @@ private struct MailMessageDetail: Codable, Sendable {
     let body: String
 }
 
+/// What `mail_redirect` did, echoed back from the script.
+private struct MailRedirectResult: Codable, Sendable {
+    let redirected: Bool
+    let id: Int
+    let subject: String
+    let originalSender: String
+    let to: [String]
+    let cc: [String]
+    let bcc: [String]
+}
+
+/// The raw header block, and optionally the whole message, as Mail holds it.
+private struct MailMessageSourceRaw: Codable, Sendable {
+    let id: Int
+    let subject: String
+    let messageSize: Int?
+    let headers: String?
+    let source: String?
+}
+
+/// `mail_get_source` as the caller sees it: parsed fields beside the text
+/// they were parsed from, and an honest count of anything the byte budget cut.
+private struct MailMessageSourceReport: Codable, Sendable {
+    let id: Int
+    let subject: String
+    let messageSize: Int?
+    let headerFields: [MailHeaderField]
+    let rawHeaders: String
+    let source: String?
+    let omittedBytes: Int
+    let note: String?
+}
+
+private struct MailAccountMailboxNames: Codable, Sendable {
+    let accountName: String
+    let mailboxes: [String]
+}
+
+/// The well-known mailboxes of one account, named as that account names them.
+private struct MailMailboxRoleReport: Codable, Sendable {
+    let accountName: String
+    let roles: [MailMailboxRoleMatch]
+    /// Roles this account has no mailbox for. Reported rather than guessed:
+    /// handing back "Trash" for an account that has none sends a delete into
+    /// a mailbox that does not exist.
+    let unresolved: [String]
+    let mailboxCount: Int
+}
+
+/// The links inside one message body.
+private struct MailLinkReport: Codable, Sendable {
+    let id: Int
+    let subject: String
+    /// The MIME type the links were read out of, e.g. `text/html`.
+    let bodyType: String?
+    let links: [MailBodyLink]
+    /// Distinct links found, which can exceed `links.count` when limited.
+    let distinctLinks: Int
+    let note: String?
+}
+
 // MARK: - JXA sources
 //
 // Scripts are constants; user input travels exclusively through argv so
@@ -681,14 +753,165 @@ private let setFlaggedScript =
             const accountName = argv[0];
             const mailboxName = argv[1];
             const ids = JSON.parse(argv[2]);
-            const flagged = argv[3] === 'true';
+            // 'flag', 'unflag', or a flag index 0-6. MailFlagInstruction in
+            // Shared/MailFlagColor.swift settled the three arguments into one
+            // token, so nothing is decided here.
+            const instruction = argv[3];
             const Mail = Application('Mail');
             const mailbox = resolveMailbox(Mail, accountName, mailboxName);
             return runBatch(mailbox, ids, message => {
-                message.flaggedStatus = flagged;
+                if (instruction === 'unflag') {
+                    message.flaggedStatus = false;
+                    return;
+                }
+                message.flaggedStatus = true;
+                if (instruction === 'flag') { return; }
+                // Mail only honours `flag index` on a message that is already
+                // flagged, which is why the order above matters. Nothing is
+                // read back afterwards: the write has committed, and failing
+                // it on a read is how a caller ends up retrying a write that
+                // already succeeded.
+                message.flagIndex = parseInt(instruction, 10);
             });
         }
         """
+
+private let setJunkScript =
+    resolveMailboxHelper + "\n" + batchMutationRunner + "\n"
+        + """
+        function run(argv) {
+            const accountName = argv[0];
+            const mailboxName = argv[1];
+            const ids = JSON.parse(argv[2]);
+            const junk = argv[3] === 'true';
+            const Mail = Application('Mail');
+            const mailbox = resolveMailbox(Mail, accountName, mailboxName);
+            return runBatch(mailbox, ids, message => {
+                message.junkMailStatus = junk;
+            });
+        }
+        """
+
+// `redirect` is a distinct Mail command from `forward`, and the difference is
+// the whole point: a redirected message keeps its original From and Date, so
+// it reaches the new recipient as though the original sender had addressed
+// them. Forwarding rewrites the sender to you and quotes the message inside a
+// new one. Neither of the two maintained Apple Mail MCP servers exposes
+// `redirect`; Mail has had it since OS X 10.0.
+//
+// Nothing is read back after the send. Mail's `send` either raises or it
+// does not, and a property read afterwards that failed would tell a caller a
+// committed send had failed.
+private let redirectMessageScript =
+    resolveMailboxHelper + "\n"
+        + """
+        function run(argv) {
+            const accountName = argv[0];
+            const mailboxName = argv[1];
+            const messageId = parseInt(argv[2], 10);
+            const to = JSON.parse(argv[3]);
+            const cc = JSON.parse(argv[4]);
+            const bcc = JSON.parse(argv[5]);
+            const Mail = Application('Mail');
+            const mailbox = resolveMailbox(Mail, accountName, mailboxName);
+            const matches = mailbox.messages.whose({ id: messageId })();
+            if (matches.length === 0) {
+                throw new Error('NOT_FOUND: no message with id ' + messageId);
+            }
+            const original = matches[0];
+            let subject = '';
+            try { subject = original.subject() || ''; } catch (error) {}
+            let sender = '';
+            try { sender = original.sender() || ''; } catch (error) {}
+
+            const outgoing = Mail.redirect(original, { openingWindow: false });
+            for (const address of to) {
+                outgoing.toRecipients.push(Mail.Recipient({ address: address }));
+            }
+            for (const address of cc) {
+                outgoing.ccRecipients.push(Mail.Recipient({ address: address }));
+            }
+            for (const address of bcc) {
+                outgoing.bccRecipients.push(Mail.Recipient({ address: address }));
+            }
+            outgoing.send();
+            return JSON.stringify({
+                redirected: true,
+                id: messageId,
+                subject: subject,
+                originalSender: sender,
+                to: to,
+                cc: cc,
+                bcc: bcc,
+            });
+        }
+        """
+
+// `all headers` is the RFC 5322 header block as it arrived and `source` is
+// the whole message including its MIME parts. Both are read behind their own
+// try: a message Mail has only a stub for answers neither, and that is a
+// partial answer rather than a failure.
+private let messageSourceScript =
+    resolveMailboxHelper + "\n"
+        + """
+        function run(argv) {
+            const accountName = argv[0];
+            const mailboxName = argv[1];
+            const messageId = parseInt(argv[2], 10);
+            const wantSource = argv[3] === 'true';
+            const Mail = Application('Mail');
+            const mailbox = resolveMailbox(Mail, accountName, mailboxName);
+            const matches = mailbox.messages.whose({ id: messageId })();
+            if (matches.length === 0) {
+                throw new Error('NOT_FOUND: no message with id ' + messageId);
+            }
+            const message = matches[0];
+            let headers = null;
+            try { headers = message.allHeaders() || null; } catch (error) {}
+            let source = null;
+            if (wantSource) {
+                try { source = message.source() || null; } catch (error) {}
+            }
+            let subject = '';
+            try { subject = message.subject() || ''; } catch (error) {}
+            let size = null;
+            try { size = message.messageSize(); } catch (error) {}
+            return JSON.stringify({
+                id: messageId,
+                subject: subject,
+                messageSize: size,
+                headers: headers,
+                source: source,
+            });
+        }
+        """
+
+// The mailbox names of one account, or of every account. Roles are decided in
+// Swift (Shared/MailMailboxRoles.swift) so the alias table is testable without
+// Mail running.
+private let mailboxNamesScript = """
+    function run(argv) {
+        const accountName = argv[0];
+        const Mail = Application('Mail');
+        const accounts = accountName === ''
+            ? Mail.accounts()
+            : Mail.accounts.whose({ name: accountName })();
+        if (accounts.length === 0) {
+            throw new Error('NOT_FOUND: no account named ' + accountName);
+        }
+        const rows = [];
+        for (const account of accounts) {
+            const names = [];
+            try {
+                for (const mailbox of account.mailboxes()) {
+                    try { names.push(mailbox.name()); } catch (error) {}
+                }
+            } catch (error) {}
+            rows.push({ accountName: account.name(), mailboxes: names });
+        }
+        return JSON.stringify(rows);
+    }
+    """
 
 private let moveMessagesScript =
     resolveMailboxHelper + "\n" + batchMutationRunner + "\n"
@@ -1240,6 +1463,23 @@ private let deleteMailboxScript =
 ///   gated behind Mail's `com.apple.mail.compose` access group, so an
 ///   unentitled script reads it as null. Confirmed against Mail's own
 ///   dictionary rather than assumed; there is no unentitled path to it.
+/// - Smart mailbox writes (create/delete): there is no smart mailbox in
+///   Mail's scripting dictionary at all, so the only way to write one is to
+///   edit Mail's private SyncedSmartMailboxes.plist, which a running Mail
+///   holds in memory and rewrites on quit. A tool that writes it would have
+///   its work silently discarded whenever Mail happened to be open, which is
+///   most of the time. `mail_list_smart_mailboxes` reads that file and stays
+///   read-only for the same reason.
+/// - `bounce`: the command is still in Mail's dictionary but the feature was
+///   removed from Mail's UI, and a bounce forges a delivery failure from an
+///   address the user controls. It is a deliverability hazard aimed at the
+///   user's own sending reputation, and mail_delete_message plus
+///   mail_set_junk cover what people actually want from it.
+/// - Batch variants of the triage tools: `mail_set_read`, `mail_set_flagged`,
+///   `mail_set_junk`, `mail_move_message` and `mail_delete_message` each take
+///   an `ids` array up to \(maximumBatchSize) and report per-id
+///   success/failure, so separate `batch_*` tools would be six more names for
+///   capability that is already here.
 /// - Cross-mailbox and body search through Apple Events: per-mailbox
 ///   subject/sender search is the AppleScript-feasible ceiling, so
 ///   `mail_search` stays there and keeps returning Mail's own live message
@@ -1502,6 +1742,10 @@ final class MailService: Service {
                         description: "true to flag, false to unflag",
                         default: true
                     ),
+                    "color": .string(
+                        description:
+                            "Flag colour: \(MailFlagColor.acceptedNames.joined(separator: ", ")). Omit to flag without choosing a colour. Cannot be combined with flagged=false."
+                    ),
                 ],
                 required: ["account", "mailbox", "ids"],
                 additionalProperties: false
@@ -1518,9 +1762,20 @@ final class MailService: Service {
             let mailbox = try Self.requiredString("mailbox", from: arguments)
             let ids = try Self.requiredIDs(from: arguments)
             let flagged = arguments["flagged"]?.boolValue ?? true
+            let instruction: MailFlagInstruction
+            do {
+                instruction = try MailFlagInstruction.resolve(
+                    flagged: flagged,
+                    color: arguments["color"]?.stringValue
+                )
+            } catch let failure as MailFlagColorError {
+                throw Self.error(failure.description)
+            }
             return try await Self.runBatch(
                 script: setFlaggedScript,
-                arguments: [account, mailbox, try Self.encodeJSON(ids), flagged ? "true" : "false"]
+                arguments: [
+                    account, mailbox, try Self.encodeJSON(ids), instruction.scriptArgument,
+                ]
             )
         }
 
@@ -2498,6 +2753,317 @@ final class MailService: Service {
             )
         ) { _ in
             MailSmartMailboxes.list()
+        }
+
+        Tool(
+            name: "mail_set_junk",
+            description:
+                "Mark messages as junk or not junk. Sets Mail's junk mail status, which is what trains Mail's junk filter; it does not move the messages. Accepts up to \(maximumBatchSize) message ids and reports per-id success/failure",
+            inputSchema: .object(
+                properties: [
+                    "account": .string(
+                        description: "Account name (from mail_list_accounts)"
+                    ),
+                    "mailbox": .string(
+                        description: "Mailbox name containing the messages"
+                    ),
+                    "ids": .array(
+                        description:
+                            "Message ids (from mail_list_messages or mail_search); max \(maximumBatchSize)",
+                        items: .integer()
+                    ),
+                    "junk": .boolean(
+                        description: "true to mark as junk, false to mark as not junk",
+                        default: true
+                    ),
+                ],
+                required: ["account", "mailbox", "ids"],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Mark Junk/Not Junk",
+                readOnlyHint: false,
+                destructiveHint: false,
+                idempotentHint: true,
+                openWorldHint: false
+            )
+        ) { arguments in
+            let account = try Self.requiredString("account", from: arguments)
+            let mailbox = try Self.requiredString("mailbox", from: arguments)
+            let ids = try Self.requiredIDs(from: arguments)
+            let junk = arguments["junk"]?.boolValue ?? true
+            return try await Self.runBatch(
+                script: setJunkScript,
+                arguments: [account, mailbox, try Self.encodeJSON(ids), junk ? "true" : "false"]
+            )
+        }
+
+        Tool(
+            name: "mail_redirect",
+            description:
+                "Redirect a message to other recipients. Unlike mail_forward, a redirect keeps the original sender, date and subject, so it arrives as though the original sender had addressed the new recipient, and a reply goes back to them rather than to you. Sends immediately.",
+            inputSchema: .object(
+                properties: [
+                    "account": .string(
+                        description: "Account name (from mail_list_accounts)"
+                    ),
+                    "mailbox": .string(
+                        description: "Mailbox name containing the message"
+                    ),
+                    "id": .integer(
+                        description: "Message id (from mail_list_messages or mail_search)"
+                    ),
+                    "to": .array(
+                        description: "Recipient email addresses; max \(maximumRecipients)",
+                        items: .string()
+                    ),
+                    "cc": .array(
+                        description: "Cc email addresses",
+                        items: .string()
+                    ),
+                    "bcc": .array(
+                        description: "Bcc email addresses",
+                        items: .string()
+                    ),
+                ],
+                required: ["account", "mailbox", "id", "to"],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Redirect Message",
+                readOnlyHint: false,
+                destructiveHint: false,
+                idempotentHint: false,
+                openWorldHint: true
+            )
+        ) { arguments in
+            let account = try Self.requiredString("account", from: arguments)
+            let mailbox = try Self.requiredString("mailbox", from: arguments)
+            let id = try Self.requiredID(from: arguments)
+            let to = try Self.requiredAddresses("to", from: arguments)
+            let cc = Self.addresses("cc", from: arguments)
+            let bcc = Self.addresses("bcc", from: arguments)
+            guard to.count + cc.count + bcc.count <= maximumRecipients else {
+                throw Self.error("recipients exceed the limit of \(maximumRecipients)")
+            }
+            return try await scriptedMailApp.runJSON(
+                .jxa,
+                script: redirectMessageScript,
+                arguments: [
+                    account, mailbox, String(id), try Self.encodeJSON(to),
+                    try Self.encodeJSON(cc), try Self.encodeJSON(bcc),
+                ],
+                as: MailRedirectResult.self,
+                timeout: 120
+            )
+        }
+
+        Tool(
+            name: "mail_get_source",
+            description:
+                "Get a message's raw RFC 5322 headers, parsed and unfolded, and optionally its full source including MIME parts. This is the ground truth behind delivery questions: Received hops, SPF/DKIM/DMARC results, List-Unsubscribe, Message-ID and References. Repeated headers keep their order.",
+            inputSchema: .object(
+                properties: [
+                    "account": .string(
+                        description: "Account name (from mail_list_accounts)"
+                    ),
+                    "mailbox": .string(
+                        description: "Mailbox name containing the message"
+                    ),
+                    "id": .integer(
+                        description: "Message id (from mail_list_messages or mail_search)"
+                    ),
+                    "part": .string(
+                        description:
+                            "headers for the header block only, full to include the entire message source",
+                        default: "headers",
+                        enum: ["headers", "full"]
+                    ),
+                    "max_bytes": .integer(
+                        description:
+                            "Byte budget for the returned text; anything cut is reported as omittedBytes. Default \(defaultSourceByteBudget), max \(maximumSourceByteBudget)"
+                    ),
+                ],
+                required: ["account", "mailbox", "id"],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Get Message Source",
+                readOnlyHint: true,
+                openWorldHint: false
+            )
+        ) { arguments in
+            let account = try Self.requiredString("account", from: arguments)
+            let mailbox = try Self.requiredString("mailbox", from: arguments)
+            let id = try Self.requiredID(from: arguments)
+            let wantsSource = (arguments["part"]?.stringValue ?? "headers") == "full"
+            let budget = min(
+                max(arguments["max_bytes"]?.intValue ?? defaultSourceByteBudget, 1),
+                maximumSourceByteBudget
+            )
+            let raw = try await scriptedMailApp.runJSON(
+                .jxa,
+                script: messageSourceScript,
+                arguments: [account, mailbox, String(id), wantsSource ? "true" : "false"],
+                as: MailMessageSourceRaw.self,
+                timeout: 120
+            )
+            // Mail answers `all headers` for a downloaded message and nothing
+            // for a stub it has only the summary of. When it is silent, the
+            // header block is recovered from the source if that came back.
+            let rawHeaders =
+                raw.headers ?? raw.source.map { MailHeaderBlock.split(rawMessage: $0).headers } ?? ""
+            let clampedHeaders = MailHeaderBlock.clamp(rawHeaders, toBytes: budget)
+            var omitted = clampedHeaders.omittedBytes
+            var source: String?
+            if wantsSource, let full = raw.source {
+                let remaining = max(0, budget - clampedHeaders.text.utf8.count)
+                let clampedSource = MailHeaderBlock.clamp(full, toBytes: remaining)
+                source = clampedSource.text
+                omitted += clampedSource.omittedBytes
+            }
+            var note: String?
+            if rawHeaders.isEmpty {
+                note =
+                    "Mail returned no header block for this message, which usually means only its summary has been downloaded. Run mail_check_for_new_mail or open the message in Mail, then retry."
+            } else if wantsSource, raw.source == nil {
+                note = "Mail returned no message source; the headers above are all it had."
+            }
+            return MailMessageSourceReport(
+                id: raw.id,
+                subject: raw.subject,
+                messageSize: raw.messageSize,
+                headerFields: MailHeaderBlock.parse(clampedHeaders.text),
+                rawHeaders: clampedHeaders.text,
+                source: source,
+                omittedBytes: omitted,
+                note: note
+            )
+        }
+
+        Tool(
+            name: "mail_extract_links",
+            description:
+                "List the links inside a message, with the label each one was shown under. Reads the message's HTML part, so it sees real href targets rather than the flattened text Mail's content property returns. Identical URLs are merged and counted, and a link whose visible label names a different host than it points at is marked displayMismatch.",
+            inputSchema: .object(
+                properties: [
+                    "account": .string(
+                        description: "Account name (from mail_list_accounts)"
+                    ),
+                    "mailbox": .string(
+                        description: "Mailbox name containing the message"
+                    ),
+                    "id": .integer(
+                        description: "Message id (from mail_list_messages or mail_search)"
+                    ),
+                    "limit": .integer(
+                        description:
+                            "Maximum distinct links to return, first seen first. Default \(defaultLinkLimit), max \(maximumLinkLimit)"
+                    ),
+                ],
+                required: ["account", "mailbox", "id"],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Extract Message Links",
+                readOnlyHint: true,
+                openWorldHint: false
+            )
+        ) { arguments in
+            let account = try Self.requiredString("account", from: arguments)
+            let mailbox = try Self.requiredString("mailbox", from: arguments)
+            let id = try Self.requiredID(from: arguments)
+            let limit = min(
+                max(arguments["limit"]?.intValue ?? defaultLinkLimit, 1),
+                maximumLinkLimit
+            )
+            let raw = try await scriptedMailApp.runJSON(
+                .jxa,
+                script: messageSourceScript,
+                arguments: [account, mailbox, String(id), "true"],
+                as: MailMessageSourceRaw.self,
+                timeout: 120
+            )
+            guard let full = raw.source, !full.isEmpty else {
+                return MailLinkReport(
+                    id: raw.id,
+                    subject: raw.subject,
+                    bodyType: nil,
+                    links: [],
+                    distinctLinks: 0,
+                    note:
+                        "Mail returned no source for this message, which usually means only its summary has been downloaded. Run mail_check_for_new_mail or open the message in Mail, then retry."
+                )
+            }
+            let split = MailHeaderBlock.split(rawMessage: full)
+            let headers = MailHeaderBlock.parse(split.headers).map {
+                (name: $0.name, value: $0.value)
+            }
+            let part = MailEmlxParser.textPart(
+                body: split.body ?? "",
+                headers: headers,
+                preferring: "text/html"
+            )
+            guard let part else {
+                return MailLinkReport(
+                    id: raw.id,
+                    subject: raw.subject,
+                    bodyType: nil,
+                    links: [],
+                    distinctLinks: 0,
+                    note: "This message has no text part to read links out of."
+                )
+            }
+            let extracted = MailBodyLinks.extract(from: part.text, limit: limit)
+            return MailLinkReport(
+                id: raw.id,
+                subject: raw.subject,
+                bodyType: part.mimeType,
+                links: extracted.links,
+                distinctLinks: extracted.total,
+                note: extracted.total > extracted.links.count
+                    ? "\(extracted.total) distinct links found; the first \(extracted.links.count) are listed. Raise limit to see more."
+                    : nil
+            )
+        }
+
+        Tool(
+            name: "mail_mailbox_roles",
+            description:
+                "Resolve each account's well-known mailboxes (inbox, drafts, sent, trash, junk, archive, outbox) to the names that account actually uses, so the other Mail tools can be given a real mailbox name. Necessary because those names are localised and provider-specific: Trash is Papierkorb on a German account and [Gmail]/Trash on Gmail. A role the account has no mailbox for is listed as unresolved rather than guessed.",
+            inputSchema: .object(
+                properties: [
+                    "account": .string(
+                        description: "Account name; all accounts if omitted"
+                    )
+                ],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Resolve Mailbox Roles",
+                readOnlyHint: true,
+                openWorldHint: false
+            )
+        ) { arguments in
+            let account = arguments["account"]?.stringValue ?? ""
+            let rows = try await scriptedMailApp.runJSON(
+                .jxa,
+                script: mailboxNamesScript,
+                arguments: [account],
+                as: [MailAccountMailboxNames].self,
+                timeout: 120
+            )
+            return rows.map { row in
+                let matches = MailMailboxRoles.resolve(mailboxes: row.mailboxes)
+                let resolved = Set(matches.map(\.role))
+                return MailMailboxRoleReport(
+                    accountName: row.accountName,
+                    roles: matches,
+                    unresolved: MailMailboxRole.allCases.filter { !resolved.contains($0) }
+                        .map(\.rawValue),
+                    mailboxCount: row.mailboxes.count
+                )
+            }
         }
     }
 

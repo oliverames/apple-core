@@ -524,11 +524,22 @@ final class CalendarService: Service {
 
             // Expose the EventKit identifier so callers can feed it back to
             // calendar_events_update / calendar_events_delete, which resolve by eventIdentifier.
-            return events.map { ekEvent in
-                var event = Event(ekEvent)
-                event.identifier = ekEvent.eventIdentifier
-                return event
-            }
+            return Value.array(
+                events.map { ekEvent in
+                    var event = Event(ekEvent)
+                    event.identifier = ekEvent.eventIdentifier
+                    // The schema.org keys stay exactly where they were; the
+                    // EventKit fields Ontology has no room for are merged in
+                    // beside them rather than replacing anything.
+                    guard case .object(var encoded) = try? Value(event) else {
+                        return (try? Value(event)) ?? .null
+                    }
+                    for (key, value) in Self.detail(of: ekEvent) where encoded[key] == nil {
+                        encoded[key] = value
+                    }
+                    return .object(encoded)
+                }
+            )
         }
         Tool(
             name: "calendar_events_get",
@@ -599,6 +610,7 @@ final class CalendarService: Service {
 
             var result: [String: Value] = [
                 "event": try Value(event),
+                "detail": .object(Self.detail(of: ekEvent)),
                 "identifier": .string(ekEvent.eventIdentifier ?? id),
                 "calendar": .object([
                     "identifier": .string(ekEvent.calendar.calendarIdentifier),
@@ -1359,6 +1371,227 @@ final class CalendarService: Service {
         }
 
         Tool(
+            name: "calendar_availability",
+            description:
+                "Find free time, or check whether a proposed time is clear. EventKit has no free/busy "
+                + "query, so this reads the events in the range and computes the gaps. Events marked "
+                + "as free, and cancelled events, do not block; all-day events block the whole day "
+                + "unless allDayBlocks is false. Pass proposedStart and proposedEnd to test one "
+                + "specific slot and get back whatever is in the way.",
+            inputSchema: .object(
+                properties: [
+                    "start": .string(
+                        description:
+                            "Start of the search range. Defaults to now. If timezone is omitted, local time is assumed.",
+                        format: .dateTime
+                    ),
+                    "end": .string(
+                        description: "End of the search range. Defaults to one week after start.",
+                        format: .dateTime
+                    ),
+                    "calendars": .array(
+                        description:
+                            "Names of calendars that count as busy. Defaults to every calendar.",
+                        items: .string()
+                    ),
+                    "durationMinutes": .integer(
+                        description: "Only report gaps at least this long. Defaults to 30.",
+                        default: .int(30)
+                    ),
+                    "dayStart": .string(
+                        description:
+                            "Earliest time of day to consider, as HH:MM local. Defaults to 00:00."
+                    ),
+                    "dayEnd": .string(
+                        description:
+                            "Latest time of day to consider, as HH:MM local. Defaults to 24:00."
+                    ),
+                    "weekdays": .array(
+                        description:
+                            "Restrict to these weekdays, 1 = Sunday through 7 = Saturday. Defaults to every day.",
+                        items: .integer()
+                    ),
+                    "allDayBlocks": .boolean(
+                        description:
+                            "Whether an all-day event makes that day busy. Defaults to true.",
+                        default: .bool(true)
+                    ),
+                    "proposedStart": .string(
+                        description:
+                            "Check this exact slot instead of searching. Requires proposedEnd.",
+                        format: .dateTime
+                    ),
+                    "proposedEnd": .string(
+                        description: "End of the slot to check. Requires proposedStart.",
+                        format: .dateTime
+                    ),
+                    "limit": .integer(
+                        description: "Maximum free slots to return. Defaults to 50.",
+                        default: .int(50)
+                    ),
+                ],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Calendar Availability",
+                readOnlyHint: true,
+                openWorldHint: false
+            )
+        ) { arguments in
+            guard EKEventStore.authorizationStatus(for: .event) == .fullAccess else {
+                throw NSError(
+                    domain: "CalendarError",
+                    code: 1,
+                    userInfo: [NSLocalizedDescriptionKey: "Calendar access not authorized"]
+                )
+            }
+
+            let proposedStart = try Self.parseOptionalDate(arguments["proposedStart"], named: "proposedStart")
+            let proposedEnd = try Self.parseOptionalDate(arguments["proposedEnd"], named: "proposedEnd")
+            if (proposedStart == nil) != (proposedEnd == nil) {
+                throw NSError(
+                    domain: "CalendarError",
+                    code: 2,
+                    userInfo: [
+                        NSLocalizedDescriptionKey:
+                            "proposedStart and proposedEnd must be given together."
+                    ]
+                )
+            }
+
+            let now = Date()
+            var rangeStart = try Self.parseOptionalDate(arguments["start"], named: "start") ?? now
+            var rangeEnd =
+                try Self.parseOptionalDate(arguments["end"], named: "end")
+                ?? rangeStart.addingTimeInterval(7 * 24 * 60 * 60)
+            if let proposedStart, let proposedEnd {
+                guard proposedEnd > proposedStart else {
+                    throw NSError(
+                        domain: "CalendarError",
+                        code: 2,
+                        userInfo: [
+                            NSLocalizedDescriptionKey: "proposedEnd must be after proposedStart."
+                        ]
+                    )
+                }
+                // Checking one slot means reading exactly the events that
+                // could overlap it, not a week of them.
+                rangeStart = proposedStart
+                rangeEnd = proposedEnd
+            }
+            guard rangeEnd > rangeStart else {
+                throw NSError(
+                    domain: "CalendarError",
+                    code: 2,
+                    userInfo: [NSLocalizedDescriptionKey: "end must be after start."]
+                )
+            }
+
+            var selected: [EKCalendar]? = nil
+            if case .array(let names) = arguments["calendars"], !names.isEmpty {
+                let wanted = Set(names.compactMap(\.stringValue))
+                selected = self.eventStore.calendars(for: .event).filter {
+                    wanted.contains($0.title)
+                }
+                if selected?.isEmpty ?? true {
+                    throw NSError(
+                        domain: "CalendarError",
+                        code: 2,
+                        userInfo: [
+                            NSLocalizedDescriptionKey:
+                                "None of the named calendars exist. Use calendar_list to see them."
+                        ]
+                    )
+                }
+            }
+
+            let allDayBlocks = arguments["allDayBlocks"]?.boolValue ?? true
+            let predicate = self.eventStore.predicateForEvents(
+                withStart: rangeStart,
+                end: rangeEnd,
+                calendars: selected
+            )
+            let busy: [BusyInterval] = self.eventStore.events(matching: predicate)
+                .compactMap { event in
+                    // An event explicitly marked free is not a conflict, and
+                    // neither is one that was cancelled.
+                    guard event.availability != .free, event.status != .canceled else { return nil }
+                    guard allDayBlocks || !event.isAllDay else { return nil }
+                    guard let start = event.startDate, let end = event.endDate else { return nil }
+                    return BusyInterval(start: start, end: end, title: event.title)
+                }
+
+            let formatter = ISO8601DateFormatter()
+            func describe(_ interval: BusyInterval) -> Value {
+                var entry: [String: Value] = [
+                    "start": .string(formatter.string(from: interval.start)),
+                    "end": .string(formatter.string(from: interval.end)),
+                ]
+                if let title = interval.title { entry["title"] = .string(title) }
+                return .object(entry)
+            }
+
+            if let proposedStart, let proposedEnd {
+                let proposal = FreeSlot(start: proposedStart, end: proposedEnd)
+                let conflicts = CalendarAvailability.conflicts(with: proposal, busy: busy)
+                return Value.object([
+                    "start": .string(formatter.string(from: proposedStart)),
+                    "end": .string(formatter.string(from: proposedEnd)),
+                    "isFree": .bool(conflicts.isEmpty),
+                    "conflicts": .array(conflicts.map(describe)),
+                ])
+            }
+
+            let window = try Self.dayWindow(
+                start: arguments["dayStart"]?.stringValue,
+                end: arguments["dayEnd"]?.stringValue
+            )
+            var weekdays: Set<Int>? = nil
+            if case .array(let raw) = arguments["weekdays"], !raw.isEmpty {
+                let parsed = Set(raw.compactMap(\.intValue))
+                guard parsed.allSatisfy({ (1 ... 7).contains($0) }) else {
+                    throw NSError(
+                        domain: "CalendarError",
+                        code: 2,
+                        userInfo: [
+                            NSLocalizedDescriptionKey:
+                                "weekdays must be between 1 (Sunday) and 7 (Saturday)."
+                        ]
+                    )
+                }
+                weekdays = parsed
+            }
+            let minimumMinutes = max(arguments["durationMinutes"]?.intValue ?? 30, 1)
+            let limit = min(max(arguments["limit"]?.intValue ?? 50, 1), 500)
+
+            let slots = CalendarAvailability.freeSlots(
+                from: rangeStart,
+                to: rangeEnd,
+                busy: busy,
+                window: window,
+                weekdays: weekdays,
+                minimumDuration: TimeInterval(minimumMinutes) * 60,
+                limit: limit
+            )
+            return Value.object([
+                "start": .string(formatter.string(from: rangeStart)),
+                "end": .string(formatter.string(from: rangeEnd)),
+                "durationMinutes": .int(minimumMinutes),
+                "busyCount": .int(busy.count),
+                "count": .int(slots.count),
+                "slots": .array(
+                    slots.map { slot in
+                        .object([
+                            "start": .string(formatter.string(from: slot.start)),
+                            "end": .string(formatter.string(from: slot.end)),
+                            "minutes": .int(Int(slot.duration / 60)),
+                        ])
+                    }
+                ),
+            ])
+        }
+
+        Tool(
             name: "calendar_events_delete",
             description:
                 "Delete a calendar event. For recurring events, use occurrence_date to target a specific occurrence and span to choose whether to delete that occurrence only or it and all future occurrences.",
@@ -1946,6 +2179,234 @@ extension String {
 }
 
 extension CalendarService {
+    static func parseOptionalDate(_ value: Value?, named name: String) throws -> Date? {
+        guard let value else { return nil }
+        guard case .string(let raw) = value,
+            let parsed = ISO8601DateFormatter.parsedLenientISO8601Date(fromISO8601String: raw)
+        else {
+            throw NSError(
+                domain: "CalendarError",
+                code: 2,
+                userInfo: [
+                    NSLocalizedDescriptionKey:
+                        "\(name) must be a valid ISO 8601 date or date-time."
+                ]
+            )
+        }
+        return parsed.isDateOnly
+            ? Foundation.Calendar.current.normalizedStartDate(from: parsed.date, isDateOnly: true)
+            : parsed.date
+    }
+
+    /// "HH:MM" to minutes after midnight. "24:00" is accepted for the end of
+    /// the day, which is the natural way to write "until midnight".
+    static func dayWindow(start: String?, end: String?) throws -> DayWindow {
+        func minutes(_ raw: String?, _ name: String, default fallback: Int) throws -> Int {
+            guard let raw, !raw.isEmpty else { return fallback }
+            let parts = raw.split(separator: ":")
+            guard parts.count == 2, let hour = Int(parts[0]), let minute = Int(parts[1]),
+                (0 ... 24).contains(hour), (0 ... 59).contains(minute),
+                hour * 60 + minute <= 24 * 60
+            else {
+                throw NSError(
+                    domain: "CalendarError",
+                    code: 2,
+                    userInfo: [
+                        NSLocalizedDescriptionKey:
+                            "\(name) must be a time of day as HH:MM, between 00:00 and 24:00."
+                    ]
+                )
+            }
+            return hour * 60 + minute
+        }
+        let startMinute = try minutes(start, "dayStart", default: 0)
+        let endMinute = try minutes(end, "dayEnd", default: 24 * 60)
+        guard endMinute > startMinute else {
+            throw NSError(
+                domain: "CalendarError",
+                code: 2,
+                userInfo: [NSLocalizedDescriptionKey: "dayEnd must be after dayStart."]
+            )
+        }
+        return DayWindow(startMinute: startMinute, endMinute: endMinute)
+    }
+
+    /// Everything about an event that EventKit knows and the schema.org
+    /// `Event` type has no room for.
+    ///
+    /// `Ontology.Event` carries name, calendar, start, end, location and URL.
+    /// That left notes, the all-day flag, availability, status, alarms,
+    /// recurrence, attendees, the organizer, the time zone, the geofence and
+    /// both timestamps unreachable through any read tool in this surface — a
+    /// caller could create an all-day event with a note and an alarm, then read
+    /// it back as a timed event with neither. This fills the gap without
+    /// changing the shape of what was already returned: the schema.org keys
+    /// stay where they were and these are added beside them.
+    static func detail(of event: EKEvent) -> [String: Value] {
+        let formatter = ISO8601DateFormatter()
+        var detail: [String: Value] = [
+            "isAllDay": .bool(event.isAllDay),
+            "availability": .string(event.availability.stringValue),
+            "status": .string(describe(event.status)),
+            "isDetached": .bool(event.isDetached),
+            "hasAttendees": .bool(event.hasAttendees),
+        ]
+
+        if let notes = event.notes, !notes.isEmpty { detail["notes"] = .string(notes) }
+        if let timeZone = event.timeZone { detail["timeZone"] = .string(timeZone.identifier) }
+        if let created = event.creationDate {
+            detail["createdAt"] = .string(formatter.string(from: created))
+        }
+        if let modified = event.lastModifiedDate {
+            detail["lastModifiedAt"] = .string(formatter.string(from: modified))
+        }
+        // The original scheduled time of this occurrence. For a detached
+        // occurrence it is the only way to tell which one was moved.
+        if let occurrence = event.occurrenceDate {
+            detail["occurrenceDate"] = .string(formatter.string(from: occurrence))
+        }
+        // Birthday events point back at the contact they came from, which is
+        // what makes "whose birthday is this" answerable without name matching.
+        if let contact = event.birthdayContactIdentifier {
+            detail["birthdayContactIdentifier"] = .string(contact)
+        }
+        if let external = event.calendarItemExternalIdentifier {
+            detail["externalIdentifier"] = .string(external)
+        }
+
+        if let place = event.structuredLocation {
+            var described: [String: Value] = [:]
+            if let title = place.title, !title.isEmpty { described["name"] = .string(title) }
+            if let coordinate = place.geoLocation?.coordinate {
+                described["latitude"] = .double(coordinate.latitude)
+                described["longitude"] = .double(coordinate.longitude)
+            }
+            if place.radius > 0 { described["radiusMeters"] = .double(place.radius) }
+            if !described.isEmpty { detail["structuredLocation"] = .object(described) }
+        }
+
+        let alarms = event.alarms ?? []
+        if !alarms.isEmpty { detail["alarms"] = .array(alarms.map(describeAlarm)) }
+
+        if let rule = event.recurrenceRules?.first {
+            let description = describe(rule)
+            var recurrence: [String: Value] = ["rrule": .string(description.rrule)]
+            if let summary = description.summary { recurrence["summary"] = .string(summary) }
+            detail["recurrence"] = .object(recurrence)
+            // More than one rule is legal in RFC 5545 and rare in practice;
+            // saying so beats silently reporting the first as the whole truth.
+            if (event.recurrenceRules?.count ?? 0) > 1 {
+                detail["additionalRecurrenceRules"] = .int((event.recurrenceRules?.count ?? 1) - 1)
+            }
+        }
+
+        if let organizer = event.organizer {
+            detail["organizer"] = describe(organizer)
+        }
+        if let attendees = event.attendees, !attendees.isEmpty {
+            detail["attendees"] = .array(attendees.map(describe))
+            if let me = attendees.first(where: { $0.isCurrentUser }) {
+                detail["myStatus"] = .string(describe(me.participantStatus))
+            }
+        }
+
+        return detail
+    }
+
+    /// EventKit models a geofenced alarm, an absolute alarm and a relative
+    /// alarm in one type, distinguished by which fields are set.
+    static func describeAlarm(_ alarm: EKAlarm) -> Value {
+        var entry: [String: Value] = [:]
+        if let place = alarm.structuredLocation, alarm.proximity != .none {
+            entry["type"] = .string("location")
+            entry["proximity"] = .string(alarm.proximity == .enter ? "arriving" : "leaving")
+            if let title = place.title, !title.isEmpty { entry["name"] = .string(title) }
+            if let coordinate = place.geoLocation?.coordinate {
+                entry["latitude"] = .double(coordinate.latitude)
+                entry["longitude"] = .double(coordinate.longitude)
+            }
+            if place.radius > 0 { entry["radiusMeters"] = .double(place.radius) }
+        } else if let absolute = alarm.absoluteDate {
+            entry["type"] = .string("absolute")
+            entry["date"] = .string(ISO8601DateFormatter().string(from: absolute))
+        } else {
+            entry["type"] = .string("relative")
+            entry["minutesBefore"] = .int(Int((-alarm.relativeOffset / 60).rounded()))
+        }
+        if let email = alarm.emailAddress { entry["emailAddress"] = .string(email) }
+        if let sound = alarm.soundName { entry["sound"] = .string(sound) }
+        return .object(entry)
+    }
+
+    /// `EKRecurrenceRule` field by field, with no interpretation. The RRULE
+    /// spelling happens in `RecurrenceDescription`, which is tested.
+    static func describe(_ rule: EKRecurrenceRule) -> RecurrenceDescription {
+        let frequency: String
+        switch rule.frequency {
+        case .daily: frequency = "daily"
+        case .weekly: frequency = "weekly"
+        case .monthly: frequency = "monthly"
+        case .yearly: frequency = "yearly"
+        @unknown default: frequency = "daily"
+        }
+        return RecurrenceDescription(
+            frequency: frequency,
+            interval: rule.interval,
+            daysOfTheWeek: (rule.daysOfTheWeek ?? []).map {
+                (weekday: $0.dayOfTheWeek.rawValue, weekNumber: $0.weekNumber)
+            },
+            daysOfTheMonth: (rule.daysOfTheMonth ?? []).map(\.intValue),
+            daysOfTheYear: (rule.daysOfTheYear ?? []).map(\.intValue),
+            weeksOfTheYear: (rule.weeksOfTheYear ?? []).map(\.intValue),
+            monthsOfTheYear: (rule.monthsOfTheYear ?? []).map(\.intValue),
+            setPositions: (rule.setPositions ?? []).map(\.intValue),
+            firstDayOfTheWeek: rule.firstDayOfTheWeek,
+            endDate: rule.recurrenceEnd?.endDate,
+            occurrenceCount: rule.recurrenceEnd?.occurrenceCount ?? 0
+        )
+    }
+
+    static func describe(_ participant: EKParticipant) -> Value {
+        var entry: [String: Value] = [
+            "status": .string(describe(participant.participantStatus)),
+            "role": .string(describe(participant.participantRole)),
+            "type": .string(describe(participant.participantType)),
+            "isCurrentUser": .bool(participant.isCurrentUser),
+        ]
+        if let name = participant.name, !name.isEmpty { entry["name"] = .string(name) }
+        // The URL is a mailto: in almost every case; the address is what a
+        // caller needs to match the attendee against a contact.
+        let url = participant.url.absoluteString
+        entry["url"] = .string(url)
+        if url.lowercased().hasPrefix("mailto:") {
+            entry["email"] = .string(String(url.dropFirst("mailto:".count)))
+        }
+        return .object(entry)
+    }
+
+    fileprivate static func describe(_ type: EKParticipantType) -> String {
+        switch type {
+        case .person: "person"
+        case .room: "room"
+        case .resource: "resource"
+        case .group: "group"
+        case .unknown: "unknown"
+        @unknown default: "unknown"
+        }
+    }
+
+    fileprivate static func describe(_ status: EKEventStatus) -> String {
+        // Apple's own header warns that only `canceled` is dependable, so the
+        // rest are reported as what EventKit said rather than relied on.
+        switch status {
+        case .confirmed: "confirmed"
+        case .tentative: "tentative"
+        case .canceled: "canceled"
+        case .none: "none"
+        @unknown default: "unknown"
+        }
+    }
+
     fileprivate static func describe(_ role: EKParticipantRole) -> String {
         switch role {
         case .required: "required"

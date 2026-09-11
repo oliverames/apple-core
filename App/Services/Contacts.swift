@@ -9,12 +9,27 @@ private let log = Logger.service("contacts")
 
 private let contactKeys =
     [
+        CNContactIdentifierKey,
         CNContactTypeKey,
+        CNContactNamePrefixKey,
         CNContactGivenNameKey,
+        CNContactMiddleNameKey,
         CNContactFamilyNameKey,
+        CNContactNameSuffixKey,
+        CNContactPreviousFamilyNameKey,
         CNContactNicknameKey,
+        CNContactPhoneticGivenNameKey,
+        CNContactPhoneticMiddleNameKey,
+        CNContactPhoneticFamilyNameKey,
+        CNContactPhoneticOrganizationNameKey,
         CNContactBirthdayKey,
+        CNContactNonGregorianBirthdayKey,
+        // Anniversaries and any other labelled date. Nothing in this surface
+        // could read or write one before, so a contact's anniversary was
+        // invisible even though Contacts.app shows it beside the birthday.
+        CNContactDatesKey,
         CNContactOrganizationNameKey,
+        CNContactDepartmentNameKey,
         CNContactJobTitleKey,
         CNContactPhoneNumbersKey,
         CNContactEmailAddressesKey,
@@ -23,6 +38,7 @@ private let contactKeys =
         CNContactUrlAddressesKey,
         CNContactPostalAddressesKey,
         CNContactRelationsKey,
+        CNContactImageDataAvailableKey,
     ] as [CNKeyDescriptor]
 
 private let contactProperties: OrderedDictionary<String, JSONSchema> = [
@@ -432,7 +448,7 @@ final class ContactsService: Service {
                 return intersection ?? []
             }
 
-            return contacts.compactMap { Person($0) }
+            return Value.array(contacts.map { Self.describe($0) })
         }
 
         Tool(
@@ -640,7 +656,7 @@ final class ContactsService: Service {
                     keysToFetch: contactKeys
                 )
             }
-            return Person(contact)
+            return Self.describe(contact)
         }
 
         Tool(
@@ -1213,6 +1229,435 @@ final class ContactsService: Service {
                 "candidates": .array(candidates),
             ])
         }
+
+        Tool(
+            name: "contacts_changes",
+            description:
+                "What has changed in Contacts since a previous call. Call it once with no token to "
+                + "get a starting cursor, then pass that token back later to receive only the "
+                + "contacts and groups added, updated or deleted since — including group membership "
+                + "changes. This is the cheap way to keep an external copy current: it does not "
+                + "re-read the address book. A token that macOS has aged out is reported as "
+                + "resyncRequired, meaning the caller should read everything again.",
+            inputSchema: .object(
+                properties: [
+                    "token": .string(
+                        description:
+                            "A token from an earlier contacts_changes call. Omit to get a starting "
+                            + "cursor without any history."
+                    ),
+                    "limit": .integer(
+                        description: "Maximum change events to return. Defaults to 200.",
+                        default: .int(200)
+                    ),
+                    "includeGroups": .boolean(
+                        description: "Include group and group-membership changes. Defaults to true.",
+                        default: .bool(true)
+                    ),
+                ],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Contacts Changes",
+                readOnlyHint: true,
+                openWorldHint: false
+            )
+        ) { arguments in
+            try await self.activate()
+            let limit = min(max(arguments["limit"]?.intValue ?? 200, 1), 1000)
+            let includeGroups = arguments["includeGroups"]?.boolValue ?? true
+
+            guard let tokenString = arguments["token"]?.stringValue, !tokenString.isEmpty else {
+                // No token: hand back a cursor and nothing else. Replaying the
+                // whole history of an address book on a first call would be a
+                // large, slow answer to a question the caller did not ask.
+                let current = try await self.runContactStore { self.contactStore.currentHistoryToken }
+                guard let current else {
+                    throw NSError(
+                        domain: "ContactsService",
+                        code: 4,
+                        userInfo: [
+                            NSLocalizedDescriptionKey:
+                                "Contacts did not provide a change token on this system, so "
+                                + "incremental change tracking is unavailable."
+                        ]
+                    )
+                }
+                return Value.object([
+                    "token": .string(current.base64EncodedString()),
+                    "changes": .array([]),
+                    "count": .int(0),
+                    "hasMore": .bool(false),
+                    "resyncRequired": .bool(false),
+                    "note": .string(
+                        "Starting cursor. Pass this token back to see what changed after now."
+                    ),
+                ])
+            }
+
+            guard let startingToken = Data(base64Encoded: tokenString) else {
+                throw NSError(
+                    domain: "ContactsService",
+                    code: 1,
+                    userInfo: [
+                        NSLocalizedDescriptionKey:
+                            "token is not a token from contacts_changes; pass the value returned "
+                            + "by an earlier call, unchanged."
+                    ]
+                )
+            }
+
+            return try await self.runContactStore {
+                let request = CNChangeHistoryFetchRequest()
+                request.startingToken = startingToken
+                request.includeGroupChanges = includeGroups
+                request.shouldUnifyResults = false
+                request.additionalContactKeyDescriptors = contactKeys
+
+                // Apple marks this method NS_SWIFT_UNAVAILABLE, so it is not
+                // callable as written even though it is public, supported API
+                // that has shipped since macOS 10.15. Binding the selector
+                // through an @objc shim reaches the same implementation the
+                // Objective-C caller gets; nothing private is involved.
+                let store = unsafeBitCast(self.contactStore, to: CNChangeHistoryCapable.self)
+                let fetched = try store.enumeratorForChangeHistory(request)
+                let result = unsafeBitCast(fetched, to: CNChangeHistoryFetchResult.self)
+                guard let enumerator = result.value as? NSEnumerator else {
+                    throw NSError(
+                        domain: "ContactsService",
+                        code: 4,
+                        userInfo: [
+                            NSLocalizedDescriptionKey:
+                                "Contacts returned change history in a shape this version of Apple "
+                                + "Core does not recognize, so incremental change tracking is "
+                                + "unavailable on this system."
+                        ]
+                    )
+                }
+                let collector = ContactChangeCollector(limit: limit)
+                while let event = enumerator.nextObject() as? CNChangeHistoryEvent {
+                    if collector.changes.count >= limit {
+                        collector.hasMore = true
+                        break
+                    }
+                    event.accept(collector)
+                }
+
+                var payload: [String: Value] = [
+                    // The token advances to the end of what was *available*,
+                    // not the end of what was returned. When a page was
+                    // truncated the old token is kept, so the next call
+                    // resumes where this one stopped rather than skipping the
+                    // events it did not show.
+                    "token": .string(
+                        collector.hasMore
+                            ? tokenString
+                            : (result.currentHistoryToken?.base64EncodedString() ?? tokenString)
+                    ),
+                    "changes": .array(collector.changes),
+                    "count": .int(collector.changes.count),
+                    "hasMore": .bool(collector.hasMore),
+                    "resyncRequired": .bool(collector.resyncRequired),
+                ]
+                if collector.resyncRequired {
+                    payload["note"] = .string(
+                        "Contacts discarded the history this token pointed at. Read the address "
+                            + "book again with contacts_directory and start a fresh cursor."
+                    )
+                }
+                return .object(payload)
+            }
+        }
+    }
+}
+
+/// `CNContactStore.enumeratorForChangeHistoryFetchRequest:error:` and
+/// `CNFetchResult`, bound by selector.
+///
+/// Both are public, documented Contacts API available since macOS 10.15, but
+/// Apple annotates the method `NS_SWIFT_UNAVAILABLE` and so Swift refuses to
+/// call it. These protocols name the same selectors the Objective-C caller
+/// uses. Swift maps the trailing `NSError **` onto `throws`.
+@objc private protocol CNChangeHistoryCapable {
+    @objc(enumeratorForChangeHistoryFetchRequest:error:)
+    func enumeratorForChangeHistory(_ request: CNChangeHistoryFetchRequest) throws -> AnyObject
+}
+
+@objc private protocol CNChangeHistoryFetchResult {
+    @objc(value) var value: AnyObject? { get }
+    @objc(currentHistoryToken) var currentHistoryToken: Data? { get }
+}
+
+/// Turns the change-history visitor callbacks into plain change entries.
+///
+/// `CNChangeHistoryEvent` dispatches through a visitor protocol rather than
+/// exposing a type discriminator, so collecting the events means implementing
+/// all eleven callbacks. A class, because the protocol is `@objc`.
+private final class ContactChangeCollector: NSObject, CNChangeHistoryEventVisitor {
+    let limit: Int
+    var changes: [Value] = []
+    var hasMore = false
+    /// Set when macOS says the token is too old to resume from.
+    var resyncRequired = false
+
+    init(limit: Int) {
+        self.limit = limit
+    }
+
+    private func record(_ kind: String, _ fields: [String: Value] = [:]) {
+        guard changes.count < limit else {
+            hasMore = true
+            return
+        }
+        var entry = fields
+        entry["change"] = .string(kind)
+        changes.append(.object(entry))
+    }
+
+    func visit(_ event: CNChangeHistoryDropEverythingEvent) {
+        // Not a change to report: the history itself is gone.
+        resyncRequired = true
+    }
+
+    func visit(_ event: CNChangeHistoryAddContactEvent) {
+        var fields: [String: Value] = ["contact": ContactsService.describe(event.contact)]
+        if let container = event.containerIdentifier {
+            fields["container"] = .string(container)
+        }
+        record("contact_added", fields)
+    }
+
+    func visit(_ event: CNChangeHistoryUpdateContactEvent) {
+        record("contact_updated", ["contact": ContactsService.describe(event.contact)])
+    }
+
+    func visit(_ event: CNChangeHistoryDeleteContactEvent) {
+        // A deleted contact is only an identifier; the record is gone.
+        record("contact_deleted", ["identifier": .string(event.contactIdentifier)])
+    }
+
+    func visit(_ event: CNChangeHistoryAddGroupEvent) {
+        var fields: [String: Value] = [
+            "group": .object([
+                "identifier": .string(event.group.identifier),
+                "name": .string(event.group.name),
+            ])
+        ]
+        let container = event.containerIdentifier
+        if !container.isEmpty { fields["container"] = .string(container) }
+        record("group_added", fields)
+    }
+
+    func visit(_ event: CNChangeHistoryUpdateGroupEvent) {
+        record(
+            "group_updated",
+            [
+                "group": .object([
+                    "identifier": .string(event.group.identifier),
+                    "name": .string(event.group.name),
+                ])
+            ]
+        )
+    }
+
+    func visit(_ event: CNChangeHistoryDeleteGroupEvent) {
+        record("group_deleted", ["identifier": .string(event.groupIdentifier)])
+    }
+
+    func visit(_ event: CNChangeHistoryAddMemberToGroupEvent) {
+        record("group_member_added", Self.membership(member: event.member, group: event.group))
+    }
+
+    func visit(_ event: CNChangeHistoryRemoveMemberFromGroupEvent) {
+        record("group_member_removed", Self.membership(member: event.member, group: event.group))
+    }
+
+    func visit(_ event: CNChangeHistoryAddSubgroupToGroupEvent) {
+        record(
+            "subgroup_added",
+            [
+                "subgroup": .string(event.subgroup.identifier),
+                "group": .string(event.group.identifier),
+            ]
+        )
+    }
+
+    func visit(_ event: CNChangeHistoryRemoveSubgroupFromGroupEvent) {
+        record(
+            "subgroup_removed",
+            [
+                "subgroup": .string(event.subgroup.identifier),
+                "group": .string(event.group.identifier),
+            ]
+        )
+    }
+
+    private static func membership(member: CNContact, group: CNGroup) -> [String: Value] {
+        [
+            "contact": .string(member.identifier),
+            "group": .object([
+                "identifier": .string(group.identifier),
+                "name": .string(group.name),
+            ]),
+        ]
+    }
+}
+
+extension ContactsService {
+    /// One contact, with the fields the schema.org `Person` type cannot carry.
+    ///
+    /// Two things were wrong with returning `Person(contact)` alone.
+    ///
+    /// First, `Person.init?` returns nil for any contact whose `contactType`
+    /// is `.organization`. Every company in the address book therefore
+    /// vanished from `contacts_search` (a `compactMap` swallowed it) and
+    /// `contacts_get` answered nil for a contact that plainly exists.
+    ///
+    /// Second, `Person` flattens phone numbers and email addresses to bare
+    /// strings. A caller reading a contact could see three numbers and not
+    /// know which was the mobile — and then could not write them back, because
+    /// the update path is label-keyed.
+    ///
+    /// This returns the whole record. `Person` is still emitted alongside for
+    /// callers that already read it, so nothing that worked before changes.
+    static func detail(of contact: CNContact) -> [String: Value] {
+        var detail: [String: Value] = [
+            "identifier": .string(contact.identifier),
+            "contactType": .string(contact.contactType == .organization ? "organization" : "person"),
+            "displayName": .string(
+                CNContactFormatter.string(from: contact, style: .fullName)
+                    ?? contact.organizationName
+            ),
+            "hasImage": .bool(contact.imageDataAvailable),
+        ]
+
+        func put(_ key: String, _ value: String) {
+            if !value.isEmpty { detail[key] = .string(value) }
+        }
+        put("namePrefix", contact.namePrefix)
+        put("givenName", contact.givenName)
+        put("middleName", contact.middleName)
+        put("familyName", contact.familyName)
+        put("nameSuffix", contact.nameSuffix)
+        put("previousFamilyName", contact.previousFamilyName)
+        put("nickname", contact.nickname)
+        put("organizationName", contact.organizationName)
+        put("departmentName", contact.departmentName)
+        put("jobTitle", contact.jobTitle)
+        put("phoneticGivenName", contact.phoneticGivenName)
+        put("phoneticMiddleName", contact.phoneticMiddleName)
+        put("phoneticFamilyName", contact.phoneticFamilyName)
+        put("phoneticOrganizationName", contact.phoneticOrganizationName)
+
+        if let birthday = contact.birthday, let formatted = Self.describe(birthday) {
+            detail["birthday"] = .string(formatted)
+        }
+        if let other = contact.nonGregorianBirthday, let formatted = Self.describe(other) {
+            detail["nonGregorianBirthday"] = .string(formatted)
+        }
+        if !contact.dates.isEmpty {
+            detail["dates"] = .array(
+                contact.dates.compactMap { labelled in
+                    guard let formatted = Self.describe(labelled.value as DateComponents) else {
+                        return nil
+                    }
+                    return Value.object([
+                        "label": .string(Self.readable(labelled.label)),
+                        "date": .string(formatted),
+                    ])
+                }
+            )
+        }
+
+        // Labelled values keep their label and their stable per-value
+        // identifier, which is the handle for editing one of several.
+        func labelled<T>(_ values: [CNLabeledValue<T>], _ describe: (T) -> Value?) -> Value {
+            .array(
+                values.compactMap { entry in
+                    guard let described = describe(entry.value) else { return nil }
+                    return Value.object([
+                        "label": .string(Self.readable(entry.label)),
+                        "value": described,
+                        "identifier": .string(entry.identifier),
+                    ])
+                }
+            )
+        }
+        if !contact.phoneNumbers.isEmpty {
+            detail["phoneNumbers"] = labelled(contact.phoneNumbers) { .string($0.stringValue) }
+        }
+        if !contact.emailAddresses.isEmpty {
+            detail["emailAddresses"] = labelled(contact.emailAddresses) { .string($0 as String) }
+        }
+        if !contact.urlAddresses.isEmpty {
+            detail["urlAddresses"] = labelled(contact.urlAddresses) { .string($0 as String) }
+        }
+        if !contact.contactRelations.isEmpty {
+            detail["relations"] = labelled(contact.contactRelations) { .string($0.name) }
+        }
+        if !contact.socialProfiles.isEmpty {
+            detail["socialProfiles"] = labelled(contact.socialProfiles) { profile in
+                var entry: [String: Value] = [:]
+                if !profile.service.isEmpty { entry["service"] = .string(profile.service) }
+                if !profile.username.isEmpty { entry["username"] = .string(profile.username) }
+                if !profile.urlString.isEmpty { entry["url"] = .string(profile.urlString) }
+                return entry.isEmpty ? nil : .object(entry)
+            }
+        }
+        if !contact.instantMessageAddresses.isEmpty {
+            detail["instantMessageAddresses"] = labelled(contact.instantMessageAddresses) { address in
+                .object([
+                    "service": .string(address.service),
+                    "username": .string(address.username),
+                ])
+            }
+        }
+        if !contact.postalAddresses.isEmpty {
+            detail["postalAddresses"] = labelled(contact.postalAddresses) { address in
+                var entry: [String: Value] = [:]
+                if !address.street.isEmpty { entry["street"] = .string(address.street) }
+                if !address.city.isEmpty { entry["city"] = .string(address.city) }
+                if !address.state.isEmpty { entry["state"] = .string(address.state) }
+                if !address.postalCode.isEmpty { entry["postalCode"] = .string(address.postalCode) }
+                if !address.country.isEmpty { entry["country"] = .string(address.country) }
+                if !address.isoCountryCode.isEmpty {
+                    entry["isoCountryCode"] = .string(address.isoCountryCode)
+                }
+                entry["formatted"] = .string(
+                    CNPostalAddressFormatter.string(from: address, style: .mailingAddress)
+                )
+                return .object(entry)
+            }
+        }
+        return detail
+    }
+
+    /// A contact date has no year when the person did not give one, which is
+    /// ordinary for a birthday. Emitting "0000-05-14" would be a lie about the
+    /// year, so a yearless date is written without one.
+    static func describe(_ components: DateComponents) -> String? {
+        guard let month = components.month, let day = components.day else { return nil }
+        if let year = components.year, year > 0 {
+            return String(format: "%04d-%02d-%02d", year, month, day)
+        }
+        return String(format: "--%02d-%02d", month, day)
+    }
+
+    /// Contacts stores labels as "_$!<Mobile>!$_"; a caller wants "Mobile".
+    static func readable(_ label: String?) -> String {
+        guard let label, !label.isEmpty else { return "other" }
+        return CNLabeledValue<NSString>.localizedString(forLabel: label)
+    }
+
+    /// The whole record: the schema.org shape callers already read, plus every
+    /// field it has no room for. An organization contact has no `person` half
+    /// and says so, rather than disappearing.
+    static func describe(_ contact: CNContact) -> Value {
+        var entry = detail(of: contact)
+        if let person = Person(contact), let encoded = try? Value(person) {
+            entry["person"] = encoded
+        }
+        return .object(entry)
     }
 }
 

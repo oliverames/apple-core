@@ -2,11 +2,14 @@ import AVFoundation
 import AppKit
 import ApplicationServices
 import Foundation
+import ImageIO
 import OSLog
+import PDFKit
 import ObjectiveC
 import Ontology
 import ScreenCaptureKit
 import SwiftUI
+import UniformTypeIdentifiers
 import Vision
 
 private let log = Logger.service("capture")
@@ -1169,6 +1172,49 @@ final class CaptureService: NSObject, Service {
                 "guiSessionActive": .bool(guiSessionActive),
             ])
         }
+
+        Tool(
+            name: "capture_read_image_text",
+            description: CaptureService.readImageTextDescription,
+            inputSchema: .object(
+                properties: [
+                    "path": .string(
+                        description: "Image or PDF inside a folder shared with Apple Core"
+                    ),
+                    "page": .integer(
+                        description: CaptureService.readImageTextPageDescription,
+                        default: .int(1),
+                        minimum: 1
+                    ),
+                    "maxPages": .integer(
+                        description: CaptureService.readImageTextMaxPagesDescription,
+                        default: .int(CaptureImageText.defaultMaxPages),
+                        minimum: 1,
+                        maximum: CaptureImageText.maximumMaxPages
+                    ),
+                    "maxCharacters": .integer(
+                        description: CaptureService.readImageTextMaxCharactersDescription,
+                        default: .int(CaptureImageText.defaultMaxCharacters),
+                        minimum: 1,
+                        maximum: CaptureImageText.maximumMaxCharacters
+                    ),
+                    "languages": .array(
+                        description: CaptureService.readImageTextLanguagesDescription,
+                        items: .string()
+                    ),
+                ],
+                required: ["path"],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Read Text in a File",
+                readOnlyHint: true,
+                idempotentHint: true,
+                openWorldHint: false
+            )
+        ) { arguments in
+            try CaptureService.readImageText(arguments)
+        }
     }
 }
 
@@ -1481,7 +1527,11 @@ extension CaptureService {
         }
         let windows = content.windows.filter { $0.owningApplication == application }
         guard !windows.isEmpty else { throw CaptureAccessibilityError.noWindows(bundleId) }
-        guard let display = content.displays.first else {
+        // The display the application is actually on, not the first one in
+        // the list. Recognising against display one while the application sits
+        // on display two produced an empty read reported as "no text found",
+        // which is the same mistake the screenshot scaling made.
+        guard let display = CaptureService.display(showing: windows, among: content.displays) else {
             throw CaptureAccessibilityError.noGUISession
         }
 
@@ -1532,6 +1582,210 @@ extension CaptureService {
             )
         }
         return Value.object(response)
+    }
+
+    /// The whole handler, off the tool list.
+    ///
+    /// Not a style preference: the list of tools is one expression, and a
+    /// handler body inlined into it is type-checked as part of that
+    /// expression, which is how the surface reached "unable to type-check this
+    /// expression in reasonable time".
+    static func readImageText(_ arguments: [String: Value]) throws -> Value {
+        guard let path = arguments["path"]?.stringValue, !path.isEmpty else {
+            throw FilesystemServiceError.missingArgument("path")
+        }
+        // The allowlist decides, exactly as it does for every filesystem
+        // tool. Recognition is a read of the file's contents, and a
+        // connector must not reach a file through this tool that
+        // filesystem_read would refuse.
+        let url = try FilesystemAccess.resolve(
+            requested: path,
+            roots: FilesystemService.shared.roots,
+            requiringWrite: false
+        )
+        let values = try? url.resourceValues(forKeys: [.contentTypeKey, .fileSizeKey])
+        let type = values?.contentType
+        guard CaptureImageText.isSupported(type) else {
+            throw CaptureImageTextError.unsupportedType(
+                path: url.path,
+                type: type?.localizedDescription ?? type?.identifier
+            )
+        }
+        let size = values?.fileSize ?? 0
+        guard size <= CaptureImageText.maximumFileBytes else {
+            throw CaptureImageTextError.fileTooLarge(
+                path: url.path,
+                bytes: size,
+                limit: CaptureImageText.maximumFileBytes
+            )
+        }
+
+        let languages = arguments["languages"]?.arrayValue?.compactMap(\.stringValue) ?? []
+        let maxCharacters = CaptureImageText.clampedCharacters(
+            arguments["maxCharacters"]?.intValue
+        )
+
+        if CaptureImageText.isPDF(type) {
+            return try CaptureService.readPDF(
+                at: url,
+                startingAt: arguments["page"]?.intValue,
+                maxPages: CaptureImageText.clampedPages(arguments["maxPages"]?.intValue),
+                maxCharacters: maxCharacters,
+                languages: languages
+            )
+        }
+        return try CaptureService.readImage(
+            at: url,
+            maxCharacters: maxCharacters,
+            languages: languages
+        )
+    }
+
+    /// Written out here rather than inline: the tool list is one expression,
+    /// and every interpolated description added to it costs the type checker
+    /// real time.
+    static let readImageTextDescription =
+        "Read the text in a picture or a PDF that is already in a shared folder: a screenshot, a scan, "
+        + "a photographed receipt, a PDF whose pages are images of pages. Recognition runs on this Mac "
+        + "through the macOS Vision framework; nothing is uploaded and no model key is needed. A PDF page "
+        + "that already carries real text is read rather than recognised, which is both exact and faster. "
+        + "Needs no Screen Recording or Accessibility permission: the file is read from disk."
+    static let readImageTextPageDescription =
+        "First page of a PDF to read, counting from 1. Pass a previous call's nextPage to carry on."
+    static let readImageTextMaxPagesDescription =
+        "How many PDF pages this call may read, up to \(CaptureImageText.maximumMaxPages)"
+    static let readImageTextMaxCharactersDescription =
+        "Maximum characters to return, up to \(CaptureImageText.maximumMaxCharacters)"
+    static let readImageTextLanguagesDescription =
+        "Language codes to recognise, best first, such as [\"en-US\", \"fr-FR\"]. Left out, macOS picks."
+
+    /// The display an application's windows are on.
+    ///
+    /// Picked by overlap area rather than by position in the list: a window
+    /// straddling two displays belongs to the one showing most of it, and a
+    /// list order is not a fact about where anything is.
+    static func display(showing windows: [SCWindow], among displays: [SCDisplay]) -> SCDisplay? {
+        guard !displays.isEmpty else { return nil }
+        let target = windows.reduce(CGRect.null) { $0.union($1.frame) }
+        guard !target.isNull, !target.isEmpty else { return displays.first }
+        let ranked = displays.max { left, right in
+            area(of: left.frame.intersection(target)) < area(of: right.frame.intersection(target))
+        }
+        guard let ranked, area(of: ranked.frame.intersection(target)) > 0 else {
+            return displays.first
+        }
+        return ranked
+    }
+
+    private static func area(of rect: CGRect) -> CGFloat {
+        rect.isNull || rect.isEmpty ? 0 : rect.width * rect.height
+    }
+
+    /// Recognises one image file.
+    static func readImage(at url: URL, maxCharacters: Int, languages: [String]) throws -> Value {
+        let read = try CaptureImageTextReader.readImage(at: url, languages: languages)
+        let budget = CaptureImageText.budgeted(lines: read.lines, maxCharacters: maxCharacters)
+        var response: [String: Value] = [
+            "path": .string(url.path),
+            "kind": .string("image"),
+            "source": .string("ocr"),
+            "text": .string(budget.lines.joined(separator: "\n")),
+            "lineCount": .int(budget.lines.count),
+            "charactersReturned": .int(budget.characters),
+            "truncated": .bool(budget.truncated),
+            "pixelWidth": .int(read.pixelWidth),
+            "pixelHeight": .int(read.pixelHeight),
+            "note": .string(
+                "Recognised on this Mac. Recognition makes mistakes: check anything exact, such as a figure or an account number, against the file itself."
+            ),
+        ]
+        if budget.truncated {
+            response["note"] = .string(
+                "Recognition stopped at maxCharacters. Raise it to read the rest."
+            )
+        }
+        return .object(response)
+    }
+
+    /// Reads a range of a PDF's pages.
+    static func readPDF(
+        at url: URL,
+        startingAt requestedPage: Int?,
+        maxPages: Int,
+        maxCharacters: Int,
+        languages: [String]
+    ) throws -> Value {
+        guard let document = PDFDocument(url: url) else {
+            throw CaptureImageTextError.unreadableImage(url.path)
+        }
+        let pageCount = document.pageCount
+        guard pageCount > 0 else { throw CaptureImageTextError.emptyDocument(url.path) }
+
+        let range = CaptureImageText.pageRange(
+            pageCount: pageCount,
+            startingAt: requestedPage,
+            maxPages: maxPages
+        )
+        var pages: [Value] = []
+        var remaining = maxCharacters
+        var truncated = false
+        var recognisedAny = false
+        var lastReadIndex = range.lowerBound - 1
+        var combined: [String] = []
+
+        for index in range {
+            guard remaining > 0 else {
+                truncated = true
+                break
+            }
+            guard let page = document.page(at: index) else { continue }
+            let read = try CaptureImageTextReader.readPage(
+                page,
+                number: index + 1,
+                languages: languages
+            )
+            recognisedAny = recognisedAny || read.source == "ocr"
+            let budget = CaptureImageText.budgeted(lines: read.lines, maxCharacters: remaining)
+            remaining -= budget.characters
+            truncated = truncated || budget.truncated
+            lastReadIndex = index
+            combined.append(contentsOf: budget.lines)
+            pages.append(
+                .object([
+                    "page": .int(read.page),
+                    "source": .string(read.source),
+                    "text": .string(budget.lines.joined(separator: "\n")),
+                    "lineCount": .int(budget.lines.count),
+                    "truncated": .bool(budget.truncated),
+                ])
+            )
+            if budget.truncated { break }
+        }
+
+        var response: [String: Value] = [
+            "path": .string(url.path),
+            "kind": .string("pdf"),
+            "pageCount": .int(pageCount),
+            "pages": .array(pages),
+            "text": .string(combined.joined(separator: "\n")),
+            "charactersReturned": .int(maxCharacters - max(0, remaining)),
+            "truncated": .bool(truncated),
+        ]
+        // The next page to ask for is the one after the last page actually
+        // read, which is not the end of the requested range when the character
+        // budget cut the call short.
+        let nextPage = lastReadIndex + 2
+        if nextPage <= pageCount {
+            response["nextPage"] = .int(nextPage)
+            response["note"] = .string(
+                "Stopped after page \(lastReadIndex + 1) of \(pageCount). Call again with page: \(nextPage) for the rest."
+            )
+        } else if recognisedAny {
+            response["note"] = .string(
+                "Pages with no text layer were recognised from their images on this Mac. Recognition makes mistakes: check anything exact against the file itself."
+            )
+        }
+        return .object(response)
     }
 }
 

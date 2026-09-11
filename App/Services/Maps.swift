@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import JSONSchema
 import MapKit
@@ -778,19 +779,87 @@ final class MapsService: NSObject, Service {
         }
 
         Tool(
-            name: "maps_generate",
-            description: "Generate a static map image for given coordinates and parameters",
+            name: "maps_search_along_route",
+            description: MapsService.searchAlongRouteDescription,
             inputSchema: .object(
                 properties: [
-                    "latitude": .number(minimum: -90, maximum: 90),
-                    "longitude": .number(minimum: -180, maximum: 180),
+                    "query": .string(
+                        description: "What to look for, such as \"coffee\", \"petrol\" or \"pharmacy\""
+                    ),
+                    "origin": MapsService.pointSchema,
+                    "destination": MapsService.pointSchema,
+                    "transportType": .string(
+                        description: "How the trip is made",
+                        default: "automobile",
+                        enum: ["automobile", "walking", "transit"]
+                    ),
+                    "maxDetourMeters": .integer(
+                        description:
+                            "How far off the route a place may be and still count, in metres",
+                        default: .int(2000),
+                        minimum: 100,
+                        maximum: 20000
+                    ),
+                    "maxResults": .integer(
+                        description: "How many places to return, in route order",
+                        default: .int(10),
+                        minimum: 1,
+                        maximum: 25
+                    ),
+                    "maxSamples": .integer(
+                        description:
+                            "How many points along the route to search around, up to \(RouteSampling.maximumMaxSamples)",
+                        default: .int(RouteSampling.defaultMaxSamples),
+                        minimum: 1,
+                        maximum: RouteSampling.maximumMaxSamples
+                    ),
+                ],
+                required: ["query", "origin", "destination"],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Search Along a Route",
+                readOnlyHint: true,
+                openWorldHint: true
+            )
+        ) { arguments in
+            try await MapsService.searchAlongRoute(arguments)
+        }
+
+        Tool(
+            name: "maps_generate",
+            description:
+                "Generate a map image. Give it places — addresses or coordinates — and it frames them all and "
+                + "marks each one; or give it a centre and a span to control the view exactly.",
+            inputSchema: .object(
+                properties: [
+                    "points": .array(
+                        description:
+                            "Places to frame and mark, by address or coordinate. The map is centred and zoomed to fit "
+                            + "all of them, and each is drawn as a numbered marker. Up to \(MapSnapshotFraming.maximumPoints). "
+                            + "Use this instead of working out a centre and a span by hand.",
+                        items: MapsService.pointSchema,
+                        maxItems: MapSnapshotFraming.maximumPoints
+                    ),
+                    "latitude": .number(
+                        description: "Centre of the map. Not needed when points are given.",
+                        minimum: -90,
+                        maximum: 90
+                    ),
+                    "longitude": .number(
+                        description: "Centre of the map. Not needed when points are given.",
+                        minimum: -180,
+                        maximum: 180
+                    ),
                     "latitudeDelta": .number(
-                        description: "Latitude degrees visible on map",
+                        description:
+                            "Latitude degrees visible on map. Worked out from points when left out.",
                         minimum: 0,
                         maximum: 180
                     ),
                     "longitudeDelta": .number(
-                        description: "Longitude degrees visible on map",
+                        description:
+                            "Longitude degrees visible on map. Worked out from points when left out.",
                         minimum: 0,
                         maximum: 360
                     ),
@@ -833,7 +902,6 @@ final class MapsService: NSObject, Service {
                         default: false
                     ),
                 ],
-                required: ["latitude", "longitude", "latitudeDelta", "longitudeDelta"],
                 additionalProperties: false
             ),
             annotations: .init(
@@ -842,20 +910,7 @@ final class MapsService: NSObject, Service {
                 openWorldHint: true
             )
         ) { arguments in
-            guard let latitude = arguments["latitude"]?.doubleCoerced,
-                let longitude = arguments["longitude"]?.doubleCoerced,
-                let latitudeDelta = arguments["latitudeDelta"]?.doubleCoerced,
-                let longitudeDelta = arguments["longitudeDelta"]?.doubleCoerced
-            else {
-                throw NSError(
-                    domain: "MapsServiceError",
-                    code: 13,
-                    userInfo: [
-                        NSLocalizedDescriptionKey:
-                            "Latitude, longitude, latitudeDelta, and longitudeDelta are required"
-                    ]
-                )
-            }
+            let framed = try await MapsService.frame(arguments)
 
             let width = arguments["width"]?.intValue ?? Int(defaultMapImageSize.width)
             let height = arguments["height"]?.intValue ?? Int(defaultMapImageSize.height)
@@ -874,14 +929,8 @@ final class MapsService: NSObject, Service {
             let mapTypeString = arguments["mapType"]?.stringValue ?? "standard"
 
             let options = MKMapSnapshotter.Options()
-
-            let center = try Self.coordinate(latitude: latitude, longitude: longitude)
-            let span = MKCoordinateSpan(
-                latitudeDelta: latitudeDelta,
-                longitudeDelta: longitudeDelta
-            )
-            try Self.validate(span: span)
-            options.region = MKCoordinateRegion(center: center, span: span)
+            try Self.validate(span: framed.region.span)
+            options.region = framed.region
 
             switch mapTypeString {
             case "satellite":
@@ -951,7 +1000,12 @@ final class MapsService: NSObject, Service {
                     }
 
                     // Get image representation (e.g., PNG)
-                    guard let imageData = snapshot.image.tiffRepresentation,
+                    let rendered = MapsService.annotated(
+                        snapshot,
+                        region: framed.region,
+                        markers: framed.markers
+                    )
+                    guard let imageData = rendered.tiffRepresentation,
                         let bitmap = NSBitmapImageRep(data: imageData),
                         let pngData = bitmap.representation(using: .png, properties: [:])
                     else {
@@ -996,6 +1050,375 @@ final class MapsService: NSObject, Service {
     struct PlaceDetails: Codable, Sendable {
         var place: Place
         var lookup: MapsPlaceLookupSummary
+    }
+
+    // MARK: - Searching along a route
+
+    static let searchAlongRouteDescription =
+        "Find places along the way between two points, not just near one of them: coffee on the drive, "
+        + "a pharmacy on the walk home. Routes the trip, searches around points spread evenly along it, "
+        + "and reports how far off the route each place is and how far along the trip it comes. "
+        + "The detour distance is straight-line to the route, not a second routing call."
+
+    static func searchAlongRoute(_ arguments: [String: Value]) async throws -> Value {
+        guard let query = arguments["query"]?.stringValue, !query.isEmpty else {
+            throw invalidGeometry("query is required: say what to look for along the way.")
+        }
+        let origin = try Self.point(arguments["origin"], named: "origin")
+        let destination = try Self.point(arguments["destination"], named: "destination")
+        let transportType = try Self.transportType(arguments["transportType"]?.stringValue)
+        let maxDetour = Double(arguments["maxDetourMeters"]?.intValue ?? 2000)
+        let maxResults = min(25, max(1, arguments["maxResults"]?.intValue ?? 10))
+        let maxSamples = RouteSampling.clampedSamples(arguments["maxSamples"]?.intValue)
+
+        let items = try await Self.resolve([origin, destination])
+        let request = MKDirections.Request()
+        request.source = items[0]
+        request.destination = items[1]
+        request.transportType = transportType
+        let response = try await MKDirections(request: request).calculate()
+        guard let route = response.routes.first else {
+            throw NSError(
+                domain: "MapsServiceError",
+                code: 16,
+                userInfo: [
+                    NSLocalizedDescriptionKey:
+                        "No route between those two points, so there is nothing to search along."
+                ]
+            )
+        }
+
+        let polyline = Self.coordinates(of: route.polyline)
+        let samples = RouteSampling.samples(along: polyline, maximum: maxSamples)
+        guard !samples.isEmpty else {
+            throw NSError(
+                domain: "MapsServiceError",
+                code: 16,
+                userInfo: [NSLocalizedDescriptionKey: "The route has no shape to search along."]
+            )
+        }
+
+        // Searched one sample at a time. MKLocalSearch is a rate-limited
+        // network service, and a burst of twenty searches is the reliable way
+        // to have it answer none of them.
+        var found: [String: (item: MKMapItem, offset: Double, along: Double)] = [:]
+        var searchesFailed = 0
+        for sample in samples {
+            let searchRequest = MKLocalSearch.Request()
+            searchRequest.naturalLanguageQuery = query
+            searchRequest.region = MKCoordinateRegion(
+                center: CLLocationCoordinate2D(
+                    latitude: sample.coordinate.latitude,
+                    longitude: sample.coordinate.longitude
+                ),
+                latitudinalMeters: maxDetour * 2,
+                longitudinalMeters: maxDetour * 2
+            )
+            guard let results = try? await MKLocalSearch(request: searchRequest).start() else {
+                searchesFailed += 1
+                continue
+            }
+            for item in results.mapItems {
+                let coordinate = item.placemark.coordinate
+                guard coordinate.latitude.isFinite, coordinate.longitude.isFinite else { continue }
+                guard
+                    let nearest = RouteSampling.nearestPoint(
+                        to: RouteCoordinate(
+                            latitude: coordinate.latitude,
+                            longitude: coordinate.longitude
+                        ),
+                        on: polyline
+                    ), nearest.distanceFromRoute <= maxDetour
+                else { continue }
+                // Searching overlapping circles returns the same place more
+                // than once. Identity first, then name and position, because a
+                // place without an identifier still must not appear twice.
+                let key =
+                    item.identifier?.rawValue
+                    ?? "\(item.name ?? "")|\(Int(coordinate.latitude * 10000))|\(Int(coordinate.longitude * 10000))"
+                if let existing = found[key], existing.offset <= nearest.distanceFromRoute {
+                    continue
+                }
+                found[key] = (item, nearest.distanceFromRoute, nearest.distanceAlongRoute)
+            }
+        }
+
+        let routeLength = RouteSampling.length(of: polyline)
+        let ordered = found.values
+            .sorted { left, right in
+                if left.along != right.along { return left.along < right.along }
+                return (left.item.name ?? "") < (right.item.name ?? "")
+            }
+            .prefix(maxResults)
+
+        let places: [Value] = ordered.map { entry in
+            let coordinate = entry.item.placemark.coordinate
+            var described: [String: Value] = [
+                "name": .string(entry.item.name ?? "Unnamed place"),
+                "latitude": .double(coordinate.latitude),
+                "longitude": .double(coordinate.longitude),
+                "metresFromRoute": .int(Int(entry.offset.rounded())),
+                "metresAlongRoute": .int(Int(entry.along.rounded())),
+            ]
+            if routeLength > 0 {
+                described["fractionAlongRoute"] = .double(
+                    (entry.along / routeLength * 100).rounded() / 100
+                )
+            }
+            if let identifier = entry.item.identifier?.rawValue {
+                described["placeIdentifier"] = .string(identifier)
+            }
+            if let title = entry.item.placemark.title { described["address"] = .string(title) }
+            if let phone = entry.item.phoneNumber { described["telephone"] = .string(phone) }
+            if let url = entry.item.url { described["url"] = .string(url.absoluteString) }
+            return .object(described)
+        }
+
+        var result: [String: Value] = [
+            "query": .string(query),
+            "origin": .string(origin.label),
+            "destination": .string(destination.label),
+            "transportType": .string(arguments["transportType"]?.stringValue ?? "automobile"),
+            "routeDistanceMeters": .int(Int(route.distance.rounded())),
+            "routeTravelTimeSeconds": .int(Int(route.expectedTravelTime.rounded())),
+            "searchedPoints": .int(samples.count),
+            "places": .array(places),
+            "found": .int(found.count),
+            "note": .string(
+                "Distances off the route are straight-line to the nearest point on it, not a second route. "
+                    + "Order is by how far along the trip each place comes."
+            ),
+        ]
+        if searchesFailed > 0 {
+            result["searchesFailed"] = .int(searchesFailed)
+            result["searchesFailedNote"] = .string(
+                "\(searchesFailed) of \(samples.count) searches along the route failed, so stretches of it were not covered."
+            )
+        }
+        if places.isEmpty {
+            result["emptyNote"] = .string(
+                "Nothing matching was found within \(Int(maxDetour)) metres of the route. Raise maxDetourMeters, or search a different term."
+            )
+        }
+        return .object(result)
+    }
+
+    /// One end of a route, from an object argument rather than a list.
+    static func point(_ value: Value?, named argument: String) throws -> RoutePoint {
+        guard let value else {
+            throw invalidGeometry("\(argument) is required.")
+        }
+        guard let point = try Self.points(from: .array([value]), named: argument).first else {
+            throw invalidGeometry("\(argument) is required.")
+        }
+        return point
+    }
+
+    /// A polyline's points, as plain coordinates.
+    static func coordinates(of polyline: MKPolyline) -> [RouteCoordinate] {
+        var points = [CLLocationCoordinate2D](
+            repeating: CLLocationCoordinate2D(),
+            count: polyline.pointCount
+        )
+        polyline.getCoordinates(&points, range: NSRange(location: 0, length: polyline.pointCount))
+        return points.map { RouteCoordinate(latitude: $0.latitude, longitude: $0.longitude) }
+    }
+
+    // MARK: - Map framing
+
+    /// One marked place on a generated map.
+    struct MapMarker: Sendable {
+        let coordinate: CLLocationCoordinate2D
+        let label: String
+    }
+
+    struct FramedMap: Sendable {
+        let region: MKCoordinateRegion
+        let markers: [MapMarker]
+    }
+
+    /// Works out which piece of the world the image should show.
+    ///
+    /// Places win where they are given, because a caller that supplied places
+    /// wants to see them; an explicit centre or span still overrides the
+    /// framing, so the old four-argument call means exactly what it did.
+    static func frame(_ arguments: [String: Value]) async throws -> FramedMap {
+        var markers: [MapMarker] = []
+        if let raw = arguments["points"]?.arrayValue, !raw.isEmpty {
+            guard raw.count <= MapSnapshotFraming.maximumPoints else {
+                throw invalidGeometry(
+                    "\(raw.count) points is over the \(MapSnapshotFraming.maximumPoints) one map may mark."
+                )
+            }
+            let points = try Self.points(from: arguments["points"], named: "points")
+            let items = try await Self.resolve(points)
+            markers = zip(points, items).map { point, item in
+                MapMarker(coordinate: item.placemark.coordinate, label: point.label)
+            }
+        }
+
+        let framed = MapSnapshotFraming.region(
+            containing: markers.map {
+                MapFramePoint(
+                    latitude: $0.coordinate.latitude,
+                    longitude: $0.coordinate.longitude,
+                    label: $0.label
+                )
+            }
+        )
+
+        var center: CLLocationCoordinate2D?
+        if let latitude = arguments["latitude"]?.doubleCoerced,
+            let longitude = arguments["longitude"]?.doubleCoerced
+        {
+            center = try Self.coordinate(latitude: latitude, longitude: longitude)
+        } else if let framed {
+            center = CLLocationCoordinate2D(
+                latitude: framed.centerLatitude,
+                longitude: framed.centerLongitude
+            )
+        }
+        guard let center else {
+            throw invalidGeometry(
+                "Give either points to frame, or a latitude and longitude to centre the map on."
+            )
+        }
+
+        var span: MKCoordinateSpan?
+        if let latitudeDelta = arguments["latitudeDelta"]?.doubleCoerced,
+            let longitudeDelta = arguments["longitudeDelta"]?.doubleCoerced
+        {
+            span = MKCoordinateSpan(
+                latitudeDelta: latitudeDelta,
+                longitudeDelta: longitudeDelta
+            )
+        } else if let framed {
+            span = MKCoordinateSpan(
+                latitudeDelta: framed.latitudeDelta,
+                longitudeDelta: framed.longitudeDelta
+            )
+        }
+        guard let span else {
+            throw invalidGeometry(
+                "Give either points to frame, or both latitudeDelta and longitudeDelta."
+            )
+        }
+
+        return FramedMap(
+            region: MKCoordinateRegion(center: center, span: span),
+            markers: markers
+        )
+    }
+
+    /// Draws numbered markers onto a finished snapshot.
+    ///
+    /// Which way up the snapshot's point space runs is measured from the
+    /// snapshot rather than assumed, because getting it wrong mirrors every
+    /// marker about the middle of the map and the image still looks plausible.
+    static func annotated(
+        _ snapshot: MKMapSnapshotter.Snapshot,
+        region: MKCoordinateRegion,
+        markers: [MapMarker]
+    ) -> NSImage {
+        let image = snapshot.image
+        guard !markers.isEmpty else { return image }
+        let size = image.size
+        guard size.width > 0, size.height > 0 else { return image }
+
+        let northEdge = snapshot.point(
+            for: CLLocationCoordinate2D(
+                latitude: min(90, region.center.latitude + region.span.latitudeDelta / 2),
+                longitude: region.center.longitude
+            )
+        )
+        let isTopLeftOrigin = MapMarkerGeometry.isTopLeftOrigin(
+            northEdgeY: Double(northEdge.y),
+            height: Double(size.height)
+        )
+
+        // Drawn into a bitmap at the snapshot's own pixel size, so a retina
+        // snapshot is not quietly downsampled to its point size on the way out.
+        // A snapshot's representation is an `NSCustomImageRep` that reports
+        // zero pixels rather than its raster size, checked on this Mac, so a
+        // non-positive answer falls back to the point size instead of becoming
+        // a one-pixel image.
+        let reported = image.representations.first
+        let pixelsWide = max(1, (reported?.pixelsWide ?? 0) > 0 ? reported!.pixelsWide : Int(size.width))
+        let pixelsHigh = max(1, (reported?.pixelsHigh ?? 0) > 0 ? reported!.pixelsHigh : Int(size.height))
+        guard
+            let bitmap = NSBitmapImageRep(
+                bitmapDataPlanes: nil,
+                pixelsWide: pixelsWide,
+                pixelsHigh: pixelsHigh,
+                bitsPerSample: 8,
+                samplesPerPixel: 4,
+                hasAlpha: true,
+                isPlanar: false,
+                colorSpaceName: .deviceRGB,
+                bytesPerRow: 0,
+                bitsPerPixel: 0
+            )
+        else { return image }
+        bitmap.size = size
+
+        NSGraphicsContext.saveGraphicsState()
+        defer { NSGraphicsContext.restoreGraphicsState() }
+        guard let context = NSGraphicsContext(bitmapImageRep: bitmap) else { return image }
+        NSGraphicsContext.current = context
+
+        image.draw(in: CGRect(origin: .zero, size: size))
+
+        let radius = max(9, min(size.width, size.height) * 0.022)
+        for (index, marker) in markers.enumerated() {
+            let point = snapshot.point(for: marker.coordinate)
+            let y = MapMarkerGeometry.drawingY(
+                snapshotY: Double(point.y),
+                height: Double(size.height),
+                isTopLeftOrigin: isTopLeftOrigin
+            )
+            guard
+                MapMarkerGeometry.isVisible(
+                    x: Double(point.x),
+                    y: y,
+                    width: Double(size.width),
+                    height: Double(size.height),
+                    radius: Double(radius)
+                )
+            else { continue }
+
+            let circle = NSBezierPath(
+                ovalIn: CGRect(
+                    x: point.x - radius,
+                    y: CGFloat(y) - radius,
+                    width: radius * 2,
+                    height: radius * 2
+                )
+            )
+            NSColor.systemRed.setFill()
+            circle.fill()
+            NSColor.white.setStroke()
+            circle.lineWidth = max(1, radius * 0.18)
+            circle.stroke()
+
+            let number = "\(index + 1)"
+            let attributes: [NSAttributedString.Key: Any] = [
+                .font: NSFont.boldSystemFont(ofSize: radius),
+                .foregroundColor: NSColor.white,
+            ]
+            let textSize = number.size(withAttributes: attributes)
+            number.draw(
+                at: NSPoint(
+                    x: point.x - textSize.width / 2,
+                    y: CGFloat(y) - textSize.height / 2
+                ),
+                withAttributes: attributes
+            )
+        }
+        context.flushGraphics()
+
+        let annotated = NSImage(size: size)
+        annotated.addRepresentation(bitmap)
+        return annotated
     }
 
     // MARK: - Multi-route support

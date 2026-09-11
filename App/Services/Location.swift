@@ -611,9 +611,186 @@ final class LocationService: NSObject, Service, CLLocationManagerDelegate {
             )
             return Value.object(result)
         }
+
+        Tool(
+            name: "location_time_zone",
+            description:
+                "What time it is where a place is. Give an address or a coordinate and get the time zone, "
+                + "the local wall-clock time there, the offset from UTC, whether summer time is in force, "
+                + "and how far ahead or behind this Mac it is. Answers the scheduling question a geocode "
+                + "leaves open.",
+            inputSchema: .object(
+                properties: [
+                    "address": .string(
+                        description: "Address or place name. Use this or a latitude and longitude, not both."
+                    ),
+                    "latitude": .number(minimum: -90, maximum: 90),
+                    "longitude": .number(minimum: -180, maximum: 180),
+                    "at": .string(
+                        description:
+                            "The instant to ask about, as an ISO 8601 timestamp. Defaults to now. Summer time makes the answer depend on when you ask.",
+                        format: .dateTime
+                    ),
+                ],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Time Zone of a Place",
+                readOnlyHint: true,
+                idempotentHint: true,
+                openWorldHint: true
+            )
+        ) { arguments in
+            let address = arguments["address"]?.stringValue
+            let latitude = arguments["latitude"]?.doubleCoerced
+            let longitude = arguments["longitude"]?.doubleCoerced
+
+            var instant = Date()
+            if let raw = arguments["at"]?.stringValue, !raw.isEmpty {
+                guard let parsed = LocationService.parseTimestamp(raw) else {
+                    throw NSError(
+                        domain: "LocationServiceError",
+                        code: 10,
+                        userInfo: [
+                            NSLocalizedDescriptionKey:
+                                "at must be an ISO 8601 timestamp, such as 2026-09-11T14:00:00Z."
+                        ]
+                    )
+                }
+                instant = parsed
+            }
+
+            let placemark: CLPlacemark
+            let resolvedCoordinate: CLLocationCoordinate2D
+            if let latitude, let longitude {
+                guard NumericArgument.validatedDouble(latitude, in: -90 ... 90) != nil,
+                    NumericArgument.validatedDouble(longitude, in: -180 ... 180) != nil
+                else {
+                    throw NSError(
+                        domain: "LocationServiceError",
+                        code: 5,
+                        userInfo: [NSLocalizedDescriptionKey: "Invalid coordinates"]
+                    )
+                }
+                let location = CLLocation(latitude: latitude, longitude: longitude)
+                placemark = try await LocationService.firstPlacemark(reverseGeocoding: location)
+                resolvedCoordinate = placemark.location?.coordinate ?? location.coordinate
+            } else if let address, !address.isEmpty {
+                placemark = try await LocationService.firstPlacemark(geocoding: address)
+                guard let coordinate = placemark.location?.coordinate else {
+                    throw NSError(
+                        domain: "LocationServiceError",
+                        code: 6,
+                        userInfo: [
+                            NSLocalizedDescriptionKey: "No location found for \(address)"
+                        ]
+                    )
+                }
+                resolvedCoordinate = coordinate
+            } else {
+                throw NSError(
+                    domain: "LocationServiceError",
+                    code: 5,
+                    userInfo: [
+                        NSLocalizedDescriptionKey:
+                            "Give either an address or both a latitude and a longitude."
+                    ]
+                )
+            }
+
+            // A placemark in the middle of an ocean has no time zone, and
+            // guessing one from the longitude would be a made-up answer.
+            guard let timeZone = placemark.timeZone else {
+                throw NSError(
+                    domain: "LocationServiceError",
+                    code: 11,
+                    userInfo: [
+                        NSLocalizedDescriptionKey:
+                            "macOS reports no time zone for that point. It is probably at sea or otherwise outside any zone."
+                    ]
+                )
+            }
+
+            let summary = LocationTimeZone.describe(timeZone, at: instant)
+            let local = TimeZone.current
+            let difference = LocationTimeZone.differenceFromLocal(
+                timeZone,
+                localZone: local,
+                at: instant
+            )
+
+            var response: [String: Value] = [
+                "timeZone": .string(summary.identifier),
+                "utcOffsetSeconds": .int(summary.utcOffsetSeconds),
+                "utcOffset": .string(summary.utcOffsetText),
+                "localTime": .string(summary.localTime),
+                "isDaylightSavingTime": .bool(summary.isDaylightSavingTime),
+                "daylightSavingOffsetSeconds": .int(summary.daylightSavingOffsetSeconds),
+                "askedAbout": .string(ISO8601DateFormatter().string(from: instant)),
+                "differenceFromThisMacSeconds": .int(difference),
+                "differenceFromThisMac": .string(
+                    LocationTimeZone.describeDifference(seconds: difference)
+                ),
+                "thisMacTimeZone": .string(local.identifier),
+                "geo": .object([
+                    "@type": .string("GeoCoordinates"),
+                    "latitude": .double(resolvedCoordinate.latitude),
+                    "longitude": .double(resolvedCoordinate.longitude),
+                ]),
+            ]
+            if let abbreviation = summary.abbreviation {
+                response["abbreviation"] = .string(abbreviation)
+            }
+            if let name = placemark.name { response["place"] = .string(name) }
+            if let locality = placemark.locality { response["locality"] = .string(locality) }
+            if let country = placemark.country { response["country"] = .string(country) }
+            if let transition = summary.nextTransition {
+                response["nextOffsetChange"] = .string(
+                    ISO8601DateFormatter().string(from: transition)
+                )
+            }
+            return Value.object(response)
+        }
     }
 
     // MARK: - Shaping
+
+    /// Parses a caller-supplied timestamp, with or without fractional
+    /// seconds. `ISO8601DateFormatter` rejects whichever form it was not
+    /// configured for, and a caller writing the other one should not be told
+    /// their timestamp is not a timestamp.
+    static func parseTimestamp(_ raw: String) -> Date? {
+        let withFractional = ISO8601DateFormatter()
+        withFractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let parsed = withFractional.date(from: raw) { return parsed }
+        return ISO8601DateFormatter().date(from: raw)
+    }
+
+    /// The first placemark for a coordinate, as an async call.
+    static func firstPlacemark(reverseGeocoding location: CLLocation) async throws -> CLPlacemark {
+        let placemarks = try await CLGeocoder().reverseGeocodeLocation(location)
+        guard let placemark = placemarks.first else {
+            throw NSError(
+                domain: "LocationServiceError",
+                code: 6,
+                userInfo: [NSLocalizedDescriptionKey: "No address found for location"]
+            )
+        }
+        return placemark
+    }
+
+    /// The first placemark for an address, as an async call.
+    static func firstPlacemark(geocoding address: String) async throws -> CLPlacemark {
+        let placemarks = try await CLGeocoder().geocodeAddressString(address)
+        guard let placemark = placemarks.first else {
+            throw NSError(
+                domain: "LocationServiceError",
+                code: 6,
+                userInfo: [NSLocalizedDescriptionKey: "No location found for \(address)"]
+            )
+        }
+        return placemark
+    }
 
     /// One fix, described with the freshness and precision the bare
     /// `GeoCoordinates` encoding leaves out.

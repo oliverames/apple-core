@@ -12,10 +12,12 @@
 // window on a file nobody can read anyway, so binary is reported as metadata
 // and left on disk.
 
+import CoreServices
 import CryptoKit
 import Foundation
 import JSONSchema
 import OSLog
+import UniformTypeIdentifiers
 
 private let log = Logger.service("filesystem")
 
@@ -57,7 +59,11 @@ final class FilesystemService: Service {
 
     /// Read fresh each call rather than cached: the user can share or unshare a
     /// folder while a client is connected, and the next call must respect it.
-    private var roots: [FilesystemRoot] {
+    ///
+    /// Not private: `capture_read_image_text` reads a file from disk, so it
+    /// has to ask the same allowlist this surface does. One definition, asked
+    /// twice, rather than two definitions that can drift apart.
+    var roots: [FilesystemRoot] {
         ServingConfigManager.load().filesystemRoots ?? []
     }
 
@@ -282,7 +288,10 @@ final class FilesystemService: Service {
         Tool(
             name: "filesystem_read",
             description:
-                "Read a text file inside a shared folder. Binary files are not returned; their metadata is. Large files come back capped, with nextOffset for reading on from there.",
+                "Read a text file inside a shared folder. Binary files are not returned; their metadata is. "
+                + "Large files come back capped, with nextOffset for reading on from there. Pass head or tail "
+                + "to read the first or last lines instead: tail reads from the end of the file, so the end of "
+                + "a long log costs one call rather than a walk through the whole thing.",
             inputSchema: .object(
                 properties: [
                     "path": .string(description: "File to read"),
@@ -290,6 +299,16 @@ final class FilesystemService: Service {
                         description:
                             "Byte to start reading from; pass a previous call's nextOffset",
                         default: .int(0)
+                    ),
+                    "head": .integer(
+                        description: FilesystemService.headArgumentDescription,
+                        minimum: 1,
+                        maximum: FilesystemLineWindow.maximumLines
+                    ),
+                    "tail": .integer(
+                        description: FilesystemService.tailArgumentDescription,
+                        minimum: 1,
+                        maximum: FilesystemLineWindow.maximumLines
                     ),
                 ],
                 required: ["path"],
@@ -310,6 +329,17 @@ final class FilesystemService: Service {
                 requiringWrite: false
             )
             let metadataSize = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize
+            let head = arguments["head"]?.intValue
+            let tail = arguments["tail"]?.intValue
+            if head != nil || tail != nil {
+                return try FilesystemService.readLines(
+                    at: url,
+                    head: head,
+                    tail: tail,
+                    offsetRequested: arguments["offset"]?.intValue,
+                    sizeBytes: metadataSize
+                )
+            }
             let byteOffset = max(0, arguments["offset"]?.intValue ?? 0)
             // Read only the cap, not the file: Data(contentsOf:) loaded a
             // multi-gigabyte file whole before the old slice applied.
@@ -1343,6 +1373,136 @@ final class FilesystemService: Service {
                 "budgetExhausted": .bool(batch.budgetExhausted),
             ])
         }
+
+        Tool(
+            name: "filesystem_disk_usage",
+            description:
+                "Add up how much space a shared folder and each thing in it actually occupies. Answers "
+                + "\"what is filling this folder\" in one call, where filesystem_tree would take one call per "
+                + "folder and still miss anything below its depth limit. Reports both the size a listing shows "
+                + "and the blocks the disk gives up, which differ for compressed, sparse and cloned files. "
+                + "Symbolic links are counted, never followed.",
+            inputSchema: .object(
+                properties: [
+                    "path": .string(description: "Folder to measure"),
+                    "maxChildren": .integer(
+                        description:
+                            "How many of the folder's own items to list, largest first, up to \(FilesystemDiskUsage.maximumMaxChildren). The totals always cover everything.",
+                        default: .int(FilesystemDiskUsage.defaultMaxChildren),
+                        minimum: 1,
+                        maximum: FilesystemDiskUsage.maximumMaxChildren
+                    ),
+                ],
+                required: ["path"],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Measure Folder Size",
+                readOnlyHint: true,
+                idempotentHint: true,
+                openWorldHint: false
+            )
+        ) { arguments in
+            guard let path = arguments["path"]?.stringValue else {
+                throw FilesystemServiceError.missingArgument("path")
+            }
+            let url = try FilesystemContent.resolveExisting(
+                requested: path,
+                roots: FilesystemService.shared.roots
+            )
+            let usage = try FilesystemDiskUsage.measure(
+                root: url,
+                roots: FilesystemService.shared.roots,
+                maxChildren: FilesystemDiskUsage.clampedChildren(arguments["maxChildren"]?.intValue)
+            )
+
+            let children: [Value] = usage.children.map { child in
+                var entry: [String: Value] = [
+                    "name": .string(child.name),
+                    "path": .string(child.path),
+                    "isDirectory": .bool(child.isDirectory),
+                    "sizeBytes": .int(Int(child.logicalBytes)),
+                    "size": .string(SystemResourceFormatting.describeBytes(max(0, child.logicalBytes))),
+                    "allocatedBytes": .int(Int(child.allocatedBytes)),
+                    "allocated": .string(
+                        SystemResourceFormatting.describeBytes(max(0, child.allocatedBytes))
+                    ),
+                    "fileCount": .int(child.fileCount),
+                ]
+                if child.isDirectory { entry["folderCount"] = .int(child.directoryCount) }
+                return .object(entry)
+            }
+
+            var response: [String: Value] = [
+                "path": .string(usage.root),
+                "sizeBytes": .int(Int(usage.logicalBytes)),
+                "size": .string(SystemResourceFormatting.describeBytes(max(0, usage.logicalBytes))),
+                "allocatedBytes": .int(Int(usage.allocatedBytes)),
+                "allocated": .string(
+                    SystemResourceFormatting.describeBytes(max(0, usage.allocatedBytes))
+                ),
+                "fileCount": .int(usage.fileCount),
+                "folderCount": .int(usage.directoryCount),
+                "children": .array(children),
+                "childCount": .int(usage.childCount),
+            ]
+            if usage.symbolicLinkCount > 0 {
+                response["symbolicLinkCount"] = .int(usage.symbolicLinkCount)
+            }
+            if usage.deniedCount > 0 {
+                response["outsideSharedFoldersCount"] = .int(usage.deniedCount)
+                response["outsideSharedFoldersNote"] = .string(
+                    "\(usage.deniedCount) item\(usage.deniedCount == 1 ? "" : "s") resolved outside the folders shared with Apple Core and were not measured."
+                )
+            }
+            if usage.unreadableCount > 0 {
+                response["unreadableFolderCount"] = .int(usage.unreadableCount)
+                response["unreadableNote"] = .string(
+                    "\(usage.unreadableCount) folder\(usage.unreadableCount == 1 ? " was" : "s were") not readable, so the totals are short by whatever is inside them."
+                )
+            }
+            if usage.exhaustedScanBudget {
+                response["complete"] = .bool(false)
+                response["note"] = .string(
+                    "The walk stopped after \(FilesystemDiskUsage.scanBudget) items, so these totals are a floor rather than the answer. Measure a subfolder for a complete number."
+                )
+            } else {
+                response["complete"] = .bool(true)
+            }
+            return Value.object(response)
+        }
+
+        Tool(
+            name: "filesystem_metadata",
+            description:
+                "Read what macOS knows about one file beyond its size and dates: what type it really is rather "
+                + "than what its extension claims, whether an iCloud file's contents are actually on this Mac, "
+                + "which application downloaded it and from where, and the Spotlight attributes that describe "
+                + "the content itself, such as page count, pixel dimensions and duration. Reads metadata only, "
+                + "never the file's contents.",
+            inputSchema: .object(
+                properties: [
+                    "path": .string(description: "File or folder to describe")
+                ],
+                required: ["path"],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "File Metadata",
+                readOnlyHint: true,
+                idempotentHint: true,
+                openWorldHint: false
+            )
+        ) { arguments in
+            guard let path = arguments["path"]?.stringValue else {
+                throw FilesystemServiceError.missingArgument("path")
+            }
+            let url = try FilesystemContent.resolveExisting(
+                requested: path,
+                roots: FilesystemService.shared.roots
+            )
+            return FilesystemService.metadata(for: url)
+        }
     }
     /// Reads one hit far enough to quote from it.
     ///
@@ -1372,6 +1532,221 @@ final class FilesystemService: Service {
         else { return (nil, .notPlainText) }
         let found = FilesystemContentSearch.snippets(in: text, query: query, maximum: maximum)
         return found.isEmpty ? (nil, .noLiteralMatch) : (found, nil)
+    }
+
+    static let headArgumentDescription =
+        "Return only the first this many lines, instead of bytes from the start. Cannot be combined with tail or offset."
+    static let tailArgumentDescription =
+        "Return only the last this many lines, read from the end of the file. Cannot be combined with head or offset."
+
+    /// Reads the first or last lines of a file.
+    ///
+    /// A tail read seeks to near the end rather than reading the file: the
+    /// point of asking for the last fifty lines of a log is not having to read
+    /// the two gigabytes in front of them.
+    static func readLines(
+        at url: URL,
+        head: Int?,
+        tail: Int?,
+        offsetRequested: Int?,
+        sizeBytes: Int?
+    ) throws -> Value {
+        if head != nil, tail != nil {
+            throw FilesystemServiceError.conflictingArguments(
+                "head and tail ask for opposite ends of the file. Pass one or the other."
+            )
+        }
+        if let offsetRequested, offsetRequested > 0 {
+            throw FilesystemServiceError.conflictingArguments(
+                "offset counts bytes and head and tail count lines, so they cannot be combined. Drop offset, or page with offset alone."
+            )
+        }
+
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        let size = sizeBytes ?? 0
+
+        let data: Data
+        let startsMidFile: Bool
+        if tail != nil {
+            let start = max(0, size - FilesystemLineWindow.maximumTailBytes)
+            if start > 0 { try handle.seek(toOffset: UInt64(start)) }
+            startsMidFile = start > 0
+            data = (try handle.readToEnd()) ?? Data()
+        } else {
+            startsMidFile = false
+            data = (try handle.read(upToCount: maximumReadBytes)) ?? Data()
+        }
+
+        guard let text = FilesystemLineWindow.decode(data, startsMidFile: startsMidFile) else {
+            return Value.object([
+                "path": .string(url.path),
+                "isText": .bool(false),
+                "sizeBytes": .int(size),
+                "note": .string(
+                    "This file is not UTF-8 text, so its contents were not read. "
+                        + "Use filesystem_read_binary for small binary files."
+                ),
+            ])
+        }
+
+        let window: FilesystemLineWindowResult
+        let mode: String
+        if let tail {
+            window = FilesystemLineWindow.tail(text, count: tail, startsMidFile: startsMidFile)
+            mode = "tail"
+        } else {
+            window = FilesystemLineWindow.head(
+                text,
+                count: head ?? 1,
+                isWholeFile: data.count >= size
+            )
+            mode = "head"
+        }
+
+        var result: [String: Value] = [
+            "path": .string(url.path),
+            "isText": .bool(true),
+            "sizeBytes": .int(size),
+            "mode": .string(mode),
+            "lineCount": .int(window.lines.count),
+            "content": .string(window.lines.joined(separator: "\n")),
+        ]
+        if window.truncated {
+            result["truncated"] = .bool(true)
+            result["note"] = .string(
+                mode == "tail"
+                    ? "These are the last \(window.lines.count) lines. Earlier lines were not read."
+                    : "These are the first \(window.lines.count) lines. Later lines were not read."
+            )
+        }
+        return Value.object(result)
+    }
+
+    /// Everything macOS knows about one file that a `stat` call does not.
+    ///
+    /// Each block is omitted when the file has nothing to say, rather than
+    /// reported as empty: a file with no download record and a file whose
+    /// download record could not be read are different facts.
+    static func metadata(for url: URL) -> Value {
+        let values = try? url.resourceValues(forKeys: [
+            .contentTypeKey, .fileSizeKey, .totalFileAllocatedSizeKey, .creationDateKey,
+            .contentModificationDateKey, .addedToDirectoryDateKey, .isDirectoryKey,
+            .isSymbolicLinkKey, .isAliasFileKey, .isHiddenKey, .isPackageKey, .isWritableKey,
+        ])
+        let formatter = ISO8601DateFormatter()
+
+        var response: [String: Value] = [
+            "path": .string(url.path),
+            "name": .string(url.lastPathComponent),
+            "isDirectory": .bool(values?.isDirectory ?? false),
+        ]
+        if let type = values?.contentType {
+            var described: [String: Value] = [
+                "identifier": .string(type.identifier),
+                "category": .string(FilesystemMetadata.category(for: type).rawValue),
+            ]
+            if let description = type.localizedDescription {
+                described["description"] = .string(description)
+            }
+            if let mime = type.preferredMIMEType { described["mimeType"] = .string(mime) }
+            response["contentType"] = .object(described)
+        }
+        if let size = values?.fileSize { response["sizeBytes"] = .int(size) }
+        if let allocated = values?.totalFileAllocatedSize {
+            response["allocatedBytes"] = .int(allocated)
+        }
+        if let created = values?.creationDate {
+            response["created"] = .string(formatter.string(from: created))
+        }
+        if let modified = values?.contentModificationDate {
+            response["modified"] = .string(formatter.string(from: modified))
+        }
+        if let added = values?.addedToDirectoryDate {
+            response["addedToFolder"] = .string(formatter.string(from: added))
+        }
+        if values?.isSymbolicLink == true { response["isSymbolicLink"] = .bool(true) }
+        if values?.isAliasFile == true { response["isAlias"] = .bool(true) }
+        if values?.isHidden == true { response["isHidden"] = .bool(true) }
+        if values?.isPackage == true { response["isPackage"] = .bool(true) }
+        if let writable = values?.isWritable { response["isWritableOnDisk"] = .bool(writable) }
+
+        // Whether the bytes are here, not just the name. An evicted iCloud
+        // file describes exactly like a local one right up until a read.
+        let availability = FilesystemCloudAvailability.of(url)
+        response["cloudAvailability"] = .string(availability.rawValue)
+        if availability == .notDownloaded {
+            response["cloudNote"] = .string(
+                "This file lives in iCloud and its contents are not on this Mac, so reading it would have to download it first."
+            )
+        }
+
+        if let data = FilesystemMetadata.extendedAttribute(
+            "com.apple.metadata:kMDItemWhereFroms",
+            of: url.path
+        ) {
+            let sources = FilesystemMetadata.whereFroms(fromAttribute: data)
+            if !sources.isEmpty {
+                response["downloadedFrom"] = .array(sources.map { .string($0) })
+            }
+        }
+        if let data = FilesystemMetadata.extendedAttribute("com.apple.quarantine", of: url.path),
+            let record = FilesystemMetadata.quarantineRecord(
+                fromAttribute: String(decoding: data, as: UTF8.self)
+            )
+        {
+            var quarantine: [String: Value] = [:]
+            if let agent = record.agentName { quarantine["downloadedBy"] = .string(agent) }
+            if let timestamp = record.timestamp {
+                quarantine["downloadedAt"] = .string(formatter.string(from: timestamp))
+            }
+            quarantine["note"] = .string(
+                "macOS marked this file as coming from outside the Mac. Opening it prompts for confirmation the first time."
+            )
+            response["quarantine"] = .object(quarantine)
+        }
+
+        if let spotlight = Self.spotlightAttributes(for: url), !spotlight.isEmpty {
+            response["spotlight"] = .object(spotlight)
+        } else {
+            response["spotlightNote"] = .string(
+                "Spotlight has nothing indexed for this file. Its volume may have indexing switched off, or the file may be too new."
+            )
+        }
+        return Value.object(response)
+    }
+
+    /// The handful of Spotlight attributes that describe content rather than
+    /// the file: page count, dimensions, duration, the title inside the
+    /// document. Read one by one so an attribute the file does not carry is
+    /// absent rather than null.
+    private static func spotlightAttributes(for url: URL) -> [String: Value]? {
+        guard let item = MDItemCreate(nil, url.path as CFString) else { return nil }
+        var described: [String: Value] = [:]
+        let formatter = ISO8601DateFormatter()
+        for attribute in FilesystemMetadata.spotlightAttributes {
+            guard let raw = MDItemCopyAttribute(item, attribute as CFString) else { continue }
+            let key = FilesystemMetadata.responseKey(forSpotlightAttribute: attribute)
+            switch raw {
+            case let text as String where !text.isEmpty:
+                described[key] = .string(text)
+            case let strings as [String] where !strings.isEmpty:
+                described[key] = .array(strings.map { .string($0) })
+            case let date as Date:
+                described[key] = .string(formatter.string(from: date))
+            case let number as NSNumber:
+                // A count is an integer and a duration is not; reporting a
+                // page count as 12.0 reads as a measurement rather than a
+                // number of pages.
+                let value = number.doubleValue
+                described[key] =
+                    value == value.rounded() && abs(value) < 1e15
+                    ? .int(Int(value)) : .double(value)
+            default:
+                continue
+            }
+        }
+        return described
     }
 
     private static func describe(_ url: URL) -> Value {
@@ -1404,6 +1779,8 @@ enum FilesystemServiceError: LocalizedError {
     /// move or trash a file it probably meant to update.
     case refusingToOverwrite(String)
     case tooLargeToInline(path: String, sizeBytes: Int, limitBytes: Int)
+    /// Two arguments that each make sense and cannot both apply.
+    case conflictingArguments(String)
 
     var errorDescription: String? {
         switch self {
@@ -1418,6 +1795,8 @@ enum FilesystemServiceError: LocalizedError {
                 "\(path) already exists, and replacing it would discard its contents without "
                 + "sending anything to the Trash. Pass overwrite: true to replace it on purpose, "
                 + "use filesystem_append to add to it, or choose another name."
+        case let .conflictingArguments(explanation):
+            return explanation
         case let .tooLargeToInline(path, sizeBytes, limitBytes):
             return
                 "\(path) is \(sizeBytes / 1024)KB, over the \(limitBytes / 1024)KB limit for "

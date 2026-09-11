@@ -41,6 +41,29 @@ struct MessageAttachment: Sendable {
     let storedPath: String?
 }
 
+/// The per-message columns `madrid` does not model, keyed by message GUID.
+///
+/// Everything here is read from `message` in one pass for a page of GUIDs, so
+/// enriching a fetched page costs a single extra query rather than one per
+/// message.
+struct MessageMetadata: Sendable {
+    let guid: String
+    let service: String?
+    let isRead: Bool
+    let dateRead: Date?
+    let dateDelivered: Date?
+    let subject: String?
+    let annotation: MessageAnnotation
+    /// The GUID of the message this one replies to, when chat.db recorded an
+    /// inline reply. Distinct from a tapback target.
+    let replyToGUID: String?
+    let expressiveSendStyle: String?
+    /// The bundle identifier of the iMessage app that produced this message,
+    /// for an Apple Cash payment or a third-party app message.
+    let balloonBundleID: String?
+    let attachmentNames: [String]
+}
+
 /// One conversation, keyed by the GUID that never changes when the group is
 /// renamed or its membership shifts. Two conversations with identical
 /// participants differ here even though their participant lists do not.
@@ -632,6 +655,133 @@ struct MessagesDatabaseReader {
         "(CASE WHEN a.created_date > 1000000000000 THEN a.created_date / 1000000000 ELSE a.created_date END)"
     private static let normalizedMessageSeconds =
         "(CASE WHEN m.date > 1000000000000 THEN m.date / 1000000000 ELSE m.date END)"
+
+    /// Per-message metadata for a page of GUIDs.
+    ///
+    /// Every column is checked for existence first: chat.db gained
+    /// `associated_message_emoji`, `date_edited` and `date_retracted` in
+    /// different releases, and a reader that assumes them fails whole on an
+    /// older system instead of returning what it can.
+    func messageMetadata(forGUIDs guids: [String]) throws -> [String: MessageMetadata] {
+        guard !guids.isEmpty else { return [:] }
+        let handle = try open()
+        defer { sqlite3_close(handle) }
+        guard tableExists("message", in: handle) else {
+            throw MessagesDatabaseReaderError.schemaMissing("the message table")
+        }
+
+        func column(_ name: String, default fallback: String = "NULL") -> String {
+            columnExists(name, onTable: "message", in: handle) ? "m.\(name)" : fallback
+        }
+
+        let placeholders = Array(repeating: "?", count: guids.count).joined(separator: ",")
+        let sql = """
+            SELECT m.guid,
+                   \(column("service")),
+                   \(column("is_read", default: "0")),
+                   \(column("date_read", default: "0")),
+                   \(column("date_delivered", default: "0")),
+                   \(column("subject")),
+                   \(column("associated_message_type", default: "0")),
+                   \(column("associated_message_guid")),
+                   \(column("associated_message_emoji")),
+                   \(column("item_type", default: "0")),
+                   \(column("group_action_type", default: "0")),
+                   \(column("group_title")),
+                   \(column("date_edited", default: "0")),
+                   \(column("date_retracted", default: "0")),
+                   \(column("thread_originator_guid")),
+                   \(column("reply_to_guid")),
+                   \(column("expressive_send_style_id")),
+                   \(column("balloon_bundle_id")),
+                   \(column("text"))
+            FROM message m
+            WHERE m.guid IN (\(placeholders))
+            """
+
+        var statement: OpaquePointer?
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_prepare_v2(handle, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw MessagesDatabaseReaderError.cannotOpen(String(cString: sqlite3_errmsg(handle)))
+        }
+        for (offset, guid) in guids.enumerated() {
+            sqlite3_bind_text(statement, Int32(offset + 1), guid, -1, sqliteTransient)
+        }
+
+        let attachments = try attachmentNames(forGUIDs: guids, in: handle)
+
+        var results: [String: MessageMetadata] = [:]
+        while sqlite3_step(statement) == SQLITE_ROW {
+            guard let guid = Self.text(statement, 0) else { continue }
+            let text = Self.text(statement, 18)
+            let names = attachments[guid] ?? []
+            let annotation = MessageAnnotator.annotate(
+                MessageAnnotationInput(
+                    associatedMessageType: Int(sqlite3_column_int64(statement, 6)),
+                    associatedMessageGUID: Self.text(statement, 7),
+                    associatedMessageEmoji: Self.text(statement, 8),
+                    itemType: Int(sqlite3_column_int64(statement, 9)),
+                    groupActionType: Int(sqlite3_column_int64(statement, 10)),
+                    groupTitle: Self.text(statement, 11),
+                    dateEdited: Self.date(fromAppleNanoseconds: sqlite3_column_int64(statement, 12)),
+                    dateRetracted: Self.date(
+                        fromAppleNanoseconds: sqlite3_column_int64(statement, 13)
+                    ),
+                    attachmentCount: names.count,
+                    hasText: !(text?.isEmpty ?? true)
+                )
+            )
+            // An inline reply records its parent in thread_originator_guid on
+            // modern systems and reply_to_guid on older ones; either is the
+            // message being replied to.
+            let replyTo =
+                MessageAnnotator.normalizedTargetGUID(Self.text(statement, 14))
+                ?? MessageAnnotator.normalizedTargetGUID(Self.text(statement, 15))
+            results[guid] = MessageMetadata(
+                guid: guid,
+                service: MessageServiceName.normalized(Self.text(statement, 1)),
+                isRead: sqlite3_column_int64(statement, 2) == 1,
+                dateRead: Self.date(fromAppleNanoseconds: sqlite3_column_int64(statement, 3)),
+                dateDelivered: Self.date(fromAppleNanoseconds: sqlite3_column_int64(statement, 4)),
+                subject: Self.text(statement, 5).flatMap { $0.isEmpty ? nil : $0 },
+                annotation: annotation,
+                replyToGUID: replyTo,
+                expressiveSendStyle: Self.text(statement, 16),
+                balloonBundleID: Self.text(statement, 17),
+                attachmentNames: names
+            )
+        }
+        return results
+    }
+
+    private func attachmentNames(forGUIDs guids: [String], in handle: OpaquePointer) throws
+        -> [String: [String]]
+    {
+        guard tableExists("attachment", in: handle),
+            tableExists("message_attachment_join", in: handle)
+        else { return [:] }
+        let placeholders = Array(repeating: "?", count: guids.count).joined(separator: ",")
+        let sql = """
+            SELECT m.guid, COALESCE(a.transfer_name, a.mime_type, a.uti, '')
+            FROM attachment a
+            JOIN message_attachment_join maj ON maj.attachment_id = a.ROWID
+            JOIN message m ON m.ROWID = maj.message_id
+            WHERE m.guid IN (\(placeholders))
+            ORDER BY a.ROWID ASC
+            """
+        var statement: OpaquePointer?
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_prepare_v2(handle, sql, -1, &statement, nil) == SQLITE_OK else { return [:] }
+        for (offset, guid) in guids.enumerated() {
+            sqlite3_bind_text(statement, Int32(offset + 1), guid, -1, sqliteTransient)
+        }
+        var found: [String: [String]] = [:]
+        while sqlite3_step(statement) == SQLITE_ROW {
+            guard let guid = Self.text(statement, 0) else { continue }
+            found[guid, default: []].append(Self.text(statement, 1) ?? "")
+        }
+        return found
+    }
 
     private static func appleSeconds(from date: Date) -> Int64 {
         Int64(date.timeIntervalSince(appleEpoch).rounded(.down))

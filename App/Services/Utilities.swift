@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import IOKit.ps
 import JSONSchema
 import OSLog
 import UserNotifications
@@ -492,6 +493,54 @@ final class UtilitiesService: Service {
         }
 
         Tool(
+            name: "utilities_power",
+            description:
+                "Report this Mac's power: whether it is on mains or battery, how much charge is left, whether "
+                + "it is charging, and how long macOS thinks that leaves. Worth asking before starting anything "
+                + "long on a laptop serving this connector. Reads only; changes no power setting.",
+            inputSchema: .object(properties: [:], additionalProperties: false),
+            annotations: .init(
+                title: "Power and Battery",
+                readOnlyHint: true,
+                idempotentHint: true,
+                openWorldHint: false
+            )
+        ) { _ in
+            let summary = UtilitiesService.powerSummary()
+            let info = ProcessInfo.processInfo
+            var response: [String: Value] = [
+                "hasBattery": .bool(summary.hasBattery),
+                "powerSource": .string(summary.source.rawValue),
+                "isCharging": .bool(summary.isCharging),
+                "isFullyCharged": .bool(summary.isFullyCharged),
+                "lowPowerModeEnabled": .bool(info.isLowPowerModeEnabled),
+                "thermalState": .string(
+                    SystemResourceFormatting.describeThermalState(info.thermalState.rawValue)
+                ),
+                "summary": .string(summary.summaryLine()),
+            ]
+            if let percent = summary.percentRemaining {
+                response["percentRemaining"] = .int(percent)
+            }
+            if let minutes = summary.minutesRemaining {
+                response["minutesRemaining"] = .int(minutes)
+            }
+            if let minutes = summary.minutesToFullCharge {
+                response["minutesToFullCharge"] = .int(minutes)
+            }
+            if summary.timeEstimateIsCalculating {
+                response["timeEstimateIsCalculating"] = .bool(true)
+                response["timeEstimateNote"] = .string(
+                    "macOS has not settled on a time estimate yet, which it does for several minutes after a charger is plugged in or unplugged. The percentage is still accurate."
+                )
+            }
+            if let condition = summary.condition {
+                response["batteryCondition"] = .string(condition)
+            }
+            return Value.object(response)
+        }
+
+        Tool(
             name: "utilities_connector_health",
             description:
                 "Report which Apple Core surfaces are live on this Mac, what each one is waiting on, "
@@ -517,6 +566,26 @@ extension UtilitiesService {
     /// on, deduplicated. Not every mounted volume: a connected client asking
     /// about disk space has no business being handed an inventory of the
     /// external drives and network shares attached to someone's Mac.
+    /// Reads the Mac's own power source.
+    ///
+    /// The internal battery is picked by name rather than by position: a Mac
+    /// with a UPS attached lists the UPS as a power source too, and reporting
+    /// its charge as the Mac's battery would be a confident wrong answer.
+    static func powerSummary() -> PowerSummary {
+        guard let blob = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
+            let sources = IOPSCopyPowerSourcesList(blob)?.takeRetainedValue() as? [CFTypeRef]
+        else { return .noBattery }
+
+        let descriptions = sources.compactMap { source in
+            IOPSGetPowerSourceDescription(blob, source)?.takeUnretainedValue() as? [String: Any]
+        }
+        guard !descriptions.isEmpty else { return .noBattery }
+        let internalBattery = descriptions.first { description in
+            (description[PowerSummary.Key.type] as? String) == kIOPSInternalBatteryType
+        }
+        return PowerSummary.from(description: internalBattery ?? descriptions[0])
+    }
+
     static func resourceSummary() -> SystemResourceSummary {
         let info = ProcessInfo.processInfo
         var paths = ["/"]

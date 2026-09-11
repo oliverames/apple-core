@@ -264,6 +264,112 @@ final class ShortcutsService: Service {
             _ = try await self.capture(arguments: ["view", name], what: "shortcuts view")
             return Value.object(["opened": .bool(true), "shortcut": .string(name)])
         }
+
+        Tool(
+            name: "shortcuts_sign",
+            description:
+                "Sign an unsigned .shortcut file so it can be installed. Both paths must be inside a "
+                + "shared folder, and the output folder must allow writing. Mode "
+                + "\"people-who-know-me\" signs locally. Mode \"anyone\" notarizes the shortcut "
+                + "through iCloud, which needs a network connection and a signed-in Apple Account, "
+                + "and produces a file anybody can install — so only use it when the user has asked "
+                + "to share the shortcut publicly.",
+            inputSchema: .object(
+                properties: [
+                    "inputPath": .string(
+                        description: "The unsigned .shortcut file to sign, inside a shared folder."
+                    ),
+                    "outputPath": .string(
+                        description:
+                            "Where to write the signed file, inside a shared folder that allows writing."
+                    ),
+                    "mode": .string(
+                        description:
+                            "\"people-who-know-me\" signs locally; \"anyone\" notarizes through iCloud.",
+                        default: .string("people-who-know-me"),
+                        enum: [.string("people-who-know-me"), .string("anyone")]
+                    ),
+                ],
+                required: ["inputPath", "outputPath"],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Sign Shortcut",
+                readOnlyHint: false,
+                destructiveHint: false,
+                idempotentHint: true,
+                // "anyone" reaches iCloud to notarize.
+                openWorldHint: true
+            )
+        ) { arguments in
+            guard let inputPath = arguments["inputPath"]?.stringValue, !inputPath.isEmpty else {
+                throw ShortcutsError.missingArgument("inputPath")
+            }
+            guard let outputPath = arguments["outputPath"]?.stringValue, !outputPath.isEmpty else {
+                throw ShortcutsError.missingArgument("outputPath")
+            }
+            let mode = arguments["mode"]?.stringValue ?? "people-who-know-me"
+            guard ["people-who-know-me", "anyone"].contains(mode) else {
+                throw ShortcutsError.missingArgument(
+                    "mode must be \"people-who-know-me\" or \"anyone\""
+                )
+            }
+
+            let source = try FilesystemAccess.resolve(
+                requested: inputPath,
+                roots: self.filesystemRoots,
+                requiringWrite: false
+            )
+            let destination = try FilesystemAccess.resolve(
+                requested: outputPath,
+                roots: self.filesystemRoots,
+                requiringWrite: true
+            )
+
+            let result = await self.probe(
+                arguments: [
+                    "sign", "--mode", mode,
+                    "--input", source.path,
+                    "--output", destination.path,
+                ],
+                // Local signing is immediate; "anyone" waits on iCloud, and a
+                // notarization that has not answered in two minutes is not
+                // going to.
+                timeout: mode == "anyone" ? .seconds(120) : .seconds(30)
+            )
+            if result.timedOut {
+                throw ShortcutsError.signingFailed(
+                    mode == "anyone"
+                        ? "iCloud did not answer within two minutes. Check the network connection "
+                            + "and that an Apple Account is signed in, then try again."
+                        : "Signing did not finish within thirty seconds."
+                )
+            }
+            guard result.status == 0 else {
+                let detail = result.error.trimmingCharacters(in: .whitespacesAndNewlines)
+                throw ShortcutsError.signingFailed(
+                    detail.isEmpty ? "shortcuts sign exited with status \(result.status ?? -1)" : detail
+                )
+            }
+            // The CLI can exit zero without producing a file; saying "signed"
+            // in that case would send the caller looking for something that is
+            // not there.
+            guard FileManager.default.fileExists(atPath: destination.path) else {
+                throw ShortcutsError.signingFailed(
+                    "shortcuts sign reported success but wrote no file to \(destination.path)."
+                )
+            }
+            let size =
+                (try? FileManager.default.attributesOfItem(atPath: destination.path)[.size] as? Int)
+                ?? nil
+            var payload: [String: Value] = [
+                "signed": .bool(true),
+                "mode": .string(mode),
+                "path": .string(destination.path),
+            ]
+            if let size { payload["sizeBytes"] = .int(size) }
+            return Value.object(payload)
+        }
     }
 
     // MARK: - Private Implementation
@@ -600,6 +706,7 @@ enum ShortcutsError: LocalizedError {
     case commandFailed(String, String)
     case shortcutFailed(String, String)
     case timedOut(String)
+    case signingFailed(String)
 
     var errorDescription: String? {
         switch self {
@@ -614,6 +721,8 @@ enum ShortcutsError: LocalizedError {
                 ? "The shortcut \(name) failed." : "The shortcut \(name) failed: \(message)"
         case let .timedOut(name):
             return "The shortcut \(name) did not finish within five minutes."
+        case let .signingFailed(detail):
+            return "The shortcut could not be signed: \(detail)"
         }
     }
 }

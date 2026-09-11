@@ -146,6 +146,14 @@ final class MessageService: NSObject, Service, NSOpenSavePanelDelegate {
                         description: "Maximum messages to return",
                         default: .int(defaultLimit)
                     ),
+                    "include": .array(
+                        description:
+                            "Which kinds of row to return. Defaults to [\"message\"], which now covers "
+                            + "attachment-only messages as well as text. Add \"tapback\" for reactions, "
+                            + "\"tapback_removed\" for reactions taken back, \"group_event\" for joins, "
+                            + "leaves and renames, and \"empty\" for rows that carry nothing.",
+                        items: .string(enum: MessageKind.allCases.map { .string($0.rawValue) })
+                    ),
                 ],
                 additionalProperties: false
             ),
@@ -242,6 +250,7 @@ final class MessageService: NSObject, Service, NSOpenSavePanelDelegate {
                 )
             }
 
+            let include = try Self.includedKinds(arguments["include"])
             let searchTerm = arguments["query"]?.stringValue
             // Clamp like the sibling tools do. The raw value reached SQL as
             // LIMIT after an Int32 conversion, so a huge client-supplied
@@ -293,14 +302,39 @@ final class MessageService: NSObject, Service, NSOpenSavePanelDelegate {
             // The pre-filter fetch pools a wider window (1024) so that
             // filtering by text/participants doesn't starve the result set;
             // the SQL LIMIT is still bounded.
-            for message in try db.fetchMessages(
+            let fetched = try db.fetchMessages(
                 for: chat.map { iMessage.Chat.ID(rawValue: $0.chatGUID) },
                 with: Set(handles),
                 in: dateRange,
                 limit: max(limit + offset, 1024)
-            ) {
+            )
+
+            // One extra query for the whole page, rather than one per message:
+            // madrid models id, text, date, sender and isFromMe and nothing
+            // else, so service, read state, tapbacks, replies, edits and
+            // attachments all come from chat.db directly.
+            //
+            // If that read fails the surface still answers. Losing the
+            // annotations is a smaller harm than losing the conversation.
+            var metadata: [String: MessageMetadata] = [:]
+            do {
+                let guids = fetched.map(\.id.description)
+                metadata = try self.withDatabaseReader { try $0.messageMetadata(forGUIDs: guids) }
+            } catch {
+                log.notice(
+                    "Message metadata unavailable; returning messages without annotations: \(error.localizedDescription)"
+                )
+            }
+
+            for message in fetched {
                 guard messages.count < limit + offset else { break }
-                guard !message.text.isEmpty else { continue }
+
+                let annotation = metadata[message.id.description]?.annotation
+                let kind = annotation?.kind ?? (message.text.isEmpty ? .empty : .message)
+                // Without metadata there is nothing to tell an attachment-only
+                // message from a stray empty row, so the old behaviour stands:
+                // an empty message is skipped rather than reported as content.
+                guard include.contains(kind) else { continue }
 
                 let sender: String
                 if message.isFromMe {
@@ -312,19 +346,28 @@ final class MessageService: NSObject, Service, NSOpenSavePanelDelegate {
                 }
 
                 if let searchTerm {
+                    // A tapback or a group event carries no text of its own, so
+                    // a text filter cannot match one. Narrowing to text is what
+                    // the caller asked for.
                     guard message.text.localizedCaseInsensitiveContains(searchTerm) else {
                         continue
                     }
                 }
 
-                messages.append([
+                var entry: [String: Value] = [
                     "@id": .string(message.id.description),
                     "sender": [
                         "@id": .string(sender)
                     ],
                     "text": .string(message.text),
                     "createdAt": .string(message.date.formatted(.iso8601)),
-                ])
+                    "isFromMe": .bool(message.isFromMe),
+                    "kind": .string(kind.rawValue),
+                ]
+                if let detail = metadata[message.id.description] {
+                    Self.annotate(&entry, with: detail)
+                }
+                messages.append(entry)
             }
 
             let page = messagesPage(messages, offset: offset, limit: limit)
@@ -1167,6 +1210,78 @@ final class MessageService: NSObject, Service, NSOpenSavePanelDelegate {
     /// resolves it, for the direct reader that covers the columns madrid does
     /// not model. Runs the bookmark's security scope for the duration of the
     /// read rather than just to compute a path.
+    /// Which message kinds a fetch should return.
+    ///
+    /// The default is the one kind a caller reading a conversation means:
+    /// what people actually sent. Reactions and join/leave notices are real
+    /// rows in chat.db, and they are available, but they arrive only when
+    /// asked for so an ordinary read is not buried in them.
+    static func includedKinds(_ argument: Value?) throws -> Set<MessageKind> {
+        guard let argument else { return [.message] }
+        guard case .array(let entries) = argument else {
+            throw NSError(
+                domain: "MessagesServiceError",
+                code: 3,
+                userInfo: [NSLocalizedDescriptionKey: "include must be an array of strings."]
+            )
+        }
+        if entries.isEmpty { return [.message] }
+        var kinds: Set<MessageKind> = []
+        for entry in entries {
+            guard let raw = entry.stringValue, let kind = MessageKind(rawValue: raw) else {
+                throw NSError(
+                    domain: "MessagesServiceError",
+                    code: 3,
+                    userInfo: [
+                        NSLocalizedDescriptionKey:
+                            "include must contain only "
+                            + MessageKind.allCases.map(\.rawValue).joined(separator: ", ")
+                            + "."
+                    ]
+                )
+            }
+            kinds.insert(kind)
+        }
+        return kinds
+    }
+
+    /// Folds the chat.db columns madrid omits into one message entry. Only
+    /// fields that carry a value are written, so an ordinary message does not
+    /// grow a row of nulls.
+    static func annotate(_ entry: inout [String: Value], with detail: MessageMetadata) {
+        let formatter = ISO8601DateFormatter()
+        if let service = detail.service { entry["service"] = .string(service) }
+        entry["isRead"] = .bool(detail.isRead)
+        if let read = detail.dateRead { entry["readAt"] = .string(formatter.string(from: read)) }
+        if let delivered = detail.dateDelivered {
+            entry["deliveredAt"] = .string(formatter.string(from: delivered))
+        }
+        if let subject = detail.subject { entry["subject"] = .string(subject) }
+        if let style = detail.expressiveSendStyle { entry["expressiveSendStyle"] = .string(style) }
+        if let bundle = detail.balloonBundleID { entry["appBundleIdentifier"] = .string(bundle) }
+        if !detail.attachmentNames.isEmpty {
+            entry["attachments"] = .array(detail.attachmentNames.map { .string($0) })
+        }
+
+        let annotation = detail.annotation
+        if annotation.isEdited { entry["isEdited"] = .bool(true) }
+        if annotation.isRetracted { entry["isRetracted"] = .bool(true) }
+        if let tapback = annotation.tapback { entry["tapback"] = .string(tapback) }
+        if let emoji = annotation.tapbackEmoji { entry["tapbackEmoji"] = .string(emoji) }
+        if let description = annotation.groupEventDescription {
+            entry["event"] = .string(description)
+        }
+        switch annotation.kind {
+        case .tapback, .tapbackRemoved:
+            // For a tapback the associated GUID is the message reacted to.
+            if let target = annotation.targetMessageGUID {
+                entry["reactionTo"] = .string(target)
+            }
+        default:
+            if let reply = detail.replyToGUID { entry["inReplyTo"] = .string(reply) }
+        }
+    }
+
     private func withDatabaseReader<T>(_ body: (MessagesDatabaseReader) throws -> T) throws -> T {
         if canAccessDatabaseAtDefaultPath {
             return try body(MessagesDatabaseReader(path: messagesDatabasePath))

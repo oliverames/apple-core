@@ -162,6 +162,95 @@ final class RemindersService: Service {
         ])
     }
 
+    /// The EventKit fields `PlanAction` has no room for, plus the flag
+    /// EventKit itself cannot see.
+    ///
+    /// Each key is written only when it carries a value, so an ordinary
+    /// reminder does not grow a row of nulls.
+    static func detail(of reminder: EKReminder, flagged: Set<String>?) -> [String: Value] {
+        let formatter = ISO8601DateFormatter()
+        var detail: [String: Value] = [
+            "isCompleted": .bool(reminder.isCompleted),
+            "list": describe(reminder.calendar),
+        ]
+        if let start = reminder.startDateComponents?.date {
+            detail["startDate"] = .string(formatter.string(from: start))
+        }
+        if let completed = reminder.completionDate {
+            detail["completionDate"] = .string(formatter.string(from: completed))
+        }
+        if let created = reminder.creationDate {
+            detail["createdAt"] = .string(formatter.string(from: created))
+        }
+        if let modified = reminder.lastModifiedDate {
+            detail["lastModifiedAt"] = .string(formatter.string(from: modified))
+        }
+        if let timeZone = reminder.timeZone { detail["timeZone"] = .string(timeZone.identifier) }
+        if let external = reminder.calendarItemExternalIdentifier {
+            detail["externalIdentifier"] = .string(external)
+        }
+        let alarms = reminder.alarms ?? []
+        if !alarms.isEmpty { detail["alarms"] = .array(alarms.map(describe)) }
+        if let rule = reminder.recurrenceRules?.first {
+            let described = CalendarService.describe(rule)
+            var recurrence: [String: Value] = ["rrule": .string(described.rrule)]
+            if let summary = described.summary { recurrence["summary"] = .string(summary) }
+            detail["recurrence"] = .object(recurrence)
+        }
+        // Absent rather than false when the store could not be read: a caller
+        // must be able to tell "not flagged" from "the flag is unknown".
+        if let flagged {
+            detail["isFlagged"] = .bool(flagged.contains(reminder.calendarItemIdentifier))
+        }
+        return detail
+    }
+
+    /// Which of these reminders are flagged, or nil if the Reminders store
+    /// could not be read.
+    ///
+    /// One read serves a whole page. A failure here is logged and reported by
+    /// omission, never thrown: the flag is an extra, and losing it must not
+    /// cost the caller the reminders.
+    func flaggedIdentifiers(for reminders: [EKReminder]) -> Set<String>? {
+        guard !reminders.isEmpty else { return [] }
+        guard let storePath = RemindersStoreReader.locateStore() else { return nil }
+        do {
+            return try RemindersStoreReader(path: storePath).flaggedReminderIdentifiers()
+        } catch {
+            log.notice("Reminder flags unavailable: \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    /// The store-only fields folded onto an EventKit list.
+    private static func merge(_ detail: ReminderListDetail, into entry: inout [String: Value]) {
+        if detail.isPinned { entry["isPinned"] = .bool(true) }
+        if let badge = detail.badge { entry["badge"] = .string(badge) }
+        if detail.isShared {
+            entry["isShared"] = .bool(true)
+            entry["sharingStatus"] = .int(detail.sharingStatus)
+            if let owner = detail.sharedOwnerName { entry["sharedOwner"] = .string(owner) }
+        }
+        if let parent = detail.parentGroupIdentifier { entry["group"] = .string(parent) }
+    }
+
+    /// A group or a smart list, which EventKit does not model at all and so
+    /// has no EKCalendar to hang fields on.
+    private static func describe(storeOnly detail: ReminderListDetail) -> Value {
+        var entry: [String: Value] = [
+            "kind": .string(detail.isGroup ? "group" : (detail.smartListType != nil ? "smart_list" : "list")),
+            // These come from the Reminders store rather than EventKit, and
+            // the identifier is not an EKCalendar identifier: the reminder
+            // tools that take list_id will not accept it.
+            "isEventKitTarget": .bool(false),
+        ]
+        if let identifier = detail.identifier { entry["identifier"] = .string(identifier) }
+        if let name = detail.name { entry["title"] = .string(name) }
+        if let type = detail.smartListType { entry["smartListType"] = .string(type) }
+        merge(detail, into: &entry)
+        return .object(entry)
+    }
+
     /// EventKit keeps every kind of alarm in one array, so an edit has to know
     /// which kind it is looking at before it replaces anything.
     private static func alarmClass(_ alarm: EKAlarm) -> ReminderAlarmClass? {
@@ -348,16 +437,58 @@ final class RemindersService: Service {
 
             let reminderLists = self.eventStore.calendars(for: .reminder)
 
-            return reminderLists.map { reminderList in
-                Value.object([
+            // EventKit has no vocabulary for list groups, smart lists, pinning,
+            // emoji badges or sharing, so a folder of lists and a saved smart
+            // list both arrived looking like ordinary lists. The Reminders
+            // store knows the difference. If it cannot be read the EventKit
+            // answer still stands, with a line saying what is missing and why.
+            var detailByIdentifier: [String: ReminderListDetail] = [:]
+            var extras: [Value] = []
+            var storeNote: String?
+            do {
+                guard let storePath = RemindersStoreReader.locateStore() else {
+                    throw RemindersStoreError.storeNotFound
+                }
+                let known = Set(reminderLists.map(\.calendarIdentifier))
+                for detail in try RemindersStoreReader(path: storePath).lists() {
+                    if let identifier = detail.identifier, known.contains(identifier) {
+                        detailByIdentifier[identifier] = detail
+                    } else {
+                        // Groups and smart lists have no EKCalendar at all, so
+                        // they can only be reported in their own right.
+                        extras.append(Self.describe(storeOnly: detail))
+                    }
+                }
+            } catch {
+                storeNote = error.localizedDescription
+            }
+
+            var described: [Value] = reminderLists.map { reminderList in
+                var entry: [String: Value] = [
                     "identifier": .string(reminderList.calendarIdentifier),
                     "title": .string(reminderList.title),
                     "source": .string(reminderList.source.title),
+                    "sourceIdentifier": .string(reminderList.source.sourceIdentifier),
                     "color": .string(reminderList.color.accessibilityName),
                     "isEditable": .bool(reminderList.allowsContentModifications),
                     "isSubscribed": .bool(reminderList.isSubscribed),
-                ])
+                    "kind": .string("list"),
+                ]
+                if let detail = detailByIdentifier[reminderList.calendarIdentifier] {
+                    Self.merge(detail, into: &entry)
+                }
+                return .object(entry)
             }
+            described.append(contentsOf: extras)
+
+            var result: [String: Value] = [
+                "count": .int(described.count),
+                "lists": .array(described),
+            ]
+            if let storeNote {
+                result["detailUnavailable"] = .string(storeNote)
+            }
+            return Value.object(result)
         }
 
         Tool(
@@ -676,18 +807,32 @@ final class RemindersService: Service {
             // Expose the EventKit identifier so callers can feed it back to
             // reminders_get / reminders_update / reminders_delete /
             // reminders_complete, which resolve by calendarItemIdentifier.
-            return RemindersPage(
-                total: page.total,
-                offset: page.offset,
-                limit: page.limit,
-                hasMore: page.hasMore,
-                nextOffset: page.nextOffset,
-                reminders: page.items.map { reminder in
-                    var action = PlanAction(reminder)
-                    action.identifier = reminder.calendarItemIdentifier
-                    return action
-                }
-            )
+            // PlanAction carries name, notes, due, status, priority, url and
+            // list. It has no room for the start date, the completion date,
+            // the alarms, the recurrence or the flag — so a caller could set a
+            // start date and a repeat and never see either again.
+            let flagged = self.flaggedIdentifiers(for: page.items)
+            return Value.object([
+                "total": .int(page.total),
+                "offset": .int(page.offset),
+                "limit": .int(page.limit),
+                "hasMore": .bool(page.hasMore),
+                "nextOffset": page.nextOffset.map { .int($0) } ?? .null,
+                "reminders": .array(
+                    page.items.map { reminder in
+                        var action = PlanAction(reminder)
+                        action.identifier = reminder.calendarItemIdentifier
+                        guard case .object(var encoded) = try? Value(action) else {
+                            return (try? Value(action)) ?? .null
+                        }
+                        for (key, value) in Self.detail(of: reminder, flagged: flagged)
+                        where encoded[key] == nil {
+                            encoded[key] = value
+                        }
+                        return .object(encoded)
+                    }
+                ),
+            ])
         }
 
         Tool(
@@ -734,8 +879,11 @@ final class RemindersService: Service {
             if let completed = reminder.completionDate {
                 detail["completionDate"] = .string(formatter.string(from: completed))
             }
-            if let rules = reminder.recurrenceRules, !rules.isEmpty {
-                detail["isRecurring"] = .bool(true)
+            for (key, value) in Self.detail(
+                of: reminder,
+                flagged: self.flaggedIdentifiers(for: [reminder])
+            ) where detail[key] == nil {
+                detail[key] = value
             }
             return Value.object(detail)
         }
@@ -1497,17 +1645,6 @@ final class RemindersService: Service {
             ? Calendar.current.normalizedStartDate(from: parsed.date, isDateOnly: true)
             : parsed.date
     }
-}
-
-/// One bounded page of reminders. Paging needs the totals alongside the items,
-/// so fetch returns this rather than a bare array.
-private struct RemindersPage: Encodable {
-    let total: Int
-    let offset: Int
-    let limit: Int
-    let hasMore: Bool
-    let nextOffset: Int?
-    let reminders: [PlanAction]
 }
 
 enum RemindersToolError: LocalizedError {

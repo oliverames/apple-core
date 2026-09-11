@@ -186,6 +186,12 @@ private struct NoteAttachment: Codable, Sendable {
     let id: String
     let name: String
     let contentIdentifier: String?
+    /// The address a link or web-clip attachment points at, when it has one.
+    ///
+    /// Notes' `attachment.URL` is the whole content of a saved-link
+    /// attachment: without it such an attachment reads as a nameless tile.
+    /// Ordinary file attachments have no URL and report null.
+    let url: String?
     let creationDate: String?
     let modificationDate: String?
     let isShared: Bool
@@ -851,11 +857,17 @@ private let listAttachmentsScript = """
             const attachment = attachments[i];
             let contentIdentifier = null;
             try { contentIdentifier = attachment.contentIdentifier(); } catch (e) {}
+            // Notes throws rather than returning null for an attachment with
+            // no URL, so this read gets its own try like every other
+            // optional property in this service.
+            let url = null;
+            try { url = attachment.url() || null; } catch (e) {}
             rows.push({
                 index: i,
                 id: attachment.id(),
                 name: attachment.name() || '',
                 contentIdentifier: contentIdentifier,
+                url: url,
                 creationDate: attachment.creationDate()
                     ? attachment.creationDate().toISOString() : null,
                 modificationDate: attachment.modificationDate()
@@ -1900,7 +1912,7 @@ final class NotesService: Service {
         Tool(
             name: "notes_list_attachments",
             description:
-                "List a note's attachments (name, id, index, dates). Use the returned id or index with notes_save_attachment.",
+                "List a note's attachments (name, id, index, dates, and the source URL for a saved-link attachment). Use the returned id or index with notes_save_attachment.",
             inputSchema: .object(
                 properties: [
                     "id": .string(
