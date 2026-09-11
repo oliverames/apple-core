@@ -215,7 +215,7 @@ private func connectorHealthReport() async -> ConnectorHealthReport {
     // compiled out of this build has to appear as unsupported rather than
     // vanish, or a client cannot tell "not on this Mac" from "never existed".
     for serviceTypeName in ServicePermissionInventory.standard.keys.sorted() {
-        let requirements = ServicePermissionInventory.standard[serviceTypeName] ?? []
+        let needs = ServicePermissionInventory.standard[serviceTypeName] ?? []
         let isBuilt = built[serviceTypeName] != nil
         let isEnabled =
             defaults.object(
@@ -227,13 +227,15 @@ private func connectorHealthReport() async -> ConnectorHealthReport {
         // user has not agreed to use yet, and spend a TCC round trip each.
         var permissions: [ConnectorPermissionInput] = []
         if isBuilt && isEnabled {
-            for requirement in requirements {
-                let state = await ServicePermissionStatus.state(of: requirement)
+            for need in needs {
+                let state = await ServicePermissionStatus.state(of: need.requirement)
                 permissions.append(
                     ConnectorPermissionInput(
-                        requirement: requirement.settingsTitle,
+                        requirement: need.requirement.settingsTitle,
                         state: state.connectorState,
-                        detail: state.label
+                        detail: state.label,
+                        isOptional: !need.isRequired,
+                        capability: need.capability
                     )
                 )
             }
