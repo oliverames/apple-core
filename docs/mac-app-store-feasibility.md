@@ -30,12 +30,25 @@ make the current shipping binary unsuitable for submission unchanged.
 
 ## Feature viability
 
-**Update, September 11, 2026.** Oliver authorized private API use in Apple Core.
-Issue #40 adopts the private ReminderKit framework for native reminder
-hierarchy, sections, tags, and attachments. If that lands, Reminders leaves the
-public-framework set below and cannot ship in a Store build at all, since App
-Review rejects private framework use. The rest of this document is unaffected:
-notarized direct distribution does not inspect for private frameworks.
+**Update, September 11, 2026.** Oliver authorized private API use in Apple Core,
+and issue #40 has landed the first part of it. Reminders now reaches subtask
+hierarchy through the private ReminderKit framework, in
+`App/Services/RemindersHierarchy.swift`, which powers `reminders_subtasks` and
+`reminders_set_parent`. Sections, tags, and attachments remain outside that
+work.
+
+Reminders has therefore left the public-framework set below and cannot ship in
+a Store build at all, since App Review rejects private framework use. This was
+recorded and accepted when the decision was made. Two qualifications worth
+keeping straight:
+
+- The private dependency is confined to one file and is loaded with `dlopen`
+  rather than linked. A Store variant that dropped `reminders_subtasks` and
+  `reminders_set_parent` and excluded that file would be back on public
+  frameworks, so the foreclosure is of the current Reminders surface, not of
+  Reminders as a surface.
+- The rest of this document is unaffected. Notarized direct distribution, which
+  is how Apple Core actually ships, does not inspect for private frameworks.
 
 - **Calendar, Contacts, Maps, Location:** Start the prototype here.
   These implementations use public frameworks. Verify sandbox entitlements,

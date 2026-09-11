@@ -20,10 +20,17 @@ private let log = Logger.service("reminders")
 //   therefore absent from this file, which uses public EventKit only.
 //
 //   Oliver authorized private API use on 2026-09-11, so this is no longer
-//   a policy exclusion: issue #40 tracks reaching the hierarchy through
-//   ReminderKit. The finding above still stands and is exactly why that
-//   work needs a private framework. Keep this file on public EventKit and
-//   put the private path behind its own version gate when #40 lands.
+//   a policy exclusion. The finding above still stands and is exactly why
+//   the work needs a private framework.
+//
+//   Resolved for hierarchy (#40, 2026-09-11): subtask parent and children are
+//   now reachable through the private ReminderKit framework, in
+//   App/Services/RemindersHierarchy.swift, behind a version gate and a
+//   capability report (`reminders_capabilities`). This file stays on public
+//   EventKit; only `reminders_subtasks` and `reminders_set_parent` leave it,
+//   and only because EventKit cannot express what they do. Sections remain
+//   read-only through Shared/RemindersStoreReader.swift, and tags,
+//   attachments and urgency are still absent.
 //
 // - Cross-account moves: EventKit rejects moving a reminder between accounts
 //   (error -3002). BUILD_PLAN §3.3 sketched an AppleScript fallback, but the
@@ -1343,6 +1350,133 @@ final class RemindersService: Service {
                 "title": .string(candidate.title),
                 "source": .string(candidate.sourceTitle),
                 "remindersDeleted": .int(count),
+            ])
+        }
+
+        // Hierarchy tools. These are the only ones in this file that leave
+        // public EventKit, because EventKit has no vocabulary for a reminder's
+        // parent or subtasks. They run through ReminderKit
+        // (App/Services/RemindersHierarchy.swift), which is private and may be
+        // unavailable, so each reports that rather than failing obscurely.
+
+        Tool(
+            name: "reminders_capabilities",
+            description:
+                "Report which Reminders features work on this Mac. Subtask hierarchy is not part of EventKit "
+                + "and depends on a private framework that can change between macOS releases, so check this "
+                + "before relying on reminders_subtasks or reminders_set_parent.",
+            inputSchema: .object(properties: [:], additionalProperties: false),
+            annotations: .init(
+                title: "Reminder Capabilities",
+                readOnlyHint: true,
+                openWorldHint: false
+            )
+        ) { _ in
+            let capability = RemindersHierarchyBridge.capability
+            var operations: [String: Value] = [:]
+            for operation in ReminderKitOperation.allCases {
+                if capability.supports(operation) {
+                    operations[operation.rawValue] = .object(["available": .bool(true)])
+                } else {
+                    let reason = capability.refusal(for: operation)?.reason.explanation
+                    operations[operation.rawValue] = .object([
+                        "available": .bool(false),
+                        "reason": .string(reason ?? "Unavailable on this Mac."),
+                    ])
+                }
+            }
+            return Value.object([
+                "hierarchy": .object(operations),
+                // True when macOS is newer than the most recent release the
+                // private path was verified against. Reads still run; writes
+                // do not. Surfaced so a client can say so rather than imply
+                // an assurance that was never made.
+                "unverifiedOS": .bool(capability.isUnverifiedOS),
+                "macOSVersion": .string(
+                    ProcessInfo.processInfo.operatingSystemVersionString
+                ),
+                // Everything else in this surface is public EventKit and does
+                // not depend on any of the above.
+                "eventKitFeaturesUnaffected": .bool(true),
+            ])
+        }
+
+        Tool(
+            name: "reminders_subtasks",
+            description:
+                "Get a reminder's parent and its subtasks. Subtasks are not part of EventKit, so this uses a "
+                + "private framework and is unavailable if that framework changes; check reminders_capabilities.",
+            inputSchema: .object(
+                properties: [
+                    "id": .string(
+                        description: "Reminder identifier, as returned by reminders_fetch or reminders_get"
+                    )
+                ],
+                required: ["id"],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Get Reminder Subtasks",
+                readOnlyHint: true,
+                openWorldHint: false
+            )
+        ) { arguments in
+            try await self.activate()
+            guard let id = arguments["id"]?.stringValue, !id.isEmpty else {
+                throw RemindersToolError.missingArgument("id")
+            }
+            let bridge = try RemindersHierarchyBridge(for: .hierarchyRead)
+            let hierarchy = try bridge.hierarchy(of: EventKitItemIdentifier(id))
+            return Value.object([
+                "id": .string(hierarchy.identifier.rawValue),
+                "isSubtask": .bool(hierarchy.isSubtask),
+                "parent": hierarchy.parent.map { .string($0.rawValue) } ?? .null,
+                "subtasks": .array(hierarchy.subtasks.map { .string($0.rawValue) }),
+                "subtaskCount": .int(hierarchy.subtasks.count),
+            ])
+        }
+
+        Tool(
+            name: "reminders_set_parent",
+            description:
+                "Make a reminder a subtask of another, or detach it from its parent by omitting parent_id. "
+                + "Subtask hierarchy is not part of EventKit; this uses a private framework and saves through "
+                + "the same request Reminders.app uses. Check reminders_capabilities first.",
+            inputSchema: .object(
+                properties: [
+                    "id": .string(description: "Identifier of the reminder to move"),
+                    "parent_id": .string(
+                        description:
+                            "Identifier of the reminder it becomes a subtask of. Omit to detach it from its "
+                            + "current parent and leave it a top-level reminder."
+                    ),
+                ],
+                required: ["id"],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Set Reminder Parent",
+                destructiveHint: false,
+                idempotentHint: true,
+                openWorldHint: false
+            )
+        ) { arguments in
+            try await self.activate()
+            guard let id = arguments["id"]?.stringValue, !id.isEmpty else {
+                throw RemindersToolError.missingArgument("id")
+            }
+            let child = EventKitItemIdentifier(id)
+            let parentRaw = arguments["parent_id"]?.stringValue
+            let parent = (parentRaw?.isEmpty == false) ? EventKitItemIdentifier(parentRaw!) : nil
+
+            let bridge = try RemindersHierarchyBridge(for: .hierarchyWrite)
+            try bridge.setParent(of: child, to: parent)
+            let hierarchy = try bridge.hierarchy(of: child)
+            return Value.object([
+                "id": .string(child.rawValue),
+                "parent": hierarchy.parent.map { .string($0.rawValue) } ?? .null,
+                "isSubtask": .bool(hierarchy.isSubtask),
+                "detached": .bool(parent == nil),
             ])
         }
     }
