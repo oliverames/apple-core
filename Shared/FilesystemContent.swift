@@ -646,3 +646,68 @@ public enum FilesystemBatchRead {
         )
     }
 }
+
+public enum FilesystemBinaryWriteError: LocalizedError, Equatable {
+    case invalidBase64
+    case tooLarge(sizeBytes: Int, limitBytes: Int)
+
+    public var errorDescription: String? {
+        switch self {
+        case .invalidBase64:
+            return
+                "The base64 argument is not valid base64. Nothing was written, because decoding "
+                + "it loosely would save a corrupt file that only fails when something opens it."
+        case let .tooLarge(sizeBytes, limitBytes):
+            return
+                "\(sizeBytes) bytes exceeds the \(limitBytes / (1024 * 1024))MB limit for an "
+                + "inline write. Nothing was written."
+        }
+    }
+}
+
+/// Decoding for `filesystem_write_binary`. Kept beside the batch-read budget
+/// logic because it answers the same question from the other direction: how
+/// many bytes may cross the connector in one call.
+public enum FilesystemBinaryWrite {
+    /// Base64 encodes three bytes as four characters, so the decoded size is
+    /// known from the string's length before any buffer is allocated. Checking
+    /// the limit first means an oversized payload is refused without
+    /// materialising it.
+    public static func decodedByteCount(base64 encoded: String) -> Int {
+        let characters = encoded.reduce(into: 0) { count, character in
+            if !character.isWhitespace { count += 1 }
+        }
+        guard characters > 0 else { return 0 }
+        let padding = encoded.reversed().prefix(2).filter { $0 == "=" }.count
+        return max(0, characters / 4 * 3 - padding)
+    }
+
+    public static func decode(base64 encoded: String, limitBytes: Int) throws -> Data {
+        let projected = decodedByteCount(base64: encoded)
+        guard projected <= limitBytes else {
+            throw FilesystemBinaryWriteError.tooLarge(
+                sizeBytes: projected,
+                limitBytes: limitBytes
+            )
+        }
+        // Line breaks are ordinary in base64 that has travelled through other
+        // tools, so they are tolerated. Anything else is refused rather than
+        // silently dropped.
+        guard
+            let data = Data(
+                base64Encoded: encoded,
+                options: [.ignoreUnknownCharacters]
+            ),
+            encoded.allSatisfy({ $0.isWhitespace || $0.isLetter || $0.isNumber || "+/=".contains($0) })
+        else {
+            throw FilesystemBinaryWriteError.invalidBase64
+        }
+        guard data.count <= limitBytes else {
+            throw FilesystemBinaryWriteError.tooLarge(
+                sizeBytes: data.count,
+                limitBytes: limitBytes
+            )
+        }
+        return data
+    }
+}

@@ -48,6 +48,9 @@ private func sortedByName(_ urls: [URL]) -> [URL] {
 /// inflates by a third, and a client's context window is the real limit here,
 /// not the disk.
 private let maximumInlineBinaryBytes = 256 * 1024
+// Matches the per-attachment ceiling mail_send already enforces, rather
+// than introducing a third number for the same question.
+private let maximumBinaryWriteBytes = 10 * 1024 * 1024
 
 final class FilesystemService: Service {
     static let shared = FilesystemService()
@@ -693,6 +696,70 @@ final class FilesystemService: Service {
                 "path": .string(url.path),
                 "sizeBytes": .int(data.count),
                 "base64": .string(data.base64EncodedString()),
+            ])
+        }
+
+        Tool(
+            name: "filesystem_write_binary",
+            description:
+                "Write a non-text file from base64 into a shared folder that allows writing, for "
+                + "payloads up to \(maximumBinaryWriteBytes / (1024 * 1024))MB. Use this for "
+                + "documents, images and archives; filesystem_write is for text and would corrupt "
+                + "them. Refuses to replace a file that already exists unless overwrite is true, "
+                + "because a replaced file does not go to the Trash and cannot be recovered.",
+            inputSchema: .object(
+                properties: [
+                    "path": .string(description: "File to write"),
+                    "base64": .string(description: "File contents, base64 encoded"),
+                    "overwrite": .boolean(
+                        description:
+                            "Replace the file if it already exists. Its previous contents are lost.",
+                        default: .bool(false)
+                    ),
+                ],
+                required: ["path", "base64"],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Write Binary File",
+                readOnlyHint: false,
+                destructiveHint: true,
+                idempotentHint: true,
+                openWorldHint: false
+            )
+        ) { arguments in
+            guard let path = arguments["path"]?.stringValue else {
+                throw FilesystemServiceError.missingArgument("path")
+            }
+            guard let encoded = arguments["base64"]?.stringValue else {
+                throw FilesystemServiceError.missingArgument("base64")
+            }
+            let url = try FilesystemAccess.resolve(
+                requested: path,
+                roots: FilesystemService.shared.roots,
+                requiringWrite: true
+            )
+            let existed = FileManager.default.fileExists(atPath: url.path)
+            guard
+                !FilesystemContent.refusesOverwrite(
+                    exists: existed,
+                    overwriteRequested: arguments["overwrite"]?.boolValue ?? false
+                )
+            else {
+                throw FilesystemServiceError.refusingToOverwrite(url.path)
+            }
+            // Decoded before anything touches the disk, so a malformed or
+            // oversized payload leaves an existing file untouched.
+            let data = try FilesystemBinaryWrite.decode(
+                base64: encoded,
+                limitBytes: maximumBinaryWriteBytes
+            )
+            try data.write(to: url, options: .atomic)
+            log.info("Wrote \(url.lastPathComponent, privacy: .public)")
+            return Value.object([
+                "path": .string(url.path),
+                "replaced": .bool(existed),
+                "sizeBytes": .int(data.count),
             ])
         }
 
