@@ -34,12 +34,21 @@ Home Server was holding a Sparkle installer parked since September 5 at
 Had it ever completed, the machine would have silently downgraded from the
 2.0.0 beta to a public 1.7.2 build.
 
-The cause, which the August 30 occurrence left unestablished: Sparkle stages an
-update and then waits for the app to quit before swapping the bundle. Home
-Server is headless and always on, so nobody ever quits the menu-bar app and the
-wait never ends. The installer outlived two app replacements, since nothing
-reaps an updater left behind by a previous version. The prerelease gate does
-not help, because this installer was started by an earlier non-beta build.
+What is established: it staged 1.7.2 on September 5 and had not applied it six
+days later, and it outlived two replacements of the app bundle beneath it,
+because nothing reaps an updater left behind by a previous version. The
+prerelease gate does not help, since this installer was started by an earlier
+non-beta build.
+
+Why it parked is **not** established. The explanation offered for the August 30
+occurrence, that Sparkle cannot replace an app that never quits, was a guess
+and is probably wrong, because Sparkle routinely quits and relaunches apps. A
+better-fitting hypothesis is that the parked pair includes `Updater.app`,
+Sparkle's user-facing agent, and this machine is headless with a normally
+locked screen, so an agent needing to present UI never gets the chance. That
+remains a hypothesis. The Sparkle log was not captured before the processes
+were killed, which is the one thing that would settle it; capture it before
+clearing the next occurrence.
 
 Both processes were killed and the staged installation removed before
 installing. That is a workaround on one machine; the fix is tracked in #45.
