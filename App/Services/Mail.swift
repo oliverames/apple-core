@@ -20,8 +20,6 @@ private let defaultMessageLimit = 20
 private let maximumMessageLimit = 100
 private let maximumBatchSize = 50
 private let maximumRecipients = 50
-private let maximumTemplateCount = 200
-private let maximumTemplateBytes = 64 * 1024
 
 // MARK: - Output models
 
@@ -118,20 +116,6 @@ private struct MailMailboxMutationResult: Codable, Sendable {
     let status: String
     let account: String
     let mailbox: String
-}
-
-private struct MailTemplate: Codable, Sendable {
-    let name: String
-    var subject: String
-    var body: String
-    var createdAt: String
-    var updatedAt: String
-}
-
-private struct MailTemplateSummary: Codable, Sendable {
-    let name: String
-    let subject: String
-    let updatedAt: String
 }
 
 private struct MailTemplateListResult: Codable, Sendable {
@@ -1691,7 +1675,7 @@ final class MailService: Service {
             let name = try Self.requiredString("name", from: arguments)
             let subject = try Self.requiredString("subject", from: arguments)
             let body = try Self.requiredString("body", from: arguments)
-            return try Self.saveTemplate(name: name, subject: subject, body: body)
+            return try MailTemplateStore.default.save(name: name, subject: subject, body: body)
         }
 
         Tool(
@@ -1707,11 +1691,7 @@ final class MailService: Service {
                 openWorldHint: false
             )
         ) { _ in
-            let templates = try Self.loadTemplates()
-            let summaries = templates.values
-                .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-                .map { MailTemplateSummary(name: $0.name, subject: $0.subject, updatedAt: $0.updatedAt) }
-            return MailTemplateListResult(templates: summaries)
+            return MailTemplateListResult(templates: try MailTemplateStore.default.list())
         }
 
         Tool(
@@ -1733,10 +1713,7 @@ final class MailService: Service {
             )
         ) { arguments in
             let name = try Self.requiredString("name", from: arguments)
-            guard let template = try Self.loadTemplates()[name] else {
-                throw Self.error("NOT_FOUND: no template named \(name)")
-            }
-            return template
+            return try MailTemplateStore.default.get(name: name)
         }
 
         Tool(
@@ -1760,11 +1737,7 @@ final class MailService: Service {
             )
         ) { arguments in
             let name = try Self.requiredString("name", from: arguments)
-            var templates = try Self.loadTemplates()
-            guard templates.removeValue(forKey: name) != nil else {
-                throw Self.error("NOT_FOUND: no template named \(name)")
-            }
-            try Self.storeTemplates(templates)
+            try MailTemplateStore.default.delete(name: name)
             return MailTemplateDeleteResult(status: "deleted", name: name)
         }
 
@@ -2064,79 +2037,12 @@ final class MailService: Service {
 
     // MARK: - Templates
     //
-    // Templates are Apple Core's own data (Mail has no template concept),
-    // stored as JSON at ~/.config/apple-core/mail_templates.json with
-    // 0600 permissions. APPLECORE_CONFIG_HOME overrides the directory so
-    // tests never touch the real store.
-
-    private static var templatesFileURL: URL {
-        let configDir: URL
-        if let override = ProcessInfo.processInfo.environment["APPLECORE_CONFIG_HOME"],
-            !override.isEmpty
-        {
-            configDir = URL(fileURLWithPath: (override as NSString).expandingTildeInPath, isDirectory: true)
-        } else {
-            configDir = FileManager.default.homeDirectoryForCurrentUser
-                .appendingPathComponent(".config/apple-core", isDirectory: true)
-        }
-        return configDir.appendingPathComponent("mail_templates.json")
-    }
-
-    private static func loadTemplates() throws -> [String: MailTemplate] {
-        let url = Self.templatesFileURL
-        guard FileManager.default.fileExists(atPath: url.path) else {
-            return [:]
-        }
-        let data = try Data(contentsOf: url)
-        return try JSONDecoder().decode([String: MailTemplate].self, from: data)
-    }
-
-    private static func storeTemplates(_ templates: [String: MailTemplate]) throws {
-        let url = Self.templatesFileURL
-        try FileManager.default.createDirectory(
-            at: url.deletingLastPathComponent(),
-            withIntermediateDirectories: true,
-            attributes: [.posixPermissions: 0o700]
-        )
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys, .prettyPrinted]
-        let data = try encoder.encode(templates)
-        try data.write(to: url, options: .atomic)
-        try FileManager.default.setAttributes(
-            [.posixPermissions: 0o600],
-            ofItemAtPath: url.path
-        )
-    }
-
-    private static func saveTemplate(
-        name: String,
-        subject: String,
-        body: String
-    ) throws -> MailTemplate {
-        guard subject.utf8.count + body.utf8.count <= maximumTemplateBytes else {
-            throw Self.error("template exceeds the size limit of \(maximumTemplateBytes) bytes")
-        }
-        var templates = try Self.loadTemplates()
-        let now = ISO8601DateFormatter().string(from: Date())
-        var template =
-            templates[name]
-            ?? MailTemplate(name: name, subject: subject, body: body, createdAt: now, updatedAt: now)
-        template.subject = subject
-        template.body = body
-        template.updatedAt = now
-        if templates[name] == nil, templates.count >= maximumTemplateCount {
-            throw Self.error("template store is full (limit \(maximumTemplateCount))")
-        }
-        templates[name] = template
-        try Self.storeTemplates(templates)
-        return template
-    }
+    // The store itself lives in Shared/MailTemplateStore.swift so its
+    // not-found contract can be tested.
 
     private static func useTemplate(arguments: [String: Value]) async throws -> MailComposeResult {
         let name = try Self.requiredString("name", from: arguments)
-        guard let template = try Self.loadTemplates()[name] else {
-            throw Self.error("NOT_FOUND: no template named \(name)")
-        }
+        let template = try MailTemplateStore.default.get(name: name)
 
         var variables: [String: String] = [:]
         if case .object(let values)? = arguments["variables"] {
