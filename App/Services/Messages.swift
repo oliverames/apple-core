@@ -14,6 +14,13 @@ private let messagesDatabasePath =
     .path
 private let messagesDatabaseBookmarkKey: String = "me.mattt.iMCP.messagesDatabaseBookmark"
 private let defaultLimit = 30
+/// Base64 grows the payload by about a third, so these caps are about the
+/// client's context window rather than the disk. The default matches the
+/// Notes surface; the ceiling is higher because a photograph from Messages
+/// routinely exceeds 256KB and a path on this Mac is no use to a remote
+/// client.
+private let maximumInlineMessageAttachmentBytes = 256 * 1024
+private let maximumRequestableMessageAttachmentBytes = 1024 * 1024
 
 private let messagesPermissionProbeScript = """
     tell application "Messages" to return name
@@ -103,9 +110,20 @@ final class MessageService: NSObject, Service, NSOpenSavePanelDelegate {
     var tools: [Tool] {
         Tool(
             name: "messages_fetch",
-            description: "Fetch messages from the Messages app",
+            description:
+                "Fetch messages from the Messages app. Pass `chat_id` from messages_list_chats to read one "
+                + "exact conversation, including a group chat that shares its participants with another thread. "
+                + "Participant, date and text filters still apply, and `offset` pages through older results.",
             inputSchema: .object(
                 properties: [
+                    "chat_id": .string(
+                        description:
+                            "Chat GUID from messages_list_chats. Targets that conversation exactly; it stays the same when a group is renamed."
+                    ),
+                    "offset": .integer(
+                        description: "Messages to skip before returning results, for paging. Defaults to 0.",
+                        default: .int(0)
+                    ),
                     "participants": .array(
                         description:
                             "Participant handles (phone or email). Phone numbers should use E.164 format",
@@ -140,44 +158,10 @@ final class MessageService: NSObject, Service, NSOpenSavePanelDelegate {
             log.debug("Starting message fetch with arguments: \(arguments)")
             try await self.activate()
 
-            let participants: [String]
-            if let participantValue = arguments["participants"] {
-                guard case .array(let values) = participantValue else {
-                    throw NSError(
-                        domain: "MessagesServiceError",
-                        code: 3,
-                        userInfo: [
-                            NSLocalizedDescriptionKey:
-                                "Participants must be an array of phone numbers or email addresses."
-                        ]
-                    )
-                }
-                participants = try values.map { value in
-                    guard case .string(let rawParticipant) = value else {
-                        throw NSError(
-                            domain: "MessagesServiceError",
-                            code: 3,
-                            userInfo: [
-                                NSLocalizedDescriptionKey: "Each participant must be a phone number or email address."
-                            ]
-                        )
-                    }
-                    let participant = rawParticipant.trimmingCharacters(in: .whitespacesAndNewlines)
-                    guard isValidMessageParticipant(participant) else {
-                        throw NSError(
-                            domain: "MessagesServiceError",
-                            code: 3,
-                            userInfo: [
-                                NSLocalizedDescriptionKey:
-                                    "Each participant must be a nonempty phone number or email address."
-                            ]
-                        )
-                    }
-                    return participant
-                }
-            } else {
-                participants = []
-            }
+            let participants = try Self.participantArgument(arguments)
+
+            let chatID = arguments["chat_id"]?.stringValue?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
 
             let startInput: String?
             if let startValue = arguments["start"] {
@@ -264,6 +248,25 @@ final class MessageService: NSObject, Service, NSOpenSavePanelDelegate {
             // limit meant runaway memory or a trap on overflow.
             let requestedLimit = arguments["limit"]?.intValue ?? defaultLimit
             let limit = min(max(requestedLimit, 1), 1000)
+            let offset = min(max(arguments["offset"]?.intValue ?? 0, 0), 100_000)
+
+            // An unknown GUID used to come back as an empty conversation,
+            // indistinguishable from a real thread with nothing in the window.
+            var chat: MessagesChatSummary?
+            if let chatID, !chatID.isEmpty {
+                chat = try self.withDatabaseReader { try $0.chat(guid: chatID) }
+                guard chat != nil else {
+                    throw NSError(
+                        domain: "MessagesServiceError",
+                        code: 4,
+                        userInfo: [
+                            NSLocalizedDescriptionKey:
+                                "NOT_FOUND: no conversation with chat_id \"\(chatID)\". "
+                                + "Use messages_list_chats to get a current chat id."
+                        ]
+                    )
+                }
+            }
 
             let db = try self.createDatabaseConnection()
             var messages: [[String: Value]] = []
@@ -291,11 +294,12 @@ final class MessageService: NSObject, Service, NSOpenSavePanelDelegate {
             // filtering by text/participants doesn't starve the result set;
             // the SQL LIMIT is still bounded.
             for message in try db.fetchMessages(
+                for: chat.map { iMessage.Chat.ID(rawValue: $0.chatGUID) },
                 with: Set(handles),
                 in: dateRange,
-                limit: max(limit, 1024)
+                limit: max(limit + offset, 1024)
             ) {
-                guard messages.count < limit else { break }
+                guard messages.count < limit + offset else { break }
                 guard !message.text.isEmpty else { continue }
 
                 let sender: String
@@ -323,24 +327,44 @@ final class MessageService: NSObject, Service, NSOpenSavePanelDelegate {
                 ])
             }
 
-            log.debug("Successfully fetched \(messages.count) messages")
-            return [
+            let page = messagesPage(messages, offset: offset, limit: limit)
+            log.debug("Successfully fetched \(page.count) messages")
+            var conversation: [String: Value] = [
                 "@context": "https://schema.org",
                 "@type": "Conversation",
-                "hasPart": Value.array(messages.map({ .object($0) })),
+                "hasPart": Value.array(page.map({ .object($0) })),
             ]
+            if let chat {
+                conversation["@id"] = .string(chat.chatGUID)
+                conversation["isGroup"] = .bool(chat.isGroup)
+                conversation["participants"] = .array(chat.participants.map { .string($0) })
+                if let displayName = chat.displayName {
+                    conversation["name"] = .string(displayName)
+                }
+            }
+            if offset > 0 { conversation["offset"] = .int(offset) }
+            // Only a full page can have more behind it; a short page is the end.
+            conversation["hasMore"] = .bool(page.count == limit)
+            return conversation
         }
 
         Tool(
             name: "messages_list_chats",
             description:
-                "List recent conversations from the Messages app, including each chat's GUID (usable as chat_id in messages_send), display name, and participants. Group chats have more than one participant.",
+                "List recent conversations from the Messages app, including each chat's GUID (its stable id, usable "
+                + "as chat_id in messages_fetch and messages_send), display name, and participants. The GUID keeps "
+                + "two conversations with the same participants apart, and survives a group being renamed. "
+                + "Group chats have more than one participant.",
             inputSchema: .object(
                 properties: [
                     "limit": .integer(
                         description: "Maximum chats to return",
                         default: .int(defaultLimit)
-                    )
+                    ),
+                    "offset": .integer(
+                        description: "Conversations to skip before returning results, for paging. Defaults to 0.",
+                        default: .int(0)
+                    ),
                 ],
                 additionalProperties: false
             ),
@@ -353,48 +377,78 @@ final class MessageService: NSObject, Service, NSOpenSavePanelDelegate {
             try await self.activate()
 
             let limit = min(max(arguments["limit"]?.intValue ?? defaultLimit, 1), 200)
-            let db = try self.createDatabaseConnection()
+            let offset = min(max(arguments["offset"]?.intValue ?? 0, 0), 100_000)
 
-            let chats: [[String: Value]] = try db.fetchChats(limit: limit).map { chat in
+            // Read through the direct reader rather than madrid, which has no
+            // offset and so cannot page past its first window.
+            let summaries = try self.withDatabaseReader { reader in
+                try reader.chats(limit: limit, offset: offset)
+            }
+            let chats: [[String: Value]] = summaries.map { chat in
                 var entry: [String: Value] = [
-                    "@id": .string(chat.id.rawValue),
-                    "participants": .array(
-                        chat.participants.map { .string($0.rawValue) }
-                    ),
-                    "isGroup": .bool(chat.participants.count > 1),
+                    "@id": .string(chat.chatGUID),
+                    "participants": .array(chat.participants.map { .string($0) }),
+                    "isGroup": .bool(chat.isGroup),
+                    "messageCount": .int(chat.messageCount),
                 ]
                 if let displayName = chat.displayName, !displayName.isEmpty {
                     entry["name"] = .string(displayName)
                 }
                 if let lastMessageDate = chat.lastMessageDate {
-                    entry["lastMessageAt"] = .string(
-                        lastMessageDate.formatted(.iso8601)
-                    )
+                    entry["lastMessageAt"] = .string(lastMessageDate.formatted(.iso8601))
                 }
                 return entry
             }
 
             log.debug("Listed \(chats.count) chats")
-            return [
+            var response: [String: Value] = [
                 "@context": "https://schema.org",
                 "@type": "ItemList",
                 "itemListElement": Value.array(chats.map { .object($0) }),
             ]
+            if offset > 0 { response["offset"] = .int(offset) }
+            response["hasMore"] = .bool(chats.count == limit)
+            return response
         }
 
         Tool(
             name: "messages_attachments",
             description:
-                "List attachments sent and received in Messages: photos, files and stickers, newest first. "
-                + "Returns each attachment's name, type and size, not its contents.",
+                "Find attachments sent and received in Messages: photos, files and stickers, newest first. "
+                + "Returns each attachment's stable id, name, type, size and whether its file is actually on "
+                + "this Mac. Narrow by conversation, participant, MIME type and date. This lists attachments; "
+                + "use messages_fetch_attachment with an id to get the bytes.",
             inputSchema: .object(
                 properties: [
                     "chat_id": .string(
-                        description: "Chat GUID from messages_list_chats. Omit to list across every conversation."
+                        description: "Chat GUID from messages_list_chats. Omit to search across every conversation."
+                    ),
+                    "participants": .array(
+                        description:
+                            "Participant handles (phone or email) whose conversations to search. Phone numbers should use E.164 format.",
+                        items: .string()
+                    ),
+                    "mime_type": .string(
+                        description:
+                            "MIME type to match, exactly (\"image/png\") or by family (\"image/\" or \"image/*\")."
+                    ),
+                    "start": .string(
+                        description:
+                            "Only attachments created at or after this time. If timezone is omitted, local time is assumed.",
+                        format: .dateTime
+                    ),
+                    "end": .string(
+                        description:
+                            "Only attachments created before this time. If timezone is omitted, local time is assumed.",
+                        format: .dateTime
                     ),
                     "limit": .integer(
                         description: "Maximum attachments to return",
                         default: .int(50)
+                    ),
+                    "offset": .integer(
+                        description: "Attachments to skip before returning results, for paging. Defaults to 0.",
+                        default: .int(0)
                     ),
                 ],
                 additionalProperties: false
@@ -407,16 +461,47 @@ final class MessageService: NSObject, Service, NSOpenSavePanelDelegate {
         ) { arguments in
             let chatGUID = arguments["chat_id"]?.stringValue
             let limit = min(max(arguments["limit"]?.intValue ?? 50, 1), 500)
+            let offset = min(max(arguments["offset"]?.intValue ?? 0, 0), 100_000)
+            let mimeType = arguments["mime_type"]?.stringValue
+            let start = try Self.optionalBoundary("start", from: arguments, isEnd: false)
+            let end = try Self.optionalBoundary("end", from: arguments, isEnd: true)
+            if let start, let end, start > end {
+                throw NSError(
+                    domain: "MessagesServiceError",
+                    code: 3,
+                    userInfo: [NSLocalizedDescriptionKey: "Start must not be after end."]
+                )
+            }
+            let participants = try Self.participantArgument(arguments)
             try await self.activate()
 
-            let attachments = try self.withDatabaseReader { reader in
-                try reader.attachments(chatGUID: chatGUID, limit: limit)
+            let attachments = try self.withDatabaseReader { reader -> [MessageAttachment] in
+                var handles: [String] = []
+                if !participants.isEmpty {
+                    handles = try reader.participantHandles(matching: participants)
+                    // No known handle means no conversation to search, which is
+                    // an empty result rather than an unfiltered one.
+                    if handles.isEmpty { return [] }
+                }
+                return try reader.attachments(
+                    matching: MessageAttachmentFilter(
+                        chatGUID: chatGUID,
+                        participantHandles: handles,
+                        mimeType: mimeType,
+                        start: start,
+                        end: end,
+                        limit: limit,
+                        offset: offset
+                    )
+                )
             }
             let formatter = ISO8601DateFormatter()
             let described: [Value] = attachments.map { attachment in
                 var entry: [String: Value] = [
+                    "id": .string(attachment.id),
                     "isSticker": .bool(attachment.isSticker),
                     "sizeBytes": .int(attachment.sizeBytes),
+                    "availability": .string(Self.availability(of: attachment).rawValue),
                 ]
                 if let name = attachment.name { entry["name"] = .string(name) }
                 if let mime = attachment.mimeType { entry["mimeType"] = .string(mime) }
@@ -428,10 +513,100 @@ final class MessageService: NSObject, Service, NSOpenSavePanelDelegate {
                 }
                 return .object(entry)
             }
-            return Value.object([
+            var response: [String: Value] = [
                 "count": .int(described.count),
                 "attachments": .array(described),
-            ])
+            ]
+            if offset > 0 { response["offset"] = .int(offset) }
+            response["hasMore"] = .bool(described.count == limit)
+            return Value.object(response)
+        }
+
+        Tool(
+            name: "messages_fetch_attachment",
+            description:
+                "Get one Messages attachment's bytes as base64, by the id from messages_attachments. "
+                + "Returns up to \(maximumInlineMessageAttachmentBytes / 1024)KB by default and "
+                + "\(maximumRequestableMessageAttachmentBytes / 1024)KB at most, so a client that is not running "
+                + "on this Mac can actually read a photo or document. Says which of missing file, "
+                + "not-downloaded-from-iCloud, or too large applies when it cannot.",
+            inputSchema: .object(
+                properties: [
+                    "id": .string(
+                        description: "Attachment id from messages_attachments"
+                    ),
+                    "max_bytes": .integer(
+                        description:
+                            "Largest attachment to return inline, in bytes. Capped at \(maximumRequestableMessageAttachmentBytes).",
+                        default: .int(maximumInlineMessageAttachmentBytes)
+                    ),
+                ],
+                required: ["id"],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Fetch Message Attachment",
+                readOnlyHint: true,
+                openWorldHint: false
+            )
+        ) { arguments in
+            guard
+                let id = arguments["id"]?.stringValue?
+                    .trimmingCharacters(in: .whitespacesAndNewlines), !id.isEmpty
+            else {
+                throw NSError(
+                    domain: "MessagesServiceError",
+                    code: 3,
+                    userInfo: [
+                        NSLocalizedDescriptionKey:
+                            "An attachment id is required. Get one from messages_attachments."
+                    ]
+                )
+            }
+            let requested = arguments["max_bytes"]?.intValue ?? maximumInlineMessageAttachmentBytes
+            let maximumBytes = min(max(requested, 1), maximumRequestableMessageAttachmentBytes)
+            try await self.activate()
+
+            guard
+                let attachment = try self.withDatabaseReader({ reader in
+                    try reader.attachment(id: id)
+                })
+            else {
+                throw NSError(
+                    domain: "MessagesServiceError",
+                    code: 4,
+                    userInfo: [
+                        NSLocalizedDescriptionKey:
+                            "NOT_FOUND: no attachment with id \"\(id)\". Ids come from messages_attachments "
+                            + "and change if Messages re-imports the conversation."
+                    ]
+                )
+            }
+
+            let name = attachment.name ?? id
+            let payload = try MessagesAttachmentContent.load(
+                storedPath: attachment.storedPath,
+                name: name,
+                declaredSize: attachment.sizeBytes,
+                maximumBytes: maximumBytes,
+                mimeType: attachment.mimeType
+            )
+
+            log.notice("Fetched message attachment \(attachment.id, privacy: .private)")
+            var entry: [String: Value] = [
+                "id": .string(attachment.id),
+                "name": .string(name),
+                "byteCount": .int(payload.byteCount),
+                "base64": .string(payload.data.base64EncodedString()),
+            ]
+            if let mime = payload.mimeType { entry["mimeType"] = .string(mime) }
+            if let uti = attachment.uti { entry["uti"] = .string(uti) }
+            if let chat = attachment.chatGUID { entry["chatId"] = .string(chat) }
+            if let message = attachment.messageGUID { entry["messageId"] = .string(message) }
+            if let created = attachment.created {
+                entry["created"] = .string(ISO8601DateFormatter().string(from: created))
+            }
+            return Value.object(entry)
         }
 
         Tool(
@@ -559,6 +734,83 @@ final class MessageService: NSObject, Service, NSOpenSavePanelDelegate {
                 "service": .string(service),
             ]
         }
+    }
+
+    /// Parses one optional ISO 8601 bound. Unlike messages_fetch, a single
+    /// bound is honored here rather than refused: "attachments since Friday"
+    /// is a normal request, and the bound is applied rather than dropped.
+    private static func optionalBoundary(
+        _ key: String,
+        from arguments: [String: Value],
+        isEnd: Bool
+    ) throws -> Date? {
+        guard let value = arguments[key] else { return nil }
+        guard case .string(let raw) = value,
+            let parsed = ISO8601DateFormatter.parsedLenientISO8601Date(fromISO8601String: raw)
+        else {
+            throw NSError(
+                domain: "MessagesServiceError",
+                code: 3,
+                userInfo: [
+                    NSLocalizedDescriptionKey: "\(key) must be a valid ISO 8601 date or date-time."
+                ]
+            )
+        }
+        let calendar = Calendar.current
+        return isEnd
+            ? calendar.normalizedEndDate(from: parsed.date, isDateOnly: parsed.isDateOnly)
+            : calendar.normalizedStartDate(from: parsed.date, isDateOnly: parsed.isDateOnly)
+    }
+
+    /// The shared participant-array validation used by fetch and attachments.
+    private static func participantArgument(_ arguments: [String: Value]) throws -> [String] {
+        guard let value = arguments["participants"] else { return [] }
+        guard case .array(let values) = value else {
+            throw NSError(
+                domain: "MessagesServiceError",
+                code: 3,
+                userInfo: [
+                    NSLocalizedDescriptionKey:
+                        "Participants must be an array of phone numbers or email addresses."
+                ]
+            )
+        }
+        return try values.map { element in
+            guard case .string(let raw) = element else {
+                throw NSError(
+                    domain: "MessagesServiceError",
+                    code: 3,
+                    userInfo: [
+                        NSLocalizedDescriptionKey:
+                            "Each participant must be a phone number or email address."
+                    ]
+                )
+            }
+            let participant = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard isValidMessageParticipant(participant) else {
+                throw NSError(
+                    domain: "MessagesServiceError",
+                    code: 3,
+                    userInfo: [
+                        NSLocalizedDescriptionKey:
+                            "Each participant must be a nonempty phone number or email address."
+                    ]
+                )
+            }
+            return participant
+        }
+    }
+
+    /// Whether the file behind a row is actually readable on this Mac, so a
+    /// listing can say so before a client spends a call finding out.
+    private static func availability(of attachment: MessageAttachment)
+        -> MessagesAttachmentAvailability
+    {
+        MessagesAttachmentContent.availability(
+            storedPath: attachment.storedPath,
+            name: attachment.name ?? attachment.id,
+            declaredSize: attachment.sizeBytes
+        )
     }
 
     private enum SendError: LocalizedError {

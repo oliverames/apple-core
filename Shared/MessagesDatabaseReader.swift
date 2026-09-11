@@ -23,6 +23,10 @@ import SQLite3
 private let sqliteTransient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
 struct MessageAttachment: Sendable {
+    /// Stable across restarts and across re-listing: `attachment.guid` when
+    /// chat.db carries one, else the row id. Clients hold on to this and pass
+    /// it back to fetch the bytes, so it must not be derived from position.
+    let id: String
     let name: String?
     let mimeType: String?
     let uti: String?
@@ -31,6 +35,71 @@ struct MessageAttachment: Sendable {
     let chatGUID: String?
     let messageGUID: String?
     let created: Date?
+    /// The on-disk location chat.db recorded, usually `~/Library/Messages/...`.
+    /// Tilde-prefixed as stored; expansion and containment checks happen in
+    /// `MessagesAttachmentContent`, not here.
+    let storedPath: String?
+}
+
+/// One conversation, keyed by the GUID that never changes when the group is
+/// renamed or its membership shifts. Two conversations with identical
+/// participants differ here even though their participant lists do not.
+struct MessagesChatSummary: Sendable {
+    let chatGUID: String
+    let displayName: String?
+    let chatIdentifier: String?
+    let serviceName: String?
+    let participants: [String]
+    let lastMessageDate: Date?
+    let messageCount: Int
+
+    var isGroup: Bool { participants.count > 1 }
+}
+
+/// Everything `messages_attachments` can narrow by. All optional; an empty
+/// filter lists the newest attachments across every conversation.
+struct MessageAttachmentFilter: Sendable {
+    var chatGUID: String?
+    /// Already-resolved handle ids (see `participantHandles(matching:)`).
+    var participantHandles: [String] = []
+    /// Matched case-insensitively as an exact type ("image/png") or as a
+    /// prefix when it ends in "/" ("image/").
+    var mimeType: String?
+    var start: Date?
+    var end: Date?
+    var limit: Int = 50
+    var offset: Int = 0
+
+    init(
+        chatGUID: String? = nil,
+        participantHandles: [String] = [],
+        mimeType: String? = nil,
+        start: Date? = nil,
+        end: Date? = nil,
+        limit: Int = 50,
+        offset: Int = 0
+    ) {
+        self.chatGUID = chatGUID
+        self.participantHandles = participantHandles
+        self.mimeType = mimeType
+        self.start = start
+        self.end = end
+        self.limit = limit
+        self.offset = offset
+    }
+}
+
+/// Trims a fetched page to a window the caller asked for.
+///
+/// Paging happens after text and participant filtering rather than in SQL,
+/// because those filters run in Swift; applying OFFSET in the query would
+/// skip rows that the filter was about to drop anyway and silently lose
+/// messages from the window the client asked for.
+func messagesPage<T>(_ items: [T], offset: Int, limit: Int) -> [T] {
+    let start = max(offset, 0)
+    guard start < items.count, limit > 0 else { return [] }
+    let end = min(items.count, start + limit)
+    return Array(items[start ..< end])
 }
 
 struct ChatUnreadCount: Sendable {
@@ -136,7 +205,103 @@ struct MessagesDatabaseReader {
     }
 
     /// Attachments, newest first, optionally limited to one chat.
+    ///
+    /// Kept as the narrow entry point the unread and listing paths already
+    /// used; `attachments(matching:)` is the filtered form.
     func attachments(chatGUID: String?, limit: Int) throws -> [MessageAttachment] {
+        try attachments(matching: MessageAttachmentFilter(chatGUID: chatGUID, limit: limit))
+    }
+
+    /// Attachments narrowed by chat, participants, MIME type and date,
+    /// newest first, with the page the caller asked for.
+    func attachments(matching filter: MessageAttachmentFilter) throws -> [MessageAttachment] {
+        let handle = try open()
+        defer { sqlite3_close(handle) }
+
+        guard tableExists("attachment", in: handle), tableExists("message_attachment_join", in: handle) else {
+            throw MessagesDatabaseReaderError.schemaMissing("the attachment table")
+        }
+        if !filter.participantHandles.isEmpty {
+            guard tableExists("chat_handle_join", in: handle), tableExists("handle", in: handle) else {
+                throw MessagesDatabaseReaderError.schemaMissing("the chat participant tables")
+            }
+        }
+
+        var conditions: [String] = []
+        var binders: [(OpaquePointer?, Int32) -> Void] = []
+
+        if let chatGUID = filter.chatGUID {
+            conditions.append("c.guid = ?")
+            binders.append { statement, index in
+                sqlite3_bind_text(statement, index, chatGUID, -1, sqliteTransient)
+            }
+        }
+        if !filter.participantHandles.isEmpty {
+            let placeholders = Array(repeating: "?", count: filter.participantHandles.count)
+                .joined(separator: ", ")
+            conditions.append(
+                """
+                c.ROWID IN (
+                    SELECT chj.chat_id FROM chat_handle_join chj
+                    JOIN handle h ON h.ROWID = chj.handle_id
+                    WHERE h.id IN (\(placeholders))
+                )
+                """
+            )
+            for participant in filter.participantHandles {
+                binders.append { statement, index in
+                    sqlite3_bind_text(statement, index, participant, -1, sqliteTransient)
+                }
+            }
+        }
+        if let mimeType = filter.mimeType?.trimmingCharacters(in: .whitespacesAndNewlines),
+            !mimeType.isEmpty
+        {
+            if mimeType.hasSuffix("/") || mimeType.hasSuffix("/*") {
+                // "image/" and "image/*" both mean "every image type".
+                let family = mimeType.hasSuffix("/*") ? String(mimeType.dropLast(1)) : mimeType
+                let pattern = Self.escapedLikePrefix(family.lowercased()) + "%"
+                conditions.append("LOWER(a.mime_type) LIKE ? ESCAPE '\\'")
+                binders.append { statement, index in
+                    sqlite3_bind_text(statement, index, pattern, -1, sqliteTransient)
+                }
+            } else {
+                conditions.append("LOWER(a.mime_type) = ?")
+                let exact = mimeType.lowercased()
+                binders.append { statement, index in
+                    sqlite3_bind_text(statement, index, exact, -1, sqliteTransient)
+                }
+            }
+        }
+        if let start = filter.start {
+            let seconds = Self.appleSeconds(from: start)
+            conditions.append("\(Self.normalizedCreatedSeconds) >= ?")
+            binders.append { statement, index in
+                sqlite3_bind_int64(statement, index, seconds)
+            }
+        }
+        if let end = filter.end {
+            let seconds = Self.appleSeconds(from: end)
+            conditions.append("\(Self.normalizedCreatedSeconds) < ?")
+            binders.append { statement, index in
+                sqlite3_bind_int64(statement, index, seconds)
+            }
+        }
+
+        let rows = try attachmentRows(
+            in: handle,
+            conditions: conditions,
+            binders: binders,
+            limit: max(filter.limit, 1),
+            offset: max(filter.offset, 0)
+        )
+        return rows
+    }
+
+    /// One attachment by the identifier `attachments` handed out. Returns nil
+    /// rather than throwing when nothing matches, so the caller can say which
+    /// id was not found.
+    func attachment(id: String) throws -> MessageAttachment? {
         let handle = try open()
         defer { sqlite3_close(handle) }
 
@@ -144,17 +309,170 @@ struct MessagesDatabaseReader {
             throw MessagesDatabaseReaderError.schemaMissing("the attachment table")
         }
 
+        let guidColumn = columnExists("guid", onTable: "attachment", in: handle) ? "a.guid" : "NULL"
+        let conditions = ["(\(guidColumn) = ? OR CAST(a.ROWID AS TEXT) = ?)"]
+        let binders: [(OpaquePointer?, Int32) -> Void] = [
+            { statement, index in sqlite3_bind_text(statement, index, id, -1, sqliteTransient) },
+            { statement, index in sqlite3_bind_text(statement, index, id, -1, sqliteTransient) },
+        ]
+        return try attachmentRows(
+            in: handle,
+            conditions: conditions,
+            binders: binders,
+            limit: 1,
+            offset: 0
+        ).first
+    }
+
+    /// Conversations, most recently active first.
+    ///
+    /// The GUID is the stable identifier: renaming a group changes
+    /// `display_name` and leaves `guid` alone, and two conversations with
+    /// identical participants keep distinct GUIDs.
+    func chats(limit: Int, offset: Int = 0) throws -> [MessagesChatSummary] {
+        try chats(limit: limit, offset: offset, guid: nil)
+    }
+
+    /// One conversation by GUID, or nil when no such chat exists.
+    func chat(guid: String) throws -> MessagesChatSummary? {
+        try chats(limit: 1, offset: 0, guid: guid).first
+    }
+
+    private func chats(limit: Int, offset: Int, guid: String?) throws -> [MessagesChatSummary] {
+        let handle = try open()
+        defer { sqlite3_close(handle) }
+
+        guard tableExists("chat", in: handle) else {
+            throw MessagesDatabaseReaderError.schemaMissing("the chat table")
+        }
+
+        let identifierColumn =
+            columnExists("chat_identifier", onTable: "chat", in: handle) ? "c.chat_identifier" : "NULL"
+        let serviceColumn =
+            columnExists("service_name", onTable: "chat", in: handle) ? "c.service_name" : "NULL"
+        let hasMessages =
+            tableExists("message", in: handle)
+            && tableExists("chat_message_join", in: handle)
+            && columnExists("date", onTable: "message", in: handle)
+        let lastDate = hasMessages ? "MAX(\(Self.normalizedMessageSeconds))" : "NULL"
+        let messageJoin =
+            hasMessages
+            ? """
+            LEFT JOIN chat_message_join cmj ON cmj.chat_id = c.ROWID
+            LEFT JOIN message m ON m.ROWID = cmj.message_id
+            """
+            : ""
+        let messageCount = hasMessages ? "COUNT(m.ROWID)" : "0"
+
+        let sql = """
+            SELECT c.guid, c.display_name, \(identifierColumn), \(serviceColumn),
+                   \(lastDate), \(messageCount)
+            FROM chat c
+            \(messageJoin)
+            \(guid == nil ? "" : "WHERE c.guid = ?")
+            GROUP BY c.ROWID
+            ORDER BY \(hasMessages ? "\(lastDate) DESC," : "") c.guid ASC
+            LIMIT ? OFFSET ?
+            """
+
+        var statement: OpaquePointer?
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_prepare_v2(handle, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw MessagesDatabaseReaderError.cannotOpen(String(cString: sqlite3_errmsg(handle)))
+        }
+        var index: Int32 = 1
+        if let guid {
+            sqlite3_bind_text(statement, index, guid, -1, sqliteTransient)
+            index += 1
+        }
+        sqlite3_bind_int(statement, index, Int32(max(limit, 1)))
+        sqlite3_bind_int(statement, index + 1, Int32(max(offset, 0)))
+
+        var rows: [(String, String?, String?, String?, Date?, Int)] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            guard let chatGUID = Self.text(statement, 0) else { continue }
+            let displayName = Self.text(statement, 1)
+            let lastMessage =
+                sqlite3_column_type(statement, 4) == SQLITE_NULL
+                ? nil : Self.date(fromAppleSeconds: sqlite3_column_int64(statement, 4))
+            rows.append(
+                (
+                    chatGUID,
+                    (displayName?.isEmpty ?? true) ? nil : displayName,
+                    Self.text(statement, 2),
+                    Self.text(statement, 3),
+                    lastMessage,
+                    Int(sqlite3_column_int64(statement, 5))
+                )
+            )
+        }
+
+        return try rows.map { row in
+            MessagesChatSummary(
+                chatGUID: row.0,
+                displayName: row.1,
+                chatIdentifier: row.2,
+                serviceName: row.3,
+                participants: try participants(ofChat: row.0, in: handle),
+                lastMessageDate: row.4,
+                messageCount: row.5
+            )
+        }
+    }
+
+    private func participants(ofChat guid: String, in handle: OpaquePointer) throws -> [String] {
+        guard tableExists("chat_handle_join", in: handle), tableExists("handle", in: handle) else {
+            return []
+        }
+        let sql = """
+            SELECT h.id
+            FROM chat c
+            JOIN chat_handle_join chj ON chj.chat_id = c.ROWID
+            JOIN handle h ON h.ROWID = chj.handle_id
+            WHERE c.guid = ? AND h.id IS NOT NULL
+            ORDER BY h.id ASC
+            """
+        var statement: OpaquePointer?
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_prepare_v2(handle, sql, -1, &statement, nil) == SQLITE_OK else {
+            return []
+        }
+        sqlite3_bind_text(statement, 1, guid, -1, sqliteTransient)
+
+        var found: [String] = []
+        var seen = Set<String>()
+        while sqlite3_step(statement) == SQLITE_ROW {
+            guard let identifier = Self.text(statement, 0) else { continue }
+            if seen.insert(identifier).inserted { found.append(identifier) }
+        }
+        return found
+    }
+
+    /// The shared projection behind both attachment queries.
+    private func attachmentRows(
+        in handle: OpaquePointer,
+        conditions: [String],
+        binders: [(OpaquePointer?, Int32) -> Void],
+        limit: Int,
+        offset: Int
+    ) throws -> [MessageAttachment] {
+        let guidColumn = columnExists("guid", onTable: "attachment", in: handle) ? "a.guid" : "NULL"
+        let filenameColumn =
+            columnExists("filename", onTable: "attachment", in: handle) ? "a.filename" : "NULL"
+
         var sql = """
             SELECT a.transfer_name, a.mime_type, a.uti, a.total_bytes, a.is_sticker,
-                   c.guid, m.guid, a.created_date
+                   c.guid, m.guid, a.created_date, \(guidColumn), a.ROWID, \(filenameColumn)
             FROM attachment a
             JOIN message_attachment_join maj ON maj.attachment_id = a.ROWID
             JOIN message m ON m.ROWID = maj.message_id
             JOIN chat_message_join cmj ON cmj.message_id = m.ROWID
             JOIN chat c ON c.ROWID = cmj.chat_id
             """
-        if chatGUID != nil { sql += "\nWHERE c.guid = ?" }
-        sql += "\nORDER BY a.created_date DESC\nLIMIT ?"
+        if !conditions.isEmpty {
+            sql += "\nWHERE " + conditions.joined(separator: "\n  AND ")
+        }
+        sql += "\nORDER BY \(Self.normalizedCreatedSeconds) DESC, a.ROWID DESC\nLIMIT ? OFFSET ?"
 
         var statement: OpaquePointer?
         defer { sqlite3_finalize(statement) }
@@ -163,16 +481,20 @@ struct MessagesDatabaseReader {
         }
 
         var index: Int32 = 1
-        if let chatGUID {
-            sqlite3_bind_text(statement, index, chatGUID, -1, sqliteTransient)
+        for bind in binders {
+            bind(statement, index)
             index += 1
         }
         sqlite3_bind_int(statement, index, Int32(limit))
+        sqlite3_bind_int(statement, index + 1, Int32(offset))
 
         var results: [MessageAttachment] = []
         while sqlite3_step(statement) == SQLITE_ROW {
+            let rowID = sqlite3_column_int64(statement, 9)
+            let guid = Self.text(statement, 8)
             results.append(
                 MessageAttachment(
+                    id: (guid?.isEmpty ?? true) ? String(rowID) : guid!,
                     name: Self.text(statement, 0),
                     mimeType: Self.text(statement, 1),
                     uti: Self.text(statement, 2),
@@ -180,11 +502,51 @@ struct MessagesDatabaseReader {
                     isSticker: sqlite3_column_int(statement, 4) == 1,
                     chatGUID: Self.text(statement, 5),
                     messageGUID: Self.text(statement, 6),
-                    created: Self.date(fromAppleNanoseconds: sqlite3_column_int64(statement, 7))
+                    created: Self.date(fromAppleNanoseconds: sqlite3_column_int64(statement, 7)),
+                    storedPath: Self.text(statement, 10)
                 )
             )
         }
         return results
+    }
+
+    private func columnExists(_ column: String, onTable table: String, in handle: OpaquePointer) -> Bool {
+        var statement: OpaquePointer?
+        defer { sqlite3_finalize(statement) }
+        // PRAGMA does not take a bound parameter for the table name, and the
+        // table names here are all compile-time constants from this file.
+        let sql = "PRAGMA table_info(\(table))"
+        guard sqlite3_prepare_v2(handle, sql, -1, &statement, nil) == SQLITE_OK else { return false }
+        while sqlite3_step(statement) == SQLITE_ROW {
+            if Self.text(statement, 1) == column { return true }
+        }
+        return false
+    }
+
+    /// chat.db holds nanoseconds on modern macOS and seconds on pre-High
+    /// Sierra rows. Normalizing inside SQL keeps range filters and ordering
+    /// correct across both, using the same magnitude test as `date(from:)`.
+    private static let normalizedCreatedSeconds =
+        "(CASE WHEN a.created_date > 1000000000000 THEN a.created_date / 1000000000 ELSE a.created_date END)"
+    private static let normalizedMessageSeconds =
+        "(CASE WHEN m.date > 1000000000000 THEN m.date / 1000000000 ELSE m.date END)"
+
+    private static func appleSeconds(from date: Date) -> Int64 {
+        Int64(date.timeIntervalSince(appleEpoch).rounded(.down))
+    }
+
+    private static func date(fromAppleSeconds raw: Int64) -> Date? {
+        guard raw != 0 else { return nil }
+        return appleEpoch.addingTimeInterval(Double(raw))
+    }
+
+    /// Escapes the LIKE metacharacters so a MIME filter such as "image_/x"
+    /// cannot widen the match.
+    private static func escapedLikePrefix(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "%", with: "\\%")
+            .replacingOccurrences(of: "_", with: "\\_")
     }
 
     /// Unread counts per chat, busiest first. Only counts incoming messages —
