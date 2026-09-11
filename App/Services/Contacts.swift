@@ -190,6 +190,91 @@ final class ContactsService: Service {
         }
     }
 
+    // MARK: - Destinations
+
+    /// Every container this Mac exposes, with the system default flagged.
+    ///
+    /// Must be called on the contact-store queue.
+    private func containerCandidates() throws -> [ContactContainerCandidate] {
+        let defaultIdentifier = contactStore.defaultContainerIdentifier()
+        return try contactStore.containers(matching: nil).map { container in
+            ContactContainerCandidate(
+                identifier: container.identifier,
+                name: container.name,
+                kind: Self.containerKind(for: container.type),
+                isSystemDefault: container.identifier == defaultIdentifier
+            )
+        }
+    }
+
+    private static func containerKind(for type: CNContainerType) -> ContactContainerKind {
+        switch type {
+        case .local: return .local
+        case .exchange: return .exchange
+        case .cardDAV: return .cardDAV
+        case .unassigned: return .unassigned
+        @unknown default: return .unknown
+        }
+    }
+
+    /// Where the store says a record actually lives, read back after a write.
+    ///
+    /// A failure here is reported as "unknown destination" rather than thrown:
+    /// the contact has already been saved by that point, and losing the whole
+    /// result because the follow-up read failed would be worse than saying the
+    /// destination is unverified.
+    private func container(
+        ofContact identifier: String,
+        among candidates: [ContactContainerCandidate]
+    ) -> ContactContainerCandidate? {
+        let predicate = CNContainer.predicateForContainerOfContact(withIdentifier: identifier)
+        guard let found = try? contactStore.containers(matching: predicate).first else { return nil }
+        return candidates.first { $0.identifier == found.identifier }
+            ?? ContactContainerCandidate(
+                identifier: found.identifier,
+                name: found.name,
+                kind: Self.containerKind(for: found.type)
+            )
+    }
+
+    private func container(
+        ofGroup identifier: String,
+        among candidates: [ContactContainerCandidate]
+    ) -> ContactContainerCandidate? {
+        let predicate = CNContainer.predicateForContainerOfGroup(withIdentifier: identifier)
+        guard let found = try? contactStore.containers(matching: predicate).first else { return nil }
+        return candidates.first { $0.identifier == found.identifier }
+            ?? ContactContainerCandidate(
+                identifier: found.identifier,
+                name: found.name,
+                kind: Self.containerKind(for: found.type)
+            )
+    }
+
+    private static func describe(_ container: ContactContainerCandidate) -> Value {
+        .object([
+            "identifier": .string(container.identifier),
+            "name": .string(container.name),
+            "kind": .string(container.kind.rawValue),
+            "isICloud": .bool(container.isICloud),
+            "syncsOffDevice": .bool(container.syncsOffDevice),
+            "isSystemDefault": .bool(container.isSystemDefault),
+        ])
+    }
+
+    private static func describe(_ report: ContactDestinationReport) -> Value {
+        var described: [String: Value] = [
+            "container": describe(report.container),
+            "syncsOffDevice": .bool(report.syncsOffDevice),
+            "isICloud": .bool(report.isICloud),
+            "syncExpectation": .string(ContactDestinationReporting.syncExpectation(report)),
+        ]
+        if let warning = report.warning {
+            described["warning"] = .string(warning)
+        }
+        return .object(described)
+    }
+
     private static func describe(_ record: ContactRecord) -> Value {
         .object([
             "identifier": .string(record.identifier),
@@ -370,11 +455,70 @@ final class ContactsService: Service {
         }
 
         Tool(
+            name: "contacts_containers",
+            description:
+                "List the Contacts containers (accounts) a contact can be created in, which one the system treats as default, and which look like iCloud. Pass contact to find out which container an existing contact lives in, which is how you tell a card that syncs from one that only exists on this Mac.",
+            inputSchema: .object(
+                properties: [
+                    "contact": .string(
+                        description:
+                            "Optional contact identifier: also report which container that contact lives in"
+                    )
+                ],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "List Contact Containers",
+                readOnlyHint: true,
+                openWorldHint: false
+            )
+        ) { arguments in
+            let contactIdentifier = arguments["contact"]?.stringValue
+            return try await self.runContactStore {
+                let candidates = try self.containerCandidates()
+                var result: [String: Value] = [
+                    "containers": .array(candidates.map(Self.describe))
+                ]
+                if let systemDefault = candidates.first(where: \.isSystemDefault) {
+                    result["systemDefaultIdentifier"] = .string(systemDefault.identifier)
+                }
+                // The destination a write with no container argument would use,
+                // reported up front so the caller never has to infer it.
+                do {
+                    let writeDefault = try ContactDestinationTarget.defaultDestination(in: candidates)
+                    result["writeDefault"] = Self.describe(writeDefault)
+                } catch {
+                    result["writeDefaultUnavailable"] = .string(
+                        error.localizedDescription
+                    )
+                }
+                if let contactIdentifier, !contactIdentifier.isEmpty {
+                    if let found = self.container(ofContact: contactIdentifier, among: candidates) {
+                        result["contactContainer"] = Self.describe(found)
+                        result["contactSyncExpectation"] = .string(
+                            ContactDestinationReporting.syncExpectation(
+                                ContactDestinationReporting.report(landed: found, requested: nil)
+                            )
+                        )
+                    } else {
+                        result["contactContainer"] = .null
+                    }
+                }
+                return Value.object(result)
+            }
+        }
+
+        Tool(
             name: "contacts_create",
             description:
-                "Create a new contact with the specified information.",
+                "Create a new contact with the specified information. Without container the contact goes to iCloud, and creation fails rather than falling back to an on-this-Mac account when no iCloud container exists. The result reports the container the contact actually landed in.",
             inputSchema: .object(
-                properties: contactProperties,
+                properties: contactProperties.merging([
+                    "container": .string(
+                        description:
+                            "Container identifier or name from contacts_containers. Omit to use iCloud."
+                    )
+                ]) { current, _ in current },
                 required: ["givenName"]
             ),
             annotations: .init(
@@ -396,15 +540,29 @@ final class ContactsService: Service {
                 )
             }
 
-            // Create a save request
-            let saveRequest = CNSaveRequest()
-            saveRequest.add(newContact, toContainerWithIdentifier: nil)
-
-            // Execute the save request
-            try await self.runContactStore {
+            let requestedContainer = arguments["container"]?.stringValue
+            let report: ContactDestinationReport = try await self.runContactStore {
+                let candidates = try self.containerCandidates()
+                // Resolve before saving: an unknown or ambiguous destination
+                // must fail without writing anything.
+                let target = try ContactDestinationTarget.resolve(
+                    requested: requestedContainer,
+                    in: candidates
+                )
+                let saveRequest = CNSaveRequest()
+                saveRequest.add(newContact, toContainerWithIdentifier: target.identifier)
                 try self.contactStore.execute(saveRequest)
+                let landed = self.container(
+                    ofContact: newContact.identifier,
+                    among: candidates
+                )
+                return ContactDestinationReporting.report(landed: landed, requested: target)
             }
-            return Person(newContact)
+
+            return Value.object([
+                "contact": try Value(Person(newContact)),
+                "destination": Self.describe(report),
+            ])
         }
 
         Tool(
@@ -549,10 +707,15 @@ final class ContactsService: Service {
 
         Tool(
             name: "contacts_create_group",
-            description: "Create a contact group",
+            description:
+                "Create a contact group. Groups belong to one container, and a group cannot hold contacts from another container, so the same destination rules as contacts_create apply: without container the group goes to iCloud.",
             inputSchema: .object(
                 properties: [
-                    "name": .string(description: "Name for the new group")
+                    "name": .string(description: "Name for the new group"),
+                    "container": .string(
+                        description:
+                            "Container identifier or name from contacts_containers. Omit to use iCloud."
+                    ),
                 ],
                 required: ["name"],
                 additionalProperties: false
@@ -570,17 +733,29 @@ final class ContactsService: Service {
                     userInfo: [NSLocalizedDescriptionKey: "A group name is required"]
                 )
             }
-            let identifier: String = try await self.runContactStore {
-                let group = CNMutableGroup()
-                group.name = name
-                let request = CNSaveRequest()
-                request.add(group, toContainerWithIdentifier: nil)
-                try self.contactStore.execute(request)
-                return group.identifier
-            }
+            let requestedContainer = arguments["container"]?.stringValue
+            let created: (identifier: String, report: ContactDestinationReport) =
+                try await self.runContactStore {
+                    let candidates = try self.containerCandidates()
+                    let target = try ContactDestinationTarget.resolve(
+                        requested: requestedContainer,
+                        in: candidates
+                    )
+                    let group = CNMutableGroup()
+                    group.name = name
+                    let request = CNSaveRequest()
+                    request.add(group, toContainerWithIdentifier: target.identifier)
+                    try self.contactStore.execute(request)
+                    let landed = self.container(ofGroup: group.identifier, among: candidates)
+                    return (
+                        group.identifier,
+                        ContactDestinationReporting.report(landed: landed, requested: target)
+                    )
+                }
             return Value.object([
-                "identifier": .string(identifier),
+                "identifier": .string(created.identifier),
                 "name": .string(name),
+                "destination": Self.describe(created.report),
             ])
         }
 

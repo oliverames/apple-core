@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		AC0000010000000000000142 /* ContactDestination.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC0000010000000000000140 /* ContactDestination.swift */; };
+		AC0000010000000000000141 /* ContactDestination.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC0000010000000000000140 /* ContactDestination.swift */; };
 		AC000001000000000000013F /* ReminderIdentity.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC000001000000000000013D /* ReminderIdentity.swift */; };
 		AC000001000000000000013E /* ReminderIdentity.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC000001000000000000013D /* ReminderIdentity.swift */; };
 		AC000001000000000000013C /* ReminderKitCapability.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC000001000000000000013A /* ReminderKitCapability.swift */; };
@@ -135,6 +137,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		AC0000010000000000000140 /* ContactDestination.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContactDestination.swift; sourceTree = "<group>"; };
 		AC000001000000000000013D /* ReminderIdentity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReminderIdentity.swift; sourceTree = "<group>"; };
 		AC000001000000000000013A /* ReminderKitCapability.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReminderKitCapability.swift; sourceTree = "<group>"; };
 		AC0000010000000000000137 /* MailIndexSearch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MailIndexSearch.swift; sourceTree = "<group>"; };
@@ -289,6 +292,7 @@
 			children = (
 				AC0000010000000000000012 /* AttachmentSaveDirectory.swift */,
 				AC0000010000000000000030 /* FilesystemAccess.swift */,
+				AC0000010000000000000140 /* ContactDestination.swift */,
 				AC000001000000000000013D /* ReminderIdentity.swift */,
 				AC000001000000000000013A /* ReminderKitCapability.swift */,
 				AC0000010000000000000137 /* MailIndexSearch.swift */,
@@ -505,6 +509,7 @@
 				AC0000010000000000000016 /* OAuthSupport.swift in Sources */,
 				AC00000100000000000000D0 /* CloudflareAccess.swift in Sources */,
 				AC0000010000000000000031 /* FilesystemAccess.swift in Sources */,
+				AC0000010000000000000142 /* ContactDestination.swift in Sources */,
 				AC000001000000000000013F /* ReminderIdentity.swift in Sources */,
 				AC000001000000000000013C /* ReminderKitCapability.swift in Sources */,
 				AC0000010000000000000139 /* MailIndexSearch.swift in Sources */,
@@ -556,6 +561,7 @@
 				AC0000010000000000000011 /* AttachmentSaveDirectory.swift in Sources */,
 				AC00000100000000000000F7 /* ProcessCompletion.swift in Sources */,
 				AC0000010000000000000032 /* FilesystemAccess.swift in Sources */,
+				AC0000010000000000000141 /* ContactDestination.swift in Sources */,
 				AC000001000000000000013E /* ReminderIdentity.swift in Sources */,
 				AC000001000000000000013B /* ReminderKitCapability.swift in Sources */,
 				AC0000010000000000000138 /* MailIndexSearch.swift in Sources */,
