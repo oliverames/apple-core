@@ -215,7 +215,10 @@ final class MapsService: NSObject, Service {
                         additionalProperties: false
                     ),
                     "transportType": .string(
-                        description: "Transport type",
+                        description:
+                            "Transport type. \"transit\" returns no steps: Apple Maps supplies transit travel "
+                            + "time only, so use maps_eta for that trip. \"any\" lets MapKit choose and in "
+                            + "practice returns driving routes.",
                         default: "automobile",
                         enum: ["automobile", "walking", "transit", "any"]
                     ),
@@ -288,7 +291,8 @@ final class MapsService: NSObject, Service {
             directionsRequest.destination = destinationItem
 
             // Set transport type
-            switch arguments["transportType"]?.stringValue {
+            let requestedTransportType = arguments["transportType"]?.stringValue
+            switch requestedTransportType {
             case nil, "automobile":
                 directionsRequest.transportType = .automobile
             case "walking":
@@ -335,6 +339,25 @@ final class MapsService: NSObject, Service {
                 let directions = MKDirections(request: directionsRequest)
                 directions.calculate { response, error in
                     if let error = error {
+                        // MapKit advertises a transit transport type that
+                        // calculate() cannot serve, and reports it as an
+                        // opaque directionsNotFound. Say what is actually
+                        // available instead of passing that through.
+                        let nsError = error as NSError
+                        if let message = MapsTransitDirections.message(
+                            forTransportType: requestedTransportType,
+                            errorDomain: nsError.domain,
+                            errorCode: nsError.code
+                        ) {
+                            continuation.resume(
+                                throwing: NSError(
+                                    domain: "MapsServiceError",
+                                    code: 17,
+                                    userInfo: [NSLocalizedDescriptionKey: message]
+                                )
+                            )
+                            return
+                        }
                         continuation.resume(throwing: error)
                         return
                     }

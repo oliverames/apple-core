@@ -12,6 +12,32 @@
 import AVFoundation
 import Foundation
 
+// MARK: - Legacy window listing
+
+/// `capture_list_windows` is superseded by `capture_list_targets` and is kept
+/// only until beta clients have moved off it. Its description and the one
+/// field its window entries still say something about live here so the
+/// deprecation notice is a string a test can hold to, rather than prose buried
+/// in a tool closure.
+enum CaptureLegacyWindowListing {
+    /// The tool's description. It names the replacement first, because a
+    /// client reading a tool list decides from this sentence alone.
+    static let toolDescription =
+        "Deprecated: use capture_list_targets instead, which answers the same question without "
+        + "window titles and without asking for Screen Recording access. Lists the displays, "
+        + "applications and windows that can be captured, with the identifiers "
+        + "capture_take_screenshot needs. No longer returns window titles."
+
+    /// Whether a window has a title, which is what the entry now reports in
+    /// place of the title itself. A title routinely carries a document name or
+    /// a message subject, content the caller was never granted; whether the
+    /// window has one is all that aiming a capture needs.
+    static func hasTitle(_ title: String?) -> Bool {
+        guard let title else { return false }
+        return !title.isEmpty
+    }
+}
+
 // MARK: - Capture target discovery
 
 /// The metadata needed to aim a capture, and nothing else.

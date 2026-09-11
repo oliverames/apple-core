@@ -727,9 +727,7 @@ final class CaptureService: NSObject, Service {
 
         Tool(
             name: "capture_list_windows",
-            description:
-                "List the displays, applications and windows that can be captured, with the identifiers "
-                + "capture_take_screenshot needs. Call this first to screenshot a particular window or display.",
+            description: CaptureLegacyWindowListing.toolDescription,
             inputSchema: .object(
                 properties: [
                     "bundleId": .string(
@@ -739,7 +737,7 @@ final class CaptureService: NSObject, Service {
                 additionalProperties: false
             ),
             annotations: .init(
-                title: "List Capturable Windows",
+                title: "List Capturable Windows (Deprecated)",
                 readOnlyHint: true,
                 openWorldHint: false
             )
@@ -790,9 +788,11 @@ final class CaptureService: NSObject, Service {
                     "height": .int(Int(window.frame.height)),
                     "isActive": .bool(window.isActive),
                 ]
-                if let title = window.title, !title.isEmpty {
-                    entry["title"] = .string(title)
-                }
+                // Deliberately no title. A window title routinely carries a
+                // document name or a message subject, which is content the
+                // caller has not been granted; hasTitle still separates a
+                // document window from an untitled panel.
+                entry["hasTitle"] = .bool(CaptureLegacyWindowListing.hasTitle(window.title))
                 if let owner = window.owningApplication {
                     entry["bundleId"] = .string(owner.bundleIdentifier)
                     entry["application"] = .string(owner.applicationName)

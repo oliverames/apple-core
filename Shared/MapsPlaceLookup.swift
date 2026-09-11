@@ -181,3 +181,42 @@ public struct MapsPlaceLookupSummary: Codable, Equatable, Sendable {
         try container.encodeIfPresent(unavailableFields, forKey: .unavailableFields)
     }
 }
+
+// MARK: - Transit directions
+
+/// What to say when MapKit refuses to route a transit trip.
+///
+/// `MKDirections.calculate()` has no public turn-by-turn transit routing. A
+/// read-only probe on 2026-09-11, Times Square to Wall Street on a route with
+/// dense transit coverage, failed with MKErrorDomain 5 (`directionsNotFound`)
+/// while `calculateETA()` answered the same pair with a transit-typed ETA of
+/// 1384 seconds. So the mode is not dead, only the directions half of it. The
+/// enum keeps `transit` and swaps the opaque MapKit error for the sentence
+/// that points at the capability which does work.
+///
+/// Nothing here imports MapKit: the domain and code are matched as values so
+/// the mapping is testable without a MapKit key or a network round trip.
+public enum MapsTransitDirections {
+    /// `MKError.Code.directionsNotFound`.
+    public static let directionsNotFoundCode = 5
+    /// `MKErrorDomain`.
+    public static let errorDomain = "MKErrorDomain"
+
+    /// The message a caller asking for transit directions gets instead.
+    public static let unavailableMessage =
+        "Apple Maps supplies transit travel time but not turn-by-turn transit directions, so "
+        + "maps_directions cannot route this trip. Call maps_eta with transportType \"transit\" for "
+        + "the travel time. maps_directions returns steps for \"automobile\" and \"walking\"."
+
+    /// The replacement message for a failed directions request, or nil when the
+    /// failure is not this one and the original error should stand.
+    public static func message(
+        forTransportType transportType: String?,
+        errorDomain domain: String,
+        errorCode code: Int
+    ) -> String? {
+        guard transportType == "transit" else { return nil }
+        guard domain == errorDomain, code == directionsNotFoundCode else { return nil }
+        return unavailableMessage
+    }
+}
