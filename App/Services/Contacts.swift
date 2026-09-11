@@ -12,6 +12,7 @@ private let contactKeys =
         CNContactTypeKey,
         CNContactGivenNameKey,
         CNContactFamilyNameKey,
+        CNContactNicknameKey,
         CNContactBirthdayKey,
         CNContactOrganizationNameKey,
         CNContactJobTitleKey,
@@ -169,6 +170,36 @@ final class ContactsService: Service {
             keysToFetch: contactKeys
         )
         return (group, contact)
+    }
+
+    /// Reads the whole address book once, unified.
+    ///
+    /// `unifyResults` is left at its default, so records macOS already links
+    /// across accounts arrive as one contact rather than as a duplicate pair.
+    /// Directory paging, duplicate ranking and recipient resolution all work
+    /// from this snapshot, which keeps the ordering stable within a call.
+    private func allContactRecords() async throws -> [ContactRecord] {
+        try await runContactStore {
+            let request = CNContactFetchRequest(keysToFetch: contactKeys)
+            request.sortOrder = .userDefault
+            var records: [ContactRecord] = []
+            try self.contactStore.enumerateContacts(with: request) { contact, _ in
+                records.append(ContactRecord(contact))
+            }
+            return records
+        }
+    }
+
+    private static func describe(_ record: ContactRecord) -> Value {
+        .object([
+            "identifier": .string(record.identifier),
+            "name": .string(record.displayName),
+            "givenName": .string(record.givenName),
+            "familyName": .string(record.familyName),
+            "organizationName": .string(record.organizationName),
+            "phoneNumbers": .array(record.phoneNumbers.map { .string($0) }),
+            "emailAddresses": .array(record.emailAddresses.map { .string($0) }),
+        ])
     }
 
     var tools: [Tool] {
@@ -671,5 +702,201 @@ final class ContactsService: Service {
                 "base64": .string(data.base64EncodedString()),
             ])
         }
+
+        Tool(
+            name: "contacts_directory",
+            description:
+                "Page through the address book in a stable order. Use this to browse or count contacts; use contacts_search when you already know a name, phone number or email.",
+            inputSchema: .object(
+                properties: [
+                    "prefix": .string(
+                        description:
+                            "Only include contacts whose family, given, nickname or organization name starts with this text"
+                    ),
+                    "offset": .integer(
+                        description: "How many contacts to skip, for paging through the directory",
+                        default: .int(0),
+                        minimum: 0
+                    ),
+                    "limit": .integer(
+                        description: "Maximum contacts to return in one page",
+                        default: .int(ContactDirectory.defaultLimit),
+                        minimum: 1,
+                        maximum: ContactDirectory.maximumLimit
+                    ),
+                ],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Browse Contacts",
+                readOnlyHint: true,
+                openWorldHint: false
+            )
+        ) { arguments in
+            let records = try await self.allContactRecords()
+            let filtered: [ContactRecord]
+            if let prefix = arguments["prefix"]?.stringValue, !prefix.isEmpty {
+                filtered = records.filter { ContactDirectory.matchesPrefix($0, prefix: prefix) }
+            } else {
+                filtered = records
+            }
+            let page = ContactDirectory.page(
+                ContactDirectory.sorted(filtered),
+                offset: ContactDirectory.clampedOffset(arguments["offset"]?.intValue),
+                limit: ContactDirectory.clampedLimit(arguments["limit"]?.intValue)
+            )
+            var result: [String: Value] = [
+                "total": .int(page.total),
+                "offset": .int(page.offset),
+                "limit": .int(page.limit),
+                "hasMore": .bool(page.hasMore),
+                "contacts": .array(page.records.map(Self.describe)),
+            ]
+            if let nextOffset = page.nextOffset {
+                result["nextOffset"] = .int(nextOffset)
+            }
+            return Value.object(result)
+        }
+
+        Tool(
+            name: "contacts_duplicates",
+            description:
+                "Suggest contacts that may be duplicates of each other, ranked strongest first, with the evidence behind each pair. Read-only: this never merges contacts, and merging is not available as a tool. Report the pairs to the user and let them merge in the Contacts app.",
+            inputSchema: .object(
+                properties: [
+                    "limit": .integer(
+                        description: "Maximum suggested pairs to return",
+                        default: .int(20),
+                        minimum: 1,
+                        maximum: 200
+                    ),
+                    "minimum_score": .number(
+                        description:
+                            "Drop pairs scoring below this. 0.8 and above is a strong match; 0.45 is the weakest reported.",
+                        default: .double(ContactDuplicates.minimumScore),
+                        minimum: 0,
+                        maximum: 1
+                    ),
+                ],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Suggest Duplicate Contacts",
+                readOnlyHint: true,
+                openWorldHint: false
+            )
+        ) { arguments in
+            let records = try await self.allContactRecords()
+            let threshold = arguments["minimum_score"]?.doubleCoerced ?? ContactDuplicates.minimumScore
+            let limit = min(max(arguments["limit"]?.intValue ?? 20, 1), 200)
+            let suggestions = ContactDuplicates.suggestions(
+                for: records,
+                minimumScore: min(max(threshold, 0), 1)
+            )
+            let described = suggestions.prefix(limit).map { suggestion in
+                Value.object([
+                    "identifiers": .array(suggestion.identifiers.map { .string($0) }),
+                    "names": .array(suggestion.names.map { .string($0) }),
+                    "score": .double(suggestion.score),
+                    "confidence": .string(suggestion.confidence),
+                    "reasons": .array(suggestion.reasons.map { .string($0) }),
+                    "cautions": .array(suggestion.cautions.map { .string($0) }),
+                ])
+            }
+            return Value.object([
+                "scanned": .int(records.count),
+                "total": .int(suggestions.count),
+                "suggestions": .array(Array(described)),
+                "guidance": .string(
+                    "These are suggestions only. Merging contacts cannot be undone, so review them with the user "
+                        + "and let them merge in the Contacts app."
+                ),
+            ])
+        }
+
+        Tool(
+            name: "contacts_resolve_recipient",
+            description:
+                "Find who a name, email or phone number refers to, as ranked candidates. Returns whether the match is confident or ambiguous. When it is not confident, show the candidates to the user and ask, rather than sending anything to the top result.",
+            inputSchema: .object(
+                properties: [
+                    "query": .string(
+                        description: "A name, email address or phone number"
+                    ),
+                    "channel": .string(
+                        description: "Which kind of address the caller intends to use",
+                        default: .string(RecipientChannel.any.rawValue),
+                        enum: RecipientChannel.allCases.map { .string($0.rawValue) }
+                    ),
+                    "limit": .integer(
+                        description: "Maximum candidates to return",
+                        default: .int(ContactRecipients.maximumCandidates),
+                        minimum: 1,
+                        maximum: 50
+                    ),
+                ],
+                required: ["query"],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Resolve Recipient",
+                readOnlyHint: true,
+                openWorldHint: false
+            )
+        ) { arguments in
+            guard let query = arguments["query"]?.stringValue else {
+                throw NSError(
+                    domain: "ContactsService",
+                    code: 1,
+                    userInfo: [NSLocalizedDescriptionKey: "Missing required argument: query"]
+                )
+            }
+            let channel =
+                arguments["channel"]?.stringValue.flatMap(RecipientChannel.init(rawValue:)) ?? .any
+            let records = try await self.allContactRecords()
+            let resolution = ContactRecipients.resolve(
+                query: query,
+                in: records,
+                channel: channel,
+                limit: min(max(arguments["limit"]?.intValue ?? ContactRecipients.maximumCandidates, 1), 50)
+            )
+            let candidates = resolution.candidates.map { candidate in
+                Value.object([
+                    "identifier": .string(candidate.identifier),
+                    "name": .string(candidate.name),
+                    "score": .double(candidate.score),
+                    "matchType": .string(candidate.matchType),
+                    "emailAddresses": .array(candidate.emailAddresses.map { .string($0) }),
+                    "phoneNumbers": .array(candidate.phoneNumbers.map { .string($0) }),
+                ])
+            }
+            return Value.object([
+                "query": .string(resolution.query),
+                "channel": .string(resolution.channel),
+                "isConfident": .bool(resolution.isConfident),
+                "isAmbiguous": .bool(resolution.isAmbiguous),
+                "needsAddressChoice": .bool(resolution.needsAddressChoice),
+                "guidance": .string(resolution.guidance),
+                "candidates": .array(candidates),
+            ])
+        }
+    }
+}
+
+extension ContactRecord {
+    /// Unified contacts only: `linkedIdentifiers` carries the contact's own
+    /// identifier because CNContact does not expose the records it was
+    /// unified from, and a unified fetch has already collapsed them.
+    init(_ contact: CNContact) {
+        self.init(
+            identifier: contact.identifier,
+            givenName: contact.givenName,
+            familyName: contact.familyName,
+            nickname: contact.nickname,
+            organizationName: contact.organizationName,
+            phoneNumbers: contact.phoneNumbers.map(\.value.stringValue),
+            emailAddresses: contact.emailAddresses.map { $0.value as String },
+            linkedIdentifiers: [contact.identifier]
+        )
     }
 }
