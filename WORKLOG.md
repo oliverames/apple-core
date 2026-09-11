@@ -1,5 +1,71 @@
 # Apple Core worklog
 
+## 2026-09-11 - 128 to 186 tools, six live-found bugs, and beta builds 35 to 38
+
+**What changed**: Implemented the September 10 capability reviews, then a
+coverage pass benchmarked against the best-maintained Apple MCP servers. Tools
+went 128 to 186 and tests 322 to 992. Closed #3, #4, #9, #13, #14, #17, #18,
+#19, #20, #21, #22, #23, #24, #25, #26, #27, #28, #29, #30, #31, #32, #33, #34,
+#35, #36, #38, #39, #41, #42, #43, #44, #46, #48, #49, #50, #51. Partly
+delivered #40: ReminderKit subtask hierarchy behind a version gate that allows
+reads and refuses writes above the verified macOS ceiling.
+
+Four beta builds were signed, notarized, stapled and installed on Home Server,
+none published. Build 38 is live; the record is in
+`docs/home-server-build-38-2026-09-11.md`.
+
+**Decisions made**: Private API use is authorized (Oliver, 2026-09-11), which
+unblocked ReminderKit and is recorded with its App Store consequence in
+`docs/mac-app-store-feasibility.md`. Thirty days is the retention window for an
+OAuth client that registered and never signed in, with the guarantee that age
+alone never removes anything holding a live credential. A subscription will
+cover the managed relay only, never the app, since a self-hoster runs their own
+Cloudflare tunnel; #52 carries the design, and the enforcement point is the
+relay's existing per-tenant pause rather than anything in the app.
+
+Notes deliberately gained no tools. Against `sweetrb/apple-notes-mcp` the
+36-versus-32 gap is four aliases for what `notes_get` already answers in one
+call plus a default-location tool `notes_list_accounts` already provides.
+
+Several features were refused with evidence rather than shipped: calendar
+deletion, which removes every event in the calendar; calendar invitations,
+which cannot be written through EventKit and whose alternative mails real
+people; ReminderKit tags and attachments, because this Mac holds zero rows in
+those tables and a reader verified against nothing has an empty result that
+cannot be told from a correct one; and ReminderKit writes, because titles and
+notes are CRDT documents a naive write would corrupt.
+
+**Verified**: 992 tests passing and `swift format lint --strict --recursive .`
+clean at `cfdb7e4`; the only delta to HEAD is the build-38 version bump. Muse
+exercised the connector against live data across four rounds on builds 35 to
+38: binary write round trip byte-identical, the Notes attachment guard refusing
+an append on a real 12-attachment note, `mail_index_search` returning real hits
+over 48,307 indexed messages, `mail_mailbox_roles` resolving Gmail's Sent Mail,
+All Mail and Spam at exact confidence, and `calendar_events_fetch` returning 95
+events carrying notes, alarms and RRULE recurrence.
+
+Six bugs were found, and only two by tests. The four that mattered came from
+running against real data: the index refresh outliving its client,
+`notes_create` failing on a note it had created, `messages_fetch` hiding 4,534
+of 17,596 messages, and a contacts read aborting the whole process. The last
+shipped through a fully green suite.
+
+**Left off at**: Build 38 live and serving on Home Server, unpublished. The
+mail index is absent and needs one refresh, roughly twenty minutes, because it
+was cleared to force a rebuild under the MIME fix and build 37 crashed before
+that ran.
+
+**Open questions**: WeatherKit needs two Apple Developer portal steps before
+#37 can proceed, and six tools stay compiled out until then. `mail_redirect`
+sends real mail on first use and has never executed, so it needs a throwaway
+account. Pre-advertising readiness is tracked in #55, whose first item is that
+the public appcast is still on build 27 while the tree is on 38, so a new buyer
+receives something far older than the site would describe. A clean-VM install
+has never been run, leaving first-run onboarding and licence activation
+unverified for new buyers.
+
+---
+
 ## 2026-09-10 - Home Server build 34 and working Muse connector
 
 Installed Developer ID-signed, notarized build 34 from `f52d095` on Home Server. Receiving-host checksum, signature, Gatekeeper and staple checks passed. Configuration, OAuth state and mail templates matched before new consent. Screen Sharing verified the new Connection ID controls.
