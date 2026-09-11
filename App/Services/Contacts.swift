@@ -40,6 +40,12 @@ private let contactKeys =
         CNContactRelationsKey,
         CNContactImageDataAvailableKey,
     ] as [CNKeyDescriptor]
+    // CNContactFormatter raises an Objective-C exception, which Swift cannot
+    // catch and which aborts the process, if it is handed a contact fetched
+    // without the keys it needs. Its requirements are not the public name keys
+    // above and are not documented individually, so they have to be asked for.
+    // Omitting this crashed the whole connector on a contacts_search.
+    + [CNContactFormatter.descriptorForRequiredKeys(for: .fullName)]
 
 private let contactProperties: OrderedDictionary<String, JSONSchema> = [
     "givenName": .string(),
@@ -1520,14 +1526,49 @@ extension ContactsService {
     ///
     /// This returns the whole record. `Person` is still emitted alongside for
     /// callers that already read it, so nothing that worked before changes.
+    /// A display name that cannot abort the process.
+    ///
+    /// `CNContactFormatter` is the right answer for locale-correct name order,
+    /// but it raises `CNPropertyNotFetchedException` rather than returning nil
+    /// when a required key is missing, and an Objective-C exception crossing
+    /// Swift terminates the app. So the keys are checked first, and a contact
+    /// that somehow arrives without them is named from what it does carry
+    /// instead of taking the connector down.
+    static func displayName(of contact: CNContact) -> String {
+        let required = CNContactFormatter.descriptorForRequiredKeys(for: .fullName)
+        if contact.areKeysAvailable([required]),
+            let formatted = CNContactFormatter.string(from: contact, style: .fullName),
+            !formatted.isEmpty
+        {
+            return formatted
+        }
+        // Reading any unfetched property raises the same exception, so the
+        // fallback has to ask before it reads rather than assume the name keys
+        // are there. Two fetch paths in this file deliberately ask for the
+        // identifier alone.
+        func available(_ key: String) -> Bool {
+            contact.areKeysAvailable([key as CNKeyDescriptor])
+        }
+        let parts = [
+            available(CNContactGivenNameKey) ? contact.givenName : "",
+            available(CNContactMiddleNameKey) ? contact.middleName : "",
+            available(CNContactFamilyNameKey) ? contact.familyName : "",
+        ].filter { !$0.isEmpty }
+        if !parts.isEmpty { return parts.joined(separator: " ") }
+        if available(CNContactOrganizationNameKey), !contact.organizationName.isEmpty {
+            return contact.organizationName
+        }
+        if available(CNContactNicknameKey), !contact.nickname.isEmpty {
+            return contact.nickname
+        }
+        return ""
+    }
+
     static func detail(of contact: CNContact) -> [String: Value] {
         var detail: [String: Value] = [
             "identifier": .string(contact.identifier),
             "contactType": .string(contact.contactType == .organization ? "organization" : "person"),
-            "displayName": .string(
-                CNContactFormatter.string(from: contact, style: .fullName)
-                    ?? contact.organizationName
-            ),
+            "displayName": .string(displayName(of: contact)),
             "hasImage": .bool(contact.imageDataAvailable),
         ]
 
