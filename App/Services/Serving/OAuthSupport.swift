@@ -272,6 +272,19 @@ public actor OAuthTokenStore {
     public static let accessTokenLifetime: TimeInterval = 12 * 60 * 60
     private static let refreshTokenLifetime: TimeInterval = 30 * 24 * 60 * 60
 
+    /// How long a registration that holds no credential is kept.
+    ///
+    /// Deliberately equal to `refreshTokenLifetime`. A registration older
+    /// than this that still holds a live access token, a live refresh token
+    /// or an unredeemed authorization code is never a candidate, so reaching
+    /// the age limit means the client holds nothing usable and could not:
+    /// the longest-lived credential Apple Core issues expires within this
+    /// window. Such a client has to run a fresh authorization to connect
+    /// again whether or not its row survives, and that authorization
+    /// re-creates the row -- `adoptClientIfNeeded` for a native client,
+    /// `registerClientIDMetadataClient` for a metadata-document client.
+    public static let inactiveClientRetention: TimeInterval = refreshTokenLifetime
+
     private let clientRegistryURL: URL?
     private let accessTokenStoreURL: URL?
     private let persistenceWriter: (@Sendable (Data, URL) throws -> Void)?
@@ -668,12 +681,12 @@ public actor OAuthTokenStore {
     }
 
     private func pruneClientsIfNeeded(keeping clientID: String, now: Date) throws {
+        // Reclaim aged-out rows before falling back to capacity pruning, so
+        // the registry usually stays well under the cap and the capacity
+        // error stays the rare case it was meant to be.
+        removeInactiveClients(keeping: clientID, now: now, retention: Self.inactiveClientRetention)
         guard clients.count > Self.maxPersistedClients else { return }
-        var protectedIDs = signedInClientIDs(now: now)
-        protectedIDs.insert(clientID)
-        for code in authorizationCodes.values where code.expiresAt > now {
-            protectedIDs.insert(code.clientID)
-        }
+        let protectedIDs = protectedClientIDs(keeping: clientID, now: now)
         let candidates = clients.values.filter { !protectedIDs.contains($0.clientID) }
             .sorted { $0.issuedAt < $1.issuedAt }
         let countToRemove = clients.count - Self.maxPersistedClients
@@ -681,6 +694,66 @@ public actor OAuthTokenStore {
         for stale in candidates.prefix(countToRemove) {
             clients.removeValue(forKey: stale.clientID)
         }
+    }
+
+    /// Every client that must survive a removal pass: one holding a live
+    /// access token, a live refresh token, or an authorization code that has
+    /// been issued but not yet redeemed, plus the client the caller is in the
+    /// middle of registering.
+    ///
+    /// This is the single guard that keeps expiry from revoking a working
+    /// connection. `authenticatedClient(forAccessToken:)` resolves a bearer
+    /// token through `clients`, so dropping a row with a live token would
+    /// reject that token on its next request.
+    private func protectedClientIDs(keeping clientID: String?, now: Date) -> Set<String> {
+        var protectedIDs = signedInClientIDs(now: now)
+        if let clientID {
+            protectedIDs.insert(clientID)
+        }
+        for code in authorizationCodes.values where code.expiresAt > now {
+            protectedIDs.insert(code.clientID)
+        }
+        return protectedIDs
+    }
+
+    @discardableResult
+    private func removeInactiveClients(
+        keeping clientID: String?,
+        now: Date,
+        retention: TimeInterval
+    ) -> [OAuthRegisteredClient] {
+        let cutoff = Int(now.addingTimeInterval(-retention).timeIntervalSince1970)
+        let protectedIDs = protectedClientIDs(keeping: clientID, now: now)
+        let expired = clients.values
+            .filter { $0.issuedAt <= cutoff && !protectedIDs.contains($0.clientID) }
+            .sorted { $0.issuedAt < $1.issuedAt }
+        for client in expired {
+            clients.removeValue(forKey: client.clientID)
+        }
+        return expired
+    }
+
+    /// Drops registrations that have held no credential for longer than
+    /// `retention` and persists the result, returning what was removed.
+    ///
+    /// Callers own the consequences of a removal beyond this store, such as
+    /// forgetting a client's "connect without approval" decision. Repeating
+    /// the call is harmless: the second pass finds nothing and writes nothing.
+    @discardableResult
+    public func expireInactiveClients(
+        now: Date = Date(),
+        retention: TimeInterval = OAuthTokenStore.inactiveClientRetention
+    ) throws -> [OAuthRegisteredClient] {
+        let previousClients = clients
+        let expired = removeInactiveClients(keeping: nil, now: now, retention: retention)
+        guard !expired.isEmpty else { return [] }
+        do {
+            try persistClients()
+        } catch {
+            clients = previousClients
+            throw error
+        }
+        return expired
     }
 
     private static func loadClients(from url: URL?) -> [String: OAuthRegisteredClient] {

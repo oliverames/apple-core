@@ -334,7 +334,20 @@ final class ServerController: ObservableObject {
     }
 
     func registeredOAuthClients() async -> [OAuthRegisteredClient] {
-        await networkManager.registeredOAuthClients()
+        // Reading the list is also when the list gets cleaned. A registration
+        // that has held no credential for `inactiveClientRetention` cannot be
+        // a working connection, and leaving it on screen is what makes a real
+        // client hard to pick out of dynamic-registration debris. Trust is
+        // withdrawn alongside the row, matching Disconnect; a failed sweep is
+        // not worth refusing to show the list over.
+        do {
+            for expired in try await networkManager.expireInactiveOAuthClients() {
+                removeTrustedClient(expired.clientID)
+            }
+        } catch {
+            log.error("Could not expire inactive OAuth clients: \(String(describing: error))")
+        }
+        return await networkManager.registeredOAuthClients()
     }
 
     func signedInOAuthClientIDs() async -> Set<String> {
@@ -937,6 +950,10 @@ actor ServerNetworkManager {
 
     func registeredOAuthClients() async -> [OAuthRegisteredClient] {
         await oauthStore.registeredClients()
+    }
+
+    func expireInactiveOAuthClients() async throws -> [OAuthRegisteredClient] {
+        try await oauthStore.expireInactiveClients()
     }
 
     func signedInOAuthClientIDs() async -> Set<String> {
