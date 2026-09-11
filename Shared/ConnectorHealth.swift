@@ -46,11 +46,27 @@ public struct ConnectorPermissionInput: Equatable, Sendable {
     public let requirement: String
     public let state: ConnectorPermissionState
     public let detail: String
+    /// True when the surface declared this grant as enabling one named
+    /// capability rather than as a condition of working at all. An absent
+    /// optional grant is reported, but it does not put the surface into a
+    /// refused state: the difference between "four tools need this" and
+    /// "nothing answers".
+    public let isOptional: Bool
+    /// What the optional grant unlocks, in the surface's own words.
+    public let capability: String?
 
-    public init(requirement: String, state: ConnectorPermissionState, detail: String) {
+    public init(
+        requirement: String,
+        state: ConnectorPermissionState,
+        detail: String,
+        isOptional: Bool = false,
+        capability: String? = nil
+    ) {
         self.requirement = requirement
         self.state = state
         self.detail = detail
+        self.isOptional = isOptional
+        self.capability = capability
     }
 }
 
@@ -91,6 +107,11 @@ public struct ConnectorHealthReport: Codable, Equatable, Sendable {
         public let requirement: String
         public let state: ConnectorPermissionState
         public let detail: String
+        /// True when the grant enables a named capability instead of gating
+        /// the surface, so a client can tell an unused extra from a fault.
+        public let isOptional: Bool
+        /// What this grant unlocks, present only when it is optional.
+        public let capability: String?
     }
 
     public struct Surface: Codable, Equatable, Sendable {
@@ -137,14 +158,16 @@ public enum ConnectorHealth {
     public static func state(for surface: ConnectorSurfaceInput) -> ConnectorSurfaceState {
         guard surface.isBuilt else { return .unsupported }
         guard surface.isEnabled else { return .disabled }
-        if surface.permissions.contains(where: {
-            $0.state == .denied || $0.state == .promptBlocked
-        }) {
+        // Optional grants are left out of the verdict on purpose. Mail
+        // without Full Disk Access is ready: every tool but the local index
+        // works, and reporting it as denied would send a caller to System
+        // Settings to fix a surface that is not broken. The row itself still
+        // carries the missing grant, so a caller can see why one tool fails.
+        let gating = surface.permissions.filter { !$0.isOptional }
+        if gating.contains(where: { $0.state == .denied || $0.state == .promptBlocked }) {
             return .denied
         }
-        if surface.permissions.contains(where: {
-            $0.state == .unreadable || $0.state == .notRequested
-        }) {
+        if gating.contains(where: { $0.state == .unreadable || $0.state == .notRequested }) {
             return .unavailable
         }
         return .ready
@@ -205,7 +228,11 @@ public enum ConnectorHealth {
                     ConnectorHealthReport.Permission(
                         requirement: permission.requirement,
                         state: permission.state,
-                        detail: redacted(permission.detail, environment: environment)
+                        detail: redacted(permission.detail, environment: environment),
+                        isOptional: permission.isOptional,
+                        capability: permission.capability.map {
+                            redacted($0, environment: environment)
+                        }
                     )
                 }
             )

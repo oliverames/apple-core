@@ -2250,9 +2250,8 @@ final class NotesService: Service {
                             + "notes_get_checklist_state and notes_get_sync_status all work"
                         : "not readable, so notes_get_link, notes_get_metadata, "
                             + "notes_get_checklist_state and notes_get_sync_status will fail. "
-                            + "Grant Apple Core Full Disk Access in System Settings > Privacy & "
-                            + "Security, then quit and reopen it. Every other Notes tool is "
-                            + "unaffected."
+                            + ServicePermissionRequirement.fullDiskAccess.grantInstruction
+                            + " Every other Notes tool is unaffected."
                 )
             )
         }

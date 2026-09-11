@@ -105,6 +105,16 @@ struct DiagnosticsView: View {
                         Text(row.services.joined(separator: ", "))
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                        // An optional grant is an offer, not a fault. Say
+                        // what it turns on, so a row reading "Not granted"
+                        // is legible as a feature nobody switched on rather
+                        // than as something broken.
+                        if row.isOptionalEverywhere, !row.capabilities.isEmpty {
+                            Text("Optional — enables \(row.capabilities.joined(separator: "; "))")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
                     }
 
                     Spacer(minLength: 12)
@@ -131,15 +141,22 @@ struct DiagnosticsView: View {
                             .controlSize(.small)
                             .disabled(requestingPermission == row.requirement)
                         } else if !state.isGranted, let url = row.requirement.privacySettingsURL {
-                            Button("Open Settings") { NSWorkspace.shared.open(url) }
-                                .buttonStyle(.borderless)
-                                .controlSize(.small)
+                            Button(row.isOptionalEverywhere ? "Turn On" : "Open Settings") {
+                                NSWorkspace.shared.open(url)
+                            }
+                            .buttonStyle(.borderless)
+                            .controlSize(.small)
                         }
 
                         if requestingPermission == row.requirement {
                             ProgressView().controlSize(.small)
                         } else {
-                            StatusBadge(title: state.label, tone: state.tone)
+                            StatusBadge(
+                                title: state.label,
+                                tone: row.isOptionalEverywhere && !state.isGranted
+                                    ? .neutral
+                                    : state.tone
+                            )
                         }
                     } else {
                         ProgressView().controlSize(.small)
@@ -193,7 +210,7 @@ struct DiagnosticsView: View {
         permissionStates[requirement] = updated
     }
 
-    private var permissionRows: [(requirement: ServicePermissionRequirement, services: [String])] {
+    private var permissionRows: [ServicePermissionStatus.RequirementUse] {
         ServicePermissionStatus.requirementsInUse(by: serverController.computedServiceConfigs)
     }
 

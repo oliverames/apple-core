@@ -171,6 +171,8 @@ private struct ServiceToggleRow: View {
 
     @State private var isActivating = false
     @State private var activationError: String?
+    /// Live state for the grants this service can use but does not need.
+    @State private var optionalGrants: [ServicePermissionRequirement: ServicePermissionState] = [:]
 
     var body: some View {
         HStack(spacing: 12) {
@@ -193,6 +195,14 @@ private struct ServiceToggleRow: View {
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+
+                // Offered here rather than demanded at activation. The
+                // service works without these; each one turns on the feature
+                // it names, so the row reads as something you can add and
+                // never as a reason the switch will not hold.
+                ForEach(config.optionalPermissionNeeds, id: \.self) { need in
+                    optionalGrantRow(need)
+                }
             }
 
             Spacer(minLength: 12)
@@ -214,6 +224,39 @@ private struct ServiceToggleRow: View {
                 .accessibilityLabel("Enable \(config.displayName)")
         }
         .padding(.vertical, 4)
+        .task { await refreshOptionalGrants() }
+    }
+
+    @ViewBuilder
+    private func optionalGrantRow(_ need: ServicePermissionNeed) -> some View {
+        let state = optionalGrants[need.requirement]
+        let capability = need.capability ?? "extra tools"
+        HStack(spacing: 6) {
+            if state?.isGranted == true {
+                Text("\(need.requirement.settingsTitle) is on, so \(capability) works.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                Text("Optional: \(need.requirement.settingsTitle) enables \(capability).")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                if let url = need.requirement.privacySettingsURL {
+                    Button("Turn On") { NSWorkspace.shared.open(url) }
+                        .buttonStyle(.borderless)
+                        .controlSize(.small)
+                }
+            }
+        }
+    }
+
+    private func refreshOptionalGrants() async {
+        var states: [ServicePermissionRequirement: ServicePermissionState] = [:]
+        for need in config.optionalPermissionNeeds {
+            states[need.requirement] = await ServicePermissionStatus.state(of: need.requirement)
+        }
+        optionalGrants = states
     }
 
     private var binding: Binding<Bool> {

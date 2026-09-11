@@ -26,6 +26,19 @@ struct ConnectorHealthTests {
         ConnectorPermissionInput(requirement: "Calendar", state: state, detail: detail)
     }
 
+    private static func optionalPermission(
+        _ state: ConnectorPermissionState,
+        detail: String = "Not granted"
+    ) -> ConnectorPermissionInput {
+        ConnectorPermissionInput(
+            requirement: "Full Disk Access",
+            state: state,
+            detail: detail,
+            isOptional: true,
+            capability: "the local mail index"
+        )
+    }
+
     private static let application = ConnectorHealthReport.Application(
         name: "Apple Core",
         version: "1.7.3",
@@ -256,5 +269,56 @@ struct ConnectorHealthTests {
             ConnectorHealth.defaultEnabled(forServiceTypeName: $0)
         }
         #expect(Set(onByDefault) == ["MapsService", "UtilitiesService"])
+    }
+
+    // MARK: - Optional grants
+
+    @Test(
+        "An absent optional grant leaves the surface ready",
+        arguments: [
+            ConnectorPermissionState.denied, .promptBlocked, .notRequested, .unreadable,
+        ]
+    )
+    func optionalGrantsDoNotGateTheSurface(state: ConnectorPermissionState) {
+        let surface = Self.surface(
+            "MailService",
+            permissions: [Self.permission(.granted), Self.optionalPermission(state)]
+        )
+
+        #expect(ConnectorHealth.state(for: surface) == .ready)
+    }
+
+    @Test("A required refusal still reads as denied beside an optional one")
+    func requiredRefusalStillWins() {
+        let surface = Self.surface(
+            "MailService",
+            permissions: [Self.permission(.denied), Self.optionalPermission(.denied)]
+        )
+
+        #expect(ConnectorHealth.state(for: surface) == .denied)
+    }
+
+    @Test("A ready surface still reports the optional grant it is missing")
+    func optionalGrantIsStillReported() {
+        let report = ConnectorHealth.report(
+            application: Self.application,
+            isConnectorEnabled: true,
+            surfaces: [
+                Self.surface(
+                    "MailService",
+                    permissions: [Self.permission(.granted), Self.optionalPermission(.denied)]
+                )
+            ],
+            sharedFolders: [],
+            environment: [:]
+        )
+
+        let mail = report.surfaces.first { $0.service == "Mail" }
+        #expect(mail?.state == .ready)
+        let optional = mail?.permissions.first { $0.isOptional }
+        #expect(optional?.requirement == "Full Disk Access")
+        #expect(optional?.state == .denied)
+        #expect(optional?.capability == "the local mail index")
+        #expect(mail?.permissions.first { !$0.isOptional }?.capability == nil)
     }
 }

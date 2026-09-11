@@ -28,8 +28,21 @@ struct ServiceConfig: Identifiable {
     let iconName: String
     let color: Color
     let service: any Service
-    let permissionRequirements: [ServicePermissionRequirement]
+    /// Everything this surface declares, required and optional alike.
+    let permissionNeeds: [ServicePermissionNeed]
     let binding: Binding<Bool>
+
+    /// Only the grants the surface cannot work without. Activation and
+    /// onboarding ask for these, so declaring an optional grant never becomes
+    /// a condition of switching the surface on.
+    var permissionRequirements: [ServicePermissionRequirement] {
+        permissionNeeds.requiredRequirements
+    }
+
+    /// Grants that each enable one named capability and gate nothing else.
+    var optionalPermissionNeeds: [ServicePermissionNeed] {
+        permissionNeeds.optionalNeeds
+    }
 
     init(
         name: String,
@@ -40,7 +53,7 @@ struct ServiceConfig: Identifiable {
     ) {
         let serviceTypeName = String(describing: type(of: service))
         guard
-            let permissionRequirements = ServicePermissionInventory.requirements(
+            let permissionNeeds = ServicePermissionInventory.needs(
                 forServiceTypeName: serviceTypeName
             )
         else {
@@ -51,7 +64,7 @@ struct ServiceConfig: Identifiable {
         self.iconName = iconName
         self.color = color
         self.service = service
-        self.permissionRequirements = permissionRequirements
+        self.permissionNeeds = permissionNeeds
         self.binding = binding
     }
 }

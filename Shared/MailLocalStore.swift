@@ -49,10 +49,13 @@ enum MailLocalStoreAccess: Sendable, Equatable {
                 + "index. Accounts that keep everything on the server are read through Mail "
                 + "itself instead."
         case let .accessDenied(path):
+            // The instruction itself comes from the shared permission
+            // model, so Mail, Notes and the settings UI all describe the one
+            // grant the same way.
             return
-                "NO_DISK_ACCESS: \(path) exists but cannot be read. Grant Apple Core Full Disk "
-                + "Access in System Settings > Privacy & Security, then quit and reopen it. "
-                + "Every other Mail tool works without this; only the local index needs it."
+                "NO_DISK_ACCESS: \(path) exists but cannot be read. "
+                + ServicePermissionRequirement.fullDiskAccess.grantInstruction
+                + " Every other Mail tool works without this; only the local index needs it."
         }
     }
 }

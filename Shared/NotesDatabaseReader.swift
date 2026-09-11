@@ -58,10 +58,12 @@ enum NotesDatabaseReaderError: LocalizedError, Equatable {
     var errorDescription: String? {
         switch self {
         case let .unavailable(detail):
+            // Shared wording for a shared grant: this is the same Full
+            // Disk Access the Mail index needs and the settings UI offers.
             return
-                "NO_DATABASE_ACCESS: the Notes database could not be read (\(detail)). Grant "
-                + "Apple Core Full Disk Access in System Settings > Privacy & Security, then "
-                + "quit and reopen it. Every other Notes tool works without this."
+                "NO_DATABASE_ACCESS: the Notes database could not be read (\(detail)). "
+                + ServicePermissionRequirement.fullDiskAccess.grantInstruction
+                + " Every other Notes tool works without this."
         case let .foreignStore(expected, found):
             return
                 "FOREIGN_ID: that note id was minted on a different Mac (store \(found), this "

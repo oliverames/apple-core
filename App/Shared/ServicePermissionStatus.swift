@@ -88,23 +88,54 @@ enum ServicePermissionStatus {
                 bundleIdentifier: target.bundleIdentifier,
                 appName: target.appName
             )
+        case .fullDiskAccess:
+            return fullDiskAccessState()
         case .messagesDatabase:
             return messagesDatabaseState()
         }
     }
 
+    /// One requirement as the whole app sees it: which surfaces declare it,
+    /// whether any of them cannot work without it, and what the ones that can
+    /// say it unlocks.
+    struct RequirementUse: Identifiable {
+        let requirement: ServicePermissionRequirement
+        let services: [String]
+        /// True when no surface that declares this grant needs it to
+        /// function, so an absent grant costs named capabilities rather than
+        /// whole surfaces.
+        let isOptionalEverywhere: Bool
+        /// "Mail: the local mail index", one per surface that treats the
+        /// grant as optional.
+        let capabilities: [String]
+
+        var id: ServicePermissionRequirement { requirement }
+    }
+
     /// Every requirement any built service declares, in inventory order, each
     /// paired with the services that need it. One Location row rather than a
     /// Location row for Location and another for Maps.
-    static func requirementsInUse(
-        by configs: [ServiceConfig]
-    ) -> [(requirement: ServicePermissionRequirement, services: [String])] {
+    static func requirementsInUse(by configs: [ServiceConfig]) -> [RequirementUse] {
         ServicePermissionRequirement.allCases.compactMap { requirement in
-            let services =
-                configs
-                .filter { $0.permissionRequirements.contains(requirement) }
-                .map(\.name)
-            return services.isEmpty ? nil : (requirement, services)
+            let declaring = configs.filter { config in
+                config.permissionNeeds.contains { $0.requirement == requirement }
+            }
+            guard !declaring.isEmpty else { return nil }
+
+            let needs = declaring.map { config in
+                (
+                    name: config.name,
+                    need: config.permissionNeeds.first { $0.requirement == requirement }!
+                )
+            }
+            return RequirementUse(
+                requirement: requirement,
+                services: needs.map(\.name),
+                isOptionalEverywhere: needs.allSatisfy { !$0.need.isRequired },
+                capabilities: needs.compactMap { entry in
+                    entry.need.capability.map { "\(entry.name): \($0)" }
+                }
+            )
         }
     }
 
@@ -258,6 +289,18 @@ enum ServicePermissionStatus {
         _ = try? await NSWorkspace.shared.openApplication(at: url, configuration: configuration)
     }
 
+    /// Full Disk Access, read by trying to read a file only that grant opens.
+    ///
+    /// The probe path deliberately belongs to no app whose data it would
+    /// otherwise be reporting on — see `fullDiskAccessProbePath`.
+    private static func fullDiskAccessState() -> ServicePermissionState {
+        // Like Screen Recording, this grant has no consent prompt and so no
+        // "not determined" to report: either the file opens or it does not.
+        return FileManager.default.isReadableFile(
+            atPath: ServicePermissionRequirement.fullDiskAccessProbePath
+        ) ? .granted : .denied("Not granted")
+    }
+
     /// Full Disk Access, phrased as the thing it gates. MessageService also
     /// accepts a security-scoped bookmark picked by hand, which is why an
     /// unreadable default path is not simply a denial.
@@ -289,7 +332,7 @@ extension ServicePermissionRequirement {
         case .contacts: anchor = "Privacy_Contacts"
         case .location: anchor = "Privacy_LocationServices"
         case .mailAutomation, .messagesAutomation, .notesAutomation: anchor = "Privacy_Automation"
-        case .messagesDatabase: anchor = "Privacy_AllFiles"
+        case .fullDiskAccess, .messagesDatabase: anchor = "Privacy_AllFiles"
         case .reminders: anchor = "Privacy_Reminders"
         }
         return URL(string: "x-apple.systempreferences:com.apple.preference.security?\(anchor)")
@@ -305,9 +348,13 @@ extension ServicePermissionRequirement {
         case .screenRecording: "Screen Recording"
         case .contacts: "Contacts"
         case .location: "Location Services"
+        case .fullDiskAccess: "Full Disk Access"
         case .mailAutomation: "Automation: Mail"
         case .messagesAutomation: "Automation: Messages"
-        case .messagesDatabase: "Full Disk Access"
+        // Both rows lead to the same System Settings pane, so the Messages
+        // one says which file it is about rather than repeating the title of
+        // the generic grant.
+        case .messagesDatabase: "Full Disk Access (Messages database)"
         case .notesAutomation: "Automation: Notes"
         case .reminders: "Reminders"
         }
